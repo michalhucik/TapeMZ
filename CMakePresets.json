@@ -1,0 +1,20 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "default",
+            "generator": "MSYS Makefiles",
+            "binaryDir": "${sourceDir}/build"
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "default",
+            "configurePreset": "default",
+            "environment": {
+                "TEMP": "C:\\msys64\\tmp",
+                "TMP": "C:\\msys64\\tmp"
+            }
+        }
+    ]
+}
