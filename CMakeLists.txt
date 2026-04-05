@@ -301,6 +301,12 @@ add_executable(test_direct_tape_roundtrip
 )
 target_link_libraries(test_direct_tape_roundtrip PRIVATE wav_analyzer mzcmt_direct mzcmt_turbo mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed m)
 
+# test_direct_tape_wav (WAV round-trip: MZF -> DIRECT tape WAV -> wav_analyzer -> MZF)
+add_executable(test_direct_tape_wav
+    tests/test_direct_tape_wav.c
+)
+target_link_libraries(test_direct_tape_wav PRIVATE wav_analyzer mzcmt_direct mzcmt_turbo mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed m)
+
 # test_zx_roundtrip
 add_executable(test_zx_roundtrip
     tests/test_zx_roundtrip.c

@@ -16,6 +16,7 @@ TESTS := \
     test_fsk_tape_roundtrip \
     test_slow_tape_roundtrip \
     test_direct_tape_roundtrip \
+    test_direct_tape_wav \
     test_zx_roundtrip \
     test_ic_normal \
     test_tc_normal
