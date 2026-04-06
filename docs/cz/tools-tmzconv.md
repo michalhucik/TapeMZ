@@ -19,6 +19,8 @@ tmzconv [--to-tmz|--to-tzx] <vstup> <vystup>
 |-------|-------|
 | `--to-tmz` | Vynutit konverzi na TMZ (signatura "TapeMZ!", verze 1.0) |
 | `--to-tzx` | Vynutit konverzi na TZX (signatura "ZXTape!", verze 1.20) |
+| `--version` | Zobrazit verzi programu |
+| `--lib-versions` | Zobrazit verze použitých knihoven |
 
 Pokud není specifikován ani `--to-tmz` ani `--to-tzx`, směr konverze
 se určuje automaticky podle typu vstupního souboru.

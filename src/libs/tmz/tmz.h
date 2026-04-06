@@ -228,6 +228,24 @@ extern "C" {
 /** @} */
 
 
+    /** @brief Verze knihovny tmz. */
+#define TMZ_VERSION "1.0.0"
+
+    /** @brief Verze formátu TMZ jako řetězec ("1.0"). */
+#define TMZ_FORMAT_VERSION "1.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny tmz.
+     * @return Statický řetězec s verzí (např. "1.0.0").
+     */
+    extern const char* tmz_version ( void );
+
+    /**
+     * @brief Vrátí řetězec s verzí formátu TMZ.
+     * @return Statický řetězec s verzí formátu (např. "1.0").
+     */
+    extern const char* tmz_format_version ( void );
+
 #ifdef __cplusplus
 }
 #endif

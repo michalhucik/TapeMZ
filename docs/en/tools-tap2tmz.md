@@ -21,6 +21,8 @@ tap2tmz <input.tap> <output.tzx|output.tmz> [options]
 |--------|-------|---------|-------------|
 | `--pause` | 0-65535 | 1000 | Pause after each block in milliseconds |
 | `--tmz` | - | off | Use TMZ signature ("TapeMZ!") instead of TZX |
+| `--version` | - | - | Show program version |
+| `--lib-versions` | - | - | Show library versions |
 
 ## TAP Format
 

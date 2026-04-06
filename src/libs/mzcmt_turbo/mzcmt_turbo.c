@@ -928,3 +928,8 @@ st_CMT_STREAM* mzcmt_turbo_create_tape_stream (
 
     return stream;
 }
+
+
+const char* mzcmt_turbo_version ( void ) {
+    return MZCMT_TURBO_VERSION;
+}

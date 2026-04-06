@@ -7,6 +7,16 @@
  * Nacte TMZ nebo TZX soubor a vypise informace o hlavicce,
  * vsech blocich, MZF hlavickach a dalsich metadatech.
  *
+ * @par Pouziti:
+ * @code
+ *   tmzinfo [volby] <soubor.tmz|soubor.tzx>
+ * @endcode
+ *
+ * @par Volby:
+ * - --name-encoding <enc>  : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
+ * - --version              : zobrazit verzi programu
+ * - --lib-versions         : zobrazit verze knihoven
+ *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
  *
@@ -36,6 +46,9 @@
 #include "libs/mzf/mzf.h"
 #include "libs/mzf/mzf_tools.h"
 #include "libs/cmtspeed/cmtspeed.h"
+
+/** @brief Verze programu tmzinfo (z @version v hlavicce souboru). */
+#define TMZINFO_VERSION  "1.0.0"
 
 
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
@@ -788,6 +801,18 @@ static void print_block_mz_loader ( const st_TZX_BLOCK *block ) {
 
 
 /**
+ * @brief Vypise verze vsech pouzitych knihoven na stdout.
+ */
+static void print_lib_versions ( void ) {
+    printf ( "Library versions:\n" );
+    printf ( "  tmz            %s (TMZ format v%s)\n", tmz_version (), tmz_format_version () );
+    printf ( "  tzx            %s (TZX format v%s)\n", tzx_version (), tzx_format_version () );
+    printf ( "  mzf            %s\n", mzf_version () );
+    printf ( "  cmtspeed       %s\n", cmtspeed_version () );
+}
+
+
+/**
  * @brief Hlavni funkce - nacte soubor a vypise jeho obsah.
  */
 int main ( int argc, char *argv[] ) {
@@ -796,6 +821,8 @@ int main ( int argc, char *argv[] ) {
         fprintf ( stderr, "Usage: tmzinfo [options] <file.tmz|file.tzx>\n\n" );
         fprintf ( stderr, "Options:\n" );
         fprintf ( stderr, "  --name-encoding <enc> Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n" );
+        fprintf ( stderr, "  --version             Show program version\n" );
+        fprintf ( stderr, "  --lib-versions        Show library versions\n" );
         return EXIT_FAILURE;
     }
 
@@ -803,7 +830,13 @@ int main ( int argc, char *argv[] ) {
     const char *filename = NULL;
 
     for ( int i = 1; i < argc; i++ ) {
-        if ( strcmp ( argv[i], "--name-encoding" ) == 0 ) {
+        if ( strcmp ( argv[i], "--version" ) == 0 ) {
+            printf ( "tmzinfo %s\n", TMZINFO_VERSION );
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--lib-versions" ) == 0 ) {
+            print_lib_versions ();
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--name-encoding" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --name-encoding requires a value\n" );
                 return EXIT_FAILURE;

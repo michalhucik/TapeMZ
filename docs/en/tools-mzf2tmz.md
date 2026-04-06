@@ -28,6 +28,8 @@ mzf2tmz <input.mzf|input.mzt> <output.tmz> [options]
 | `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | 1:1 | Speed ratio |
 | `--pause` | 0-65535 | 1000 | Pause after block in milliseconds |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
+| `--version` | - | - | Show program version |
+| `--lib-versions` | - | - | Show library versions |
 
 ### Option Details
 

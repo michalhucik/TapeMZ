@@ -279,6 +279,15 @@ extern "C" {
 /** @} */
 
 
+    /** @brief Verze knihovny wav. */
+#define WAV_VERSION "2.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny wav.
+     * @return Statický řetězec s verzí (např. "2.0.0").
+     */
+    extern const char* wav_version ( void );
+
 #ifdef __cplusplus
 }
 #endif

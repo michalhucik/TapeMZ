@@ -1000,3 +1000,7 @@ st_CMT_STREAM* mztape_create_stream_from_mztapemzf ( st_MZTAPE_MZF *mztmzf, en_C
     return stream;
 }
 
+
+const char* mztape_version ( void ) {
+    return MZTAPE_VERSION;
+}

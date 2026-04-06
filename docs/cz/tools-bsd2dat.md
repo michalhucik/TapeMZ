@@ -19,6 +19,8 @@ bsd2dat <vstup.tmz> [volby]
 | `--list` | - | Vypsat BSD bloky bez extrakce |
 | `--chunks` | - | Režim chunků - každý chunk jako samostatný soubor |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
+| `--version` | - | Zobrazit verzi programu |
+| `--lib-versions` | - | Zobrazit verze použitých knihoven |
 
 ### Podrobnosti k volbám
 

@@ -232,6 +232,15 @@ extern "C" {
      */
     extern void mztape_set_error_callback ( mztape_error_cb cb );
 
+    /** @brief Verze knihovny mztape. */
+#define MZTAPE_VERSION "2.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny mztape.
+     * @return Statický řetězec s verzí (např. "2.0.0").
+     */
+    extern const char* mztape_version ( void );
+
 #ifdef __cplusplus
 }
 #endif

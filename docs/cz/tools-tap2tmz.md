@@ -21,6 +21,8 @@ tap2tmz <vstup.tap> <vystup.tzx|vystup.tmz> [volby]
 |-------|---------|---------|-------|
 | `--pause` | 0-65535 | 1000 | Pauza po každém bloku v milisekundách |
 | `--tmz` | - | vypnuto | Použít TMZ signaturu ("TapeMZ!") místo TZX |
+| `--version` | - | - | Zobrazit verzi programu |
+| `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 
 ## TAP formát
 

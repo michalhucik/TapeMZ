@@ -582,3 +582,8 @@ st_CMT_STREAM* mzcmt_cpmtape_create_stream (
 
     return stream;
 }
+
+
+const char* mzcmt_cpmtape_version ( void ) {
+    return MZCMT_CPMTAPE_VERSION;
+}

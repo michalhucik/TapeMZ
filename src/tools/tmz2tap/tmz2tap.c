@@ -13,6 +13,10 @@
  *   tmz2tap input.tzx output.tap
  * @endcode
  *
+ * @par Volby:
+ * - --version       : zobrazit verzi programu
+ * - --lib-versions  : zobrazit verze knihoven
+ *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
  *
@@ -39,6 +43,9 @@
 #include "libs/tmz/tmz.h"
 #include "libs/tzx/tzx.h"
 
+/** @brief Verze programu tmz2tap (z @version v hlavicce souboru). */
+#define TMZ2TAP_VERSION  "1.0.0"
+
 
 /**
  * @brief Vrati textovy popis TAP flag bajtu.
@@ -53,13 +60,26 @@ static const char* tap_flag_name ( uint8_t flag ) {
 
 
 /**
+ * @brief Vypise verze vsech pouzitych knihoven na stdout.
+ */
+static void print_lib_versions ( void ) {
+    printf ( "Library versions:\n" );
+    printf ( "  tmz            %s (TMZ format v%s)\n", tmz_version (), tmz_format_version () );
+    printf ( "  tzx            %s (TZX format v%s)\n", tzx_version (), tzx_format_version () );
+}
+
+
+/**
  * @brief Vypise napovedu programu.
  * @param prog_name Nazev spusteneho programu (argv[0]).
  */
 static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "Usage: %s <input.tmz|input.tzx> <output.tap>\n\n", prog_name );
     fprintf ( stderr, "Extracts TAP blocks from TMZ/TZX file.\n" );
-    fprintf ( stderr, "Only Standard Speed Data (0x10) blocks are extracted.\n" );
+    fprintf ( stderr, "Only Standard Speed Data (0x10) blocks are extracted.\n\n" );
+    fprintf ( stderr, "Options:\n" );
+    fprintf ( stderr, "  --version             Show program version\n" );
+    fprintf ( stderr, "  --lib-versions        Show library versions\n" );
 }
 
 
@@ -76,16 +96,38 @@ static void print_usage ( const char *prog_name ) {
  */
 int main ( int argc, char *argv[] ) {
 
-    if ( argc < 3 ) {
+    if ( argc < 2 ) {
         print_usage ( argv[0] );
         return EXIT_FAILURE;
     }
 
-    const char *input_file = argv[1];
-    const char *output_file = argv[2];
+    /* parsovani argumentu */
+    const char *input_file = NULL;
+    const char *output_file = NULL;
+    int positional = 0;
 
-    /* overit, ze nejsou volby pred pozicnimi argumenty */
-    if ( input_file[0] == '-' || output_file[0] == '-' ) {
+    for ( int i = 1; i < argc; i++ ) {
+        if ( strcmp ( argv[i], "--version" ) == 0 ) {
+            printf ( "tmz2tap %s\n", TMZ2TAP_VERSION );
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--lib-versions" ) == 0 ) {
+            print_lib_versions ();
+            return EXIT_SUCCESS;
+        } else if ( argv[i][0] == '-' ) {
+            fprintf ( stderr, "Error: unknown option '%s'\n", argv[i] );
+            return EXIT_FAILURE;
+        } else {
+            if ( positional == 0 ) input_file = argv[i];
+            else if ( positional == 1 ) output_file = argv[i];
+            else {
+                fprintf ( stderr, "Error: too many arguments\n" );
+                return EXIT_FAILURE;
+            }
+            positional++;
+        }
+    }
+
+    if ( !input_file || !output_file ) {
         print_usage ( argv[0] );
         return EXIT_FAILURE;
     }

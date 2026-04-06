@@ -290,6 +290,16 @@ extern "C" {
     extern void mzcmt_bsd_set_error_callback ( mzcmt_bsd_error_cb cb );
 
 
+    /** @brief Verze knihovny mzcmt_bsd. */
+#define MZCMT_BSD_VERSION "1.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny mzcmt_bsd.
+     * @return Statický řetězec s verzí (např. "1.0.0").
+     */
+    extern const char* mzcmt_bsd_version ( void );
+
+
 #ifdef __cplusplus
 }
 #endif

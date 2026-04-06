@@ -288,6 +288,16 @@ extern "C" {
     extern void mzcmt_cpmtape_set_error_callback ( mzcmt_cpmtape_error_cb cb );
 
 
+    /** @brief Verze knihovny mzcmt_cpmtape. */
+#define MZCMT_CPMTAPE_VERSION "1.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny mzcmt_cpmtape.
+     * @return Statický řetězec s verzí (např. "1.0.0").
+     */
+    extern const char* mzcmt_cpmtape_version ( void );
+
+
 #ifdef __cplusplus
 }
 #endif

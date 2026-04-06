@@ -1,7 +1,7 @@
 /**
  * @file   bsd2dat.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  Export BSD/BRD dat z TMZ bloku 0x45 do binarniho souboru.
  *
  * Nacte TMZ soubor, najde bloky 0x45 (MZ BASIC Data), extrahuje
@@ -15,10 +15,13 @@
  * @endcode
  *
  * @par Volby:
- * - --output <soubor>  : vystupni soubor/adresar (vychozi: odvozeno ze vstupu)
- * - --index <N>        : extrahovat jen blok na indexu N (0-based)
- * - --list             : vypsat BSD bloky bez extrakce
- * - --chunks           : rezim chunku - kazdy chunk jako samostatny soubor
+ * - --output <cesta>       : vystupni soubor (solid) nebo adresar (chunks) (vychozi: odvozeno ze vstupu)
+ * - --index <N>            : extrahovat jen blok na indexu N (0-based)
+ * - --list                 : vypsat BSD bloky bez extrakce
+ * - --chunks               : kazdy chunk jako samostatny soubor do adresare
+ * - --name-encoding <enc>  : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
+ * - --version              : zobrazit verzi programu
+ * - --lib-versions         : zobrazit verze knihoven
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -52,6 +55,10 @@
 #include "libs/mzf/mzf.h"
 #include "libs/mzf/mzf_tools.h"
 #include "libs/endianity/endianity.h"
+
+
+/** @brief Verze programu bsd2dat. */
+#define BSD2DAT_VERSION "1.0.1"
 
 
 /** @brief Maximalni delka cesty k vystupnimu souboru. */
@@ -129,9 +136,10 @@ static bool copy_block ( const st_TZX_BLOCK *block, st_TZX_BLOCK *copy, uint8_t 
 /**
  * @brief Exportuje BSD data z bloku 0x45 do jednoho binarniho souboru.
  *
- * Spoji datove casti vsech chunku (krome terminacniho) do jednoho
- * binarniho souboru. Posledni datovy chunk muze mit padding nulami -
- * exportuji se vsechny bajty.
+ * Spoji datove casti vsech chunku (vcetne terminacniho) do jednoho
+ * binarniho souboru. Terminacni chunk (ID=0xFFFF) nese data stejne
+ * jako ostatni chunky - to odpovida chovani BSD dekoderu i realneho
+ * hardwaru (MZ-800 BASIC).
  *
  * @param block TMZ blok 0x45.
  * @param block_index Index bloku v TMZ souboru (pro diagnostiku).
@@ -159,23 +167,10 @@ static int export_solid ( const st_TZX_BLOCK *block, uint32_t block_index, const
         return EXIT_FAILURE;
     }
 
-    /* spocitat datove chunky (bez terminacniho) */
     uint16_t chunk_count = bsd->chunk_count;
-    uint16_t data_chunks = 0;
+    size_t total_size = (size_t) chunk_count * TMZ_BASIC_CHUNK_DATA_SIZE;
 
-    for ( uint16_t i = 0; i < chunk_count; i++ ) {
-        const uint8_t *chunk = chunks_data + (size_t) i * TMZ_BASIC_CHUNK_SIZE;
-        uint16_t chunk_id;
-        memcpy ( &chunk_id, chunk, 2 );
-        chunk_id = endianity_bswap16_LE ( chunk_id );
-        if ( chunk_id == TMZ_BASIC_LAST_CHUNK_ID ) break;
-        data_chunks++;
-    }
-
-    /* celkova velikost dat */
-    size_t total_size = (size_t) data_chunks * TMZ_BASIC_CHUNK_DATA_SIZE;
-
-    /* zapis souboru */
+    /* zapis souboru - data vsech chunku vcetne terminacniho */
     FILE *fp = fopen ( output_path, "wb" );
     if ( !fp ) {
         fprintf ( stderr, "Error: cannot create output file '%s'\n", output_path );
@@ -183,7 +178,7 @@ static int export_solid ( const st_TZX_BLOCK *block, uint32_t block_index, const
         return EXIT_FAILURE;
     }
 
-    for ( uint16_t i = 0; i < data_chunks; i++ ) {
+    for ( uint16_t i = 0; i < chunk_count; i++ ) {
         const uint8_t *chunk = chunks_data + (size_t) i * TMZ_BASIC_CHUNK_SIZE;
         fwrite ( chunk + 2, 1, TMZ_BASIC_CHUNK_DATA_SIZE, fp );
     }
@@ -197,7 +192,7 @@ static int export_solid ( const st_TZX_BLOCK *block, uint32_t block_index, const
     printf ( "  Block [%u] -> %s\n", block_index, output_path );
     printf ( "    Filename : \"%s\"\n", fname );
     printf ( "    Type     : 0x%02X (%s)\n", bsd->mzf_header.ftype, mzf_ftype_name ( bsd->mzf_header.ftype ) );
-    printf ( "    Chunks   : %u data + termination\n", data_chunks );
+    printf ( "    Chunks   : %u (%u data + termination)\n", chunk_count, chunk_count - 1 );
     printf ( "    Data size: %zu bytes\n", total_size );
 
     free ( data_copy );
@@ -290,6 +285,18 @@ static int export_chunks ( const st_TZX_BLOCK *block, uint32_t block_index,
 
 
 /**
+ * @brief Vypise verze vsech pouzitych knihoven na stdout.
+ */
+static void print_lib_versions ( void ) {
+    printf ( "Library versions:\n" );
+    printf ( "  tmz            %s (TMZ format v%s)\n", tmz_version (), tmz_format_version () );
+    printf ( "  tzx            %s (TZX format v%s)\n", tzx_version (), tzx_format_version () );
+    printf ( "  mzf            %s\n", mzf_version () );
+    printf ( "  endianity      %s\n", endianity_version () );
+}
+
+
+/**
  * @brief Vypise napovedu programu.
  * @param prog_name Nazev spusteneho programu (argv[0]).
  */
@@ -303,6 +310,8 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "  --list            List BSD blocks without extracting\n" );
     fprintf ( stderr, "  --chunks          Export each chunk as separate file into directory\n" );
     fprintf ( stderr, "  --name-encoding <enc> Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n" );
+    fprintf ( stderr, "  --version             Show program version\n" );
+    fprintf ( stderr, "  --lib-versions        Show library versions\n" );
 }
 
 
@@ -317,6 +326,18 @@ static void print_usage ( const char *prog_name ) {
  * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
  */
 int main ( int argc, char *argv[] ) {
+
+    /* kontrola --version a --lib-versions pred kontrolou minimalniho poctu argumentu */
+    for ( int i = 1; i < argc; i++ ) {
+        if ( strcmp ( argv[i], "--version" ) == 0 ) {
+            printf ( "bsd2dat %s\n", BSD2DAT_VERSION );
+            return EXIT_SUCCESS;
+        }
+        if ( strcmp ( argv[i], "--lib-versions" ) == 0 ) {
+            print_lib_versions ();
+            return EXIT_SUCCESS;
+        }
+    }
 
     if ( argc < 2 ) {
         print_usage ( argv[0] );
@@ -461,22 +482,11 @@ int main ( int argc, char *argv[] ) {
                     char fname[MZF_FNAME_UTF8_BUF_SIZE];
                     mzf_tools_get_fname_ex ( &bsd->mzf_header, fname, sizeof ( fname ), name_encoding );
 
-                    /* spocitat datove chunky */
-                    uint16_t data_chunks = 0;
-                    for ( uint16_t j = 0; j < bsd->chunk_count; j++ ) {
-                        const uint8_t *chunk = chunks_data + (size_t) j * TMZ_BASIC_CHUNK_SIZE;
-                        uint16_t chunk_id;
-                        memcpy ( &chunk_id, chunk, 2 );
-                        chunk_id = endianity_bswap16_LE ( chunk_id );
-                        if ( chunk_id == TMZ_BASIC_LAST_CHUNK_ID ) break;
-                        data_chunks++;
-                    }
-
                     printf ( "  [%3u] 0x45 MZ BASIC Data  \"%s\"  type=0x%02X (%s)  chunks=%u  data=%u bytes\n",
                              i, fname, bsd->mzf_header.ftype,
                              mzf_ftype_name ( bsd->mzf_header.ftype ),
-                             data_chunks,
-                             (unsigned) ( data_chunks * TMZ_BASIC_CHUNK_DATA_SIZE ) );
+                             bsd->chunk_count,
+                             (unsigned) ( bsd->chunk_count * TMZ_BASIC_CHUNK_DATA_SIZE ) );
                 }
 
                 free ( dc );

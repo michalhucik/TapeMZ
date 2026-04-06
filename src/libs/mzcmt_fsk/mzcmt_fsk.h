@@ -338,6 +338,16 @@ extern "C" {
     extern void mzcmt_fsk_set_error_callback ( mzcmt_fsk_error_cb cb );
 
 
+    /** @brief Verze knihovny mzcmt_fsk. */
+#define MZCMT_FSK_VERSION "1.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny mzcmt_fsk.
+     * @return Statický řetězec s verzí (např. "1.0.0").
+     */
+    extern const char* mzcmt_fsk_version ( void );
+
+
 #ifdef __cplusplus
 }
 #endif

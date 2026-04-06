@@ -1144,3 +1144,8 @@ st_CMT_STREAM* mzcmt_slow_create_tape_stream (
 
     return stream;
 }
+
+
+const char* mzcmt_slow_version ( void ) {
+    return MZCMT_SLOW_VERSION;
+}

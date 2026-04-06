@@ -24,6 +24,8 @@ dat2bsd <vstup.dat> <vystup.tmz> [volby]
 | `--pulseset` | 700, 800, 80b, auto | auto | Pulzní sada (auto = dle machine) |
 | `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | 1:1 | Poměr rychlosti |
 | `--pause` | 0-65535 | 1000 | Pauza po bloku v milisekundách |
+| `--version` | - | - | Zobrazit verzi programu |
+| `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 
 ### Podrobnosti
 

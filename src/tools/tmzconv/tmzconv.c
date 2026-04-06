@@ -16,6 +16,12 @@
  *   tmzconv --to-tzx input.tmz output.tzx
  * @endcode
  *
+ * @par Volby:
+ * - --to-tmz        : vynutit konverzi na TMZ format
+ * - --to-tzx        : vynutit konverzi na TZX format
+ * - --version       : zobrazit verzi programu
+ * - --lib-versions  : zobrazit verze knihoven
+ *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
  *
@@ -44,6 +50,20 @@
 #include "libs/tzx/tzx.h"
 
 
+/** @brief Verze programu tmzconv. */
+#define TMZCONV_VERSION "1.0.0"
+
+
+/**
+ * @brief Vypise verze vsech pouzitych knihoven na stdout.
+ */
+static void print_lib_versions ( void ) {
+    printf ( "Library versions:\n" );
+    printf ( "  tmz            %s (TMZ format v%s)\n", tmz_version (), tmz_format_version () );
+    printf ( "  tzx            %s (TZX format v%s)\n", tzx_version (), tzx_format_version () );
+}
+
+
 /**
  * @brief Vypise napovedu programu.
  * @param prog_name Nazev spusteneho programu (argv[0]).
@@ -51,7 +71,9 @@
 static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "Usage: %s [--to-tmz|--to-tzx] <input> <output>\n\n", prog_name );
     fprintf ( stderr, "Converts between TMZ and TZX file formats (signature swap).\n\n" );
-    fprintf ( stderr, "Without --to-tmz/--to-tzx, automatically converts to the opposite format.\n" );
+    fprintf ( stderr, "Without --to-tmz/--to-tzx, automatically converts to the opposite format.\n\n" );
+    fprintf ( stderr, "  --version             Show program version\n" );
+    fprintf ( stderr, "  --lib-versions        Show library versions\n" );
 }
 
 
@@ -67,6 +89,18 @@ static void print_usage ( const char *prog_name ) {
  * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
  */
 int main ( int argc, char *argv[] ) {
+
+    /* kontrola --version a --lib-versions pred kontrolou minimalniho poctu argumentu */
+    for ( int i = 1; i < argc; i++ ) {
+        if ( strcmp ( argv[i], "--version" ) == 0 ) {
+            printf ( "tmzconv %s\n", TMZCONV_VERSION );
+            return EXIT_SUCCESS;
+        }
+        if ( strcmp ( argv[i], "--lib-versions" ) == 0 ) {
+            print_lib_versions ();
+            return EXIT_SUCCESS;
+        }
+    }
 
     if ( argc < 3 ) {
         print_usage ( argv[0] );

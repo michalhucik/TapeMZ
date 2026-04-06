@@ -21,6 +21,8 @@ tmzinfo <file.tmz|file.tzx>
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
+| `--version` | - | - | Show program version |
+| `--lib-versions` | - | - | Show library versions |
 
 ### Option Details
 

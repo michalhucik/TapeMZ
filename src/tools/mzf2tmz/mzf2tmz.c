@@ -20,13 +20,16 @@
  * @endcode
  *
  * @par Volby:
- * - --machine <typ>    : generic, mz700, mz800, mz1500, mz80b (vychozi: mz800)
- * - --pulseset <sada>  : 700, 800, 80b, auto (vychozi: auto z machine)
- * - --format <format>  : normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape
- *                        (vychozi: normal)
- * - --speed <rychlost> : 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14
- *                        (vychozi: 1:1)
- * - --pause <ms>       : pauza po bloku v ms (vychozi: 1000)
+ * - --machine <typ>        : generic, mz700, mz800, mz1500, mz80b (vychozi: mz800)
+ * - --pulseset <sada>      : 700, 800, 80b, auto (vychozi: auto z machine)
+ * - --format <format>      : normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape
+ *                            (vychozi: normal)
+ * - --speed <rychlost>     : 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14
+ *                            (vychozi: 1:1)
+ * - --pause <ms>           : pauza po bloku v ms (vychozi: 1000)
+ * - --name-encoding <enc>  : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
+ * - --version              : zobrazit verzi programu
+ * - --lib-versions         : zobrazit verze knihoven
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -58,6 +61,9 @@
 #include "libs/mzf/mzf_tools.h"
 #include "libs/cmtspeed/cmtspeed.h"
 #include "libs/endianity/endianity.h"
+
+/** @brief Verze programu mzf2tmz (z @version v hlavicce souboru). */
+#define MZF2TMZ_VERSION  "1.0.0"
 
 
 /**
@@ -294,6 +300,19 @@ static st_TZX_BLOCK* create_block_for_mzf ( const st_MZF *mzf,
 
 
 /**
+ * @brief Vypise verze vsech pouzitych knihoven na stdout.
+ */
+static void print_lib_versions ( void ) {
+    printf ( "Library versions:\n" );
+    printf ( "  tmz            %s (TMZ format v%s)\n", tmz_version (), tmz_format_version () );
+    printf ( "  tzx            %s (TZX format v%s)\n", tzx_version (), tzx_format_version () );
+    printf ( "  mzf            %s\n", mzf_version () );
+    printf ( "  cmtspeed       %s\n", cmtspeed_version () );
+    printf ( "  endianity      %s\n", endianity_version () );
+}
+
+
+/**
  * @brief Vypise napovedu programu.
  * @param prog_name Nazev spusteneho programu (argv[0]).
  */
@@ -311,6 +330,8 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "                      8:3, 9:7, 25:14 (default: 1:1)\n" );
     fprintf ( stderr, "  --pause <ms>        Pause after block in ms (default: 1000)\n" );
     fprintf ( stderr, "  --name-encoding <enc> Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n" );
+    fprintf ( stderr, "  --version             Show program version\n" );
+    fprintf ( stderr, "  --lib-versions        Show library versions\n" );
 }
 
 
@@ -464,7 +485,7 @@ static int load_mzf_files ( const char *input_file, int is_mzt,
  */
 int main ( int argc, char *argv[] ) {
 
-    if ( argc < 3 ) {
+    if ( argc < 2 ) {
         print_usage ( argv[0] );
         return EXIT_FAILURE;
     }
@@ -482,7 +503,13 @@ int main ( int argc, char *argv[] ) {
     /* parsovani argumentu */
     int positional = 0;
     for ( int i = 1; i < argc; i++ ) {
-        if ( strcmp ( argv[i], "--machine" ) == 0 ) {
+        if ( strcmp ( argv[i], "--version" ) == 0 ) {
+            printf ( "mzf2tmz %s\n", MZF2TMZ_VERSION );
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--lib-versions" ) == 0 ) {
+            print_lib_versions ();
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--machine" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --machine requires a value\n" );
                 return EXIT_FAILURE;

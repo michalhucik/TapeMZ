@@ -22,6 +22,8 @@ tmz2wav <input.tmz|input.tzx> <output.wav> [options]
 |--------|-------|---------|-------------|
 | `--rate` | 8000-192000 | 44100 | Sampling frequency in Hz |
 | `--pulseset` | 700, 800, 80b | 800 | Default pulse set |
+| `--version` | - | - | Show program version |
+| `--lib-versions` | - | - | Show library versions |
 
 ### Option Details
 

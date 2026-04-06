@@ -30,7 +30,10 @@ tmzedit <prikaz> [volby] <soubor> [argumenty...]
 
 | Volba | Hodnoty | Výchozí | Popis |
 |-------|---------|---------|-------|
+| `-o` | `<soubor>` | přepsat vstup | Výstupní soubor |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
+| `--version` | - | - | Zobrazit verzi programu |
+| `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 
 **--name-encoding** - určuje, jak se zobrazují názvy souborů z MZF hlaviček:
 - `ascii` - překlad Sharp MZ znakové sady do ASCII (výchozí, zpětně kompatibilní)

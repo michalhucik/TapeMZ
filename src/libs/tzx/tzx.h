@@ -988,6 +988,24 @@ extern "C" {
 /** @} */
 
 
+    /** @brief Verze knihovny tzx. */
+#define TZX_VERSION "1.0.0"
+
+    /** @brief Verze formátu TZX jako řetězec ("1.20"). */
+#define TZX_FORMAT_VERSION "1.20"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny tzx.
+     * @return Statický řetězec s verzí (např. "1.0.0").
+     */
+    extern const char* tzx_version ( void );
+
+    /**
+     * @brief Vrátí řetězec s verzí formátu TZX.
+     * @return Statický řetězec s verzí formátu (např. "1.20").
+     */
+    extern const char* tzx_format_version ( void );
+
 #ifdef __cplusplus
 }
 #endif

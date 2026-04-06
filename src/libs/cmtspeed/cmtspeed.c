@@ -67,3 +67,8 @@ const char *g_cmtspeed_ratio[] = {
                                   "25:14",
 };
 
+
+const char* cmtspeed_version ( void ) {
+    return CMTSPEED_VERSION;
+}
+

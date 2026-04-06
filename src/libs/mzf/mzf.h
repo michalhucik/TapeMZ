@@ -360,6 +360,15 @@ typedef enum en_MZF_ERROR {
 /** @brief Přetypování proměnné na uint8_t* — zpětně kompatibilní makro pro starší kód */
 #define MZF_UINT8_FNAME(n) ((uint8_t*)&(n))
 
+    /** @brief Verze knihovny mzf. */
+#define MZF_VERSION "2.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny mzf.
+     * @return Statický řetězec s verzí (např. "2.0.0").
+     */
+    extern const char* mzf_version ( void );
+
 #ifdef __cplusplus
 }
 #endif

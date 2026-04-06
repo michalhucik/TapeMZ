@@ -348,6 +348,16 @@ extern "C" {
     extern void mzcmt_fastipl_set_error_callback ( mzcmt_fastipl_error_cb cb );
 
 
+    /** @brief Verze knihovny mzcmt_fastipl. */
+#define MZCMT_FASTIPL_VERSION "1.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny mzcmt_fastipl.
+     * @return Statický řetězec s verzí (např. "1.0.0").
+     */
+    extern const char* mzcmt_fastipl_version ( void );
+
+
 #ifdef __cplusplus
 }
 #endif

@@ -1037,3 +1037,8 @@ st_CMT_STREAM* mzcmt_direct_create_tape_stream (
 
     return stream;
 }
+
+
+const char* mzcmt_direct_version ( void ) {
+    return MZCMT_DIRECT_VERSION;
+}

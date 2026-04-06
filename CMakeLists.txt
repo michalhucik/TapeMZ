@@ -307,6 +307,12 @@ add_executable(test_direct_tape_wav
 )
 target_link_libraries(test_direct_tape_wav PRIVATE wav_analyzer mzcmt_direct mzcmt_turbo mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed m)
 
+# test_bsd_wav (BSD integracni test: realna nahravka + WAV round-trip + TMZ round-trip)
+add_executable(test_bsd_wav
+    tests/test_bsd_wav.c
+)
+target_link_libraries(test_bsd_wav PRIVATE wav_analyzer mzcmt_bsd tmz tzx mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed mztape m)
+
 # test_zx_roundtrip
 add_executable(test_zx_roundtrip
     tests/test_zx_roundtrip.c

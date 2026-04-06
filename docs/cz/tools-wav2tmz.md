@@ -34,6 +34,8 @@ wav2tmz vstup.wav [-o vystup] [volby]
 | `--raw-format` | direct | direct | Formát pro neidentifikované bloky |
 | `--pass` | `<N>` | 1 | Počet průchodů (zatím nepoužito) |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
+| `--version` | - | - | Zobrazit verzi programu |
+| `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 | `--help`, `-h` | - | - | Zobrazit nápovědu |
 
 ### Podrobnosti k volbám

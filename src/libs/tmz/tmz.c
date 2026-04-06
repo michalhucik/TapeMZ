@@ -115,3 +115,13 @@ const char* tmz_block_id_name ( uint8_t id ) {
 bool tmz_block_is_mz_extension ( uint8_t id ) {
     return ( id >= 0x40 && id <= 0x4F );
 }
+
+
+const char* tmz_version ( void ) {
+    return TMZ_VERSION;
+}
+
+
+const char* tmz_format_version ( void ) {
+    return TMZ_FORMAT_VERSION;
+}

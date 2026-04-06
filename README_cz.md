@@ -165,7 +165,7 @@ TMZ používá signaturu "TapeMZ!" místo "ZXTape!" a definuje 6 typů MZ-specif
 
 Bloky 0x46-0x4F jsou rezervovány pro budoucí rozšíření.
 
-Formální specifikace TMZ formátu je v samostatném dokumentu: **tmz-specification.md**
+Formální specifikace TMZ formátu je v samostatném dokumentu: **[tmz-specification.md](https://github.com/michalhucik/TapeMZ/blob/main/docs/cz/tmz-specification.md)**
 
 ## 5. WAV analyzér
 
@@ -258,7 +258,6 @@ Projekt čerpá z následujících zdrojů:
 - **Sharp MZ-800 ROM** - rutiny RHEAD ($04D8), RDATA ($04F8) pro čtení z pásky, timing konstanty
 - **Sharp MZ-700 dokumentace** - pulsní sady, ROM monitor
 - **Sharp MZ-80B dokumentace** - odlišný timing (1800 Bd základ), vlastní pulsní sada
-- **PPI 8255** - rozhraní pro kazetový interface (SENSE vstup, MOTOR výstup)
 
 ### 6.2 Software
 - **Intercopy 10.2** (MZ-800) - referenční implementace autodetekce, Z80 disassembly

@@ -1238,3 +1238,8 @@ st_DRIVER* generic_driver_memory_init ( st_DRIVER *d ) {
 
 
 #endif /* GENERIC_DRIVER_MEMORY_CB */
+
+
+const char* generic_driver_version ( void ) {
+    return GENERIC_DRIVER_VERSION;
+}

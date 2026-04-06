@@ -361,3 +361,8 @@ int cmt_stream_save_wav ( st_CMT_STREAM *stream, uint32_t rate, char *filename )
     if ( bitstream_new ) cmt_bitstream_destroy ( bitstream_new );
     return ret;
 }
+
+
+const char* cmt_stream_version ( void ) {
+    return CMT_STREAM_VERSION;
+}

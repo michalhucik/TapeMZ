@@ -163,6 +163,15 @@ extern "C" {
     );
 
 
+    /** @brief Verze knihovny wav_analyzer. */
+#define WAV_ANALYZER_VERSION "1.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny wav_analyzer.
+     * @return Statický řetězec s verzí (např. "1.0.0").
+     */
+    extern const char* wav_analyzer_version ( void );
+
 #ifdef __cplusplus
 }
 #endif

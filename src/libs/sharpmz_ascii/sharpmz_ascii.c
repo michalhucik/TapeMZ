@@ -29,6 +29,8 @@
 
 #include <stdint.h>
 
+#include "sharpmz_ascii.h"
+
 const uint8_t sharpmz_ASCII_table [ 49 ] = {
     '_', ' ', 'e', ' ', '~', ' ', 't', 'g',
     'h', ' ', 'b', 'x', 'd', 'r', 'p', 'c',
@@ -73,4 +75,9 @@ uint8_t sharpmz_cnv_to ( uint8_t c ) {
         };
     };
     return ( ' ' ); /* z neznamych znaku udelame ' ' */
+}
+
+
+const char* sharpmz_ascii_version ( void ) {
+    return SHARPMZ_ASCII_VERSION;
 }

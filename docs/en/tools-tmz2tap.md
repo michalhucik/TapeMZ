@@ -19,7 +19,12 @@ tmz2tap <input.tmz|input.tzx> <output.tap>
 | `<input>` | Input TMZ or TZX file |
 | `<output>` | Output TAP file |
 
-The program has no optional switches.
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--version` | Show program version |
+| `--lib-versions` | Show library versions |
 
 ## TAP Format
 

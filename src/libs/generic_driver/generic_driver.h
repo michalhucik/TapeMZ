@@ -324,6 +324,15 @@ extern "C" {
         return EXIT_SUCCESS;
     }
 
+    /** @brief Verze knihovny generic_driver. */
+#define GENERIC_DRIVER_VERSION "2.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny generic_driver.
+     * @return Statický řetězec s verzí (např. "2.0.0").
+     */
+    extern const char* generic_driver_version ( void );
+
 #ifdef __cplusplus
 }
 #endif

@@ -164,6 +164,15 @@ extern "C" {
      */
     extern int cmt_stream_save_wav ( st_CMT_STREAM *stream, uint32_t rate, char *filename );
 
+    /** @brief Verze knihovny cmt_stream. */
+#define CMT_STREAM_VERSION "2.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny cmt_stream.
+     * @return Statický řetězec s verzí (např. "2.0.0").
+     */
+    extern const char* cmt_stream_version ( void );
+
 #ifdef __cplusplus
 }
 #endif

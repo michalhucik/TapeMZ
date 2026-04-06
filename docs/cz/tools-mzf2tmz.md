@@ -28,6 +28,8 @@ mzf2tmz <vstup.mzf|vstup.mzt> <vystup.tmz> [volby]
 | `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | 1:1 | Poměr rychlosti |
 | `--pause` | 0-65535 | 1000 | Pauza po bloku v milisekundách |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
+| `--version` | - | - | Zobrazit verzi programu |
+| `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 
 ### Podrobnosti k volbám
 

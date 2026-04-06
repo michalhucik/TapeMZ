@@ -17,11 +17,12 @@ TESTS := \
     test_slow_tape_roundtrip \
     test_direct_tape_roundtrip \
     test_direct_tape_wav \
+    test_bsd_wav \
     test_zx_roundtrip \
     test_ic_normal \
     test_tc_normal
 
-.PHONY: all clean configure rebuild test
+.PHONY: all clean configure rebuild test html-docs
 
 all: $(BUILD_DIR)/Makefile
 	cmake --build $(BUILD_DIR) -j$(JOBS)
@@ -35,6 +36,13 @@ clean:
 	cmake --build $(BUILD_DIR) --target clean
 
 rebuild: clean all
+
+DOCS_SRC := $(shell if [ -d dist-docs ]; then echo dist-docs; else echo docs; fi)
+
+html-docs:
+	@echo "=== Generating HTML docs from $(DOCS_SRC)/ ==="
+	@python3 scripts/md2html.py $(DOCS_SRC)
+	@echo "=== Done ==="
 
 test: all
 	@echo "=== Running tests ==="

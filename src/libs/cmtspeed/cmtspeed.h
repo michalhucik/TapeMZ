@@ -159,6 +159,15 @@ extern "C" {
         snprintf ( dsttxt, size, "%s - %d Bd", cmtspeed_get_ratiotxt ( cmtspeed ), cmtspeed_get_bdspeed ( cmtspeed, base_bdspeed ) );
     }
 
+    /** @brief Verze knihovny cmtspeed. */
+#define CMTSPEED_VERSION "2.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny cmtspeed.
+     * @return Statický řetězec s verzí (např. "2.0.0").
+     */
+    extern const char* cmtspeed_version ( void );
+
 #ifdef __cplusplus
 }
 #endif

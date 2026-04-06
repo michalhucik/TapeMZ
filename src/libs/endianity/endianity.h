@@ -44,6 +44,15 @@ extern "C" {
     extern uint64_t endianity_bswap64_BE ( uint64_t n );
     extern uint64_t endianity_bswap64_LE ( uint64_t n );
 
+/** @brief Verze knihovny endianity. */
+#define ENDIANITY_VERSION "1.0.0"
+
+/**
+ * @brief Vrátí řetězec s verzí knihovny endianity.
+ * @return Statický řetězec s verzí (např. "1.0.0").
+ */
+extern const char* endianity_version ( void );
+
 #ifdef __cplusplus
 }
 #endif

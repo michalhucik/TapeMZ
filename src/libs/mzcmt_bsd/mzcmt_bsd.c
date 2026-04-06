@@ -548,3 +548,8 @@ st_CMT_STREAM* mzcmt_bsd_create_stream (
 
     return stream;
 }
+
+
+const char* mzcmt_bsd_version ( void ) {
+    return MZCMT_BSD_VERSION;
+}

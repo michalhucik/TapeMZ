@@ -15,9 +15,12 @@
  * @endcode
  *
  * @par Volby:
- * - --output <soubor>  : vystupni soubor (vychozi: odvozeno ze vstupu)
- * - --index <N>        : extrahovat jen blok na indexu N (0-based)
- * - --list             : vypsat extrahovatelne bloky bez extrakce
+ * - --output <soubor>      : vystupni soubor (vychozi: odvozeno ze vstupu)
+ * - --index <N>            : extrahovat jen blok na indexu N (0-based)
+ * - --list                 : vypsat extrahovatelne bloky bez extrakce
+ * - --name-encoding <enc>  : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
+ * - --version              : zobrazit verzi programu
+ * - --lib-versions         : zobrazit verze knihoven
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -47,6 +50,9 @@
 #include "libs/tmz/tmz_blocks.h"
 #include "libs/mzf/mzf.h"
 #include "libs/mzf/mzf_tools.h"
+
+/** @brief Verze programu tmz2mzf (z @version v hlavicce souboru). */
+#define TMZ2MZF_VERSION  "1.0.0"
 
 
 /**
@@ -224,6 +230,17 @@ static int extract_and_save ( const st_TZX_BLOCK *block, uint32_t block_index, c
 
 
 /**
+ * @brief Vypise verze vsech pouzitych knihoven na stdout.
+ */
+static void print_lib_versions ( void ) {
+    printf ( "Library versions:\n" );
+    printf ( "  tmz            %s (TMZ format v%s)\n", tmz_version (), tmz_format_version () );
+    printf ( "  tzx            %s (TZX format v%s)\n", tzx_version (), tzx_format_version () );
+    printf ( "  mzf            %s\n", mzf_version () );
+}
+
+
+/**
  * @brief Vypise napovedu programu.
  * @param prog_name Nazev spusteneho programu (argv[0]).
  */
@@ -235,6 +252,8 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "  --index <N>       Extract only block at index N (0-based)\n" );
     fprintf ( stderr, "  --list            List extractable blocks without extracting\n" );
     fprintf ( stderr, "  --name-encoding <enc> Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n" );
+    fprintf ( stderr, "  --version             Show program version\n" );
+    fprintf ( stderr, "  --lib-versions        Show library versions\n" );
 }
 
 
@@ -273,7 +292,13 @@ int main ( int argc, char *argv[] ) {
     /* parsovani argumentu */
     int positional = 0;
     for ( int i = 1; i < argc; i++ ) {
-        if ( strcmp ( argv[i], "--output" ) == 0 ) {
+        if ( strcmp ( argv[i], "--version" ) == 0 ) {
+            printf ( "tmz2mzf %s\n", TMZ2MZF_VERSION );
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--lib-versions" ) == 0 ) {
+            print_lib_versions ();
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--output" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --output requires a value\n" );
                 return EXIT_FAILURE;

@@ -19,6 +19,8 @@ tmzconv [--to-tmz|--to-tzx] <input> <output>
 |--------|-------------|
 | `--to-tmz` | Force conversion to TMZ (signature "TapeMZ!", version 1.0) |
 | `--to-tzx` | Force conversion to TZX (signature "ZXTape!", version 1.20) |
+| `--version` | Show program version |
+| `--lib-versions` | Show library versions |
 
 If neither `--to-tmz` nor `--to-tzx` is specified, the conversion direction
 is determined automatically based on the input file type.

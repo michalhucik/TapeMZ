@@ -21,6 +21,8 @@ tmzinfo <soubor.tmz|soubor.tzx>
 | Volba | Hodnoty | Výchozí | Popis |
 |-------|---------|---------|-------|
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
+| `--version` | - | - | Zobrazit verzi programu |
+| `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 
 ### Podrobnosti k volbám
 

@@ -23,14 +23,17 @@ tmzedit <command> [options] <file> [arguments...]
 | `add-text` | Add a text description (block 0x30) |
 | `add-message` | Add a display message (block 0x31) |
 | `archive-info` | Add or replace metadata (block 0x32) |
-| `set` | Change format/speed on an MZ block (0x40/0x41) |
+| `set` | Change format/speed on an MZ block (0x40/0x41/0x45) |
 | `validate` | Check file integrity |
 
 ## Common Options
 
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
+| `-o` | `<output>` | overwrite input | Output file |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
+| `--version` | - | - | Show program version |
+| `--lib-versions` | - | - | Show library versions |
 
 **--name-encoding** - determines how filenames from MZF headers are displayed:
 - `ascii` - Sharp MZ character set translation to ASCII (default, backward compatible)
@@ -248,7 +251,7 @@ tmzedit archive-info tape.tmz --comment "Dumped from original tape" -o tape.tmz
 
 ## set - Changing MZ Block Format/Speed
 
-Changes the format and/or speed of a recording on an MZ block (0x40 or 0x41).
+Changes the format and/or speed of a recording on an MZ block (0x40, 0x41, or 0x45).
 
 Conversion rules:
 - Block 0x40 with non-standard format/speed is converted to block 0x41

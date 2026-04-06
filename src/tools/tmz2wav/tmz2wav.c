@@ -21,7 +21,9 @@
  *
  * @par Volby:
  * - --rate <Hz>        : vzorkovaci frekvence (vychozi: 44100)
- * - --pulseset <sada>  : vychozi pulsni sada: 700, 800, 80b (vychozi: 800)
+ * - --pulseset <sada>  : vychozi pulzni sada: 700, 800, 80b (vychozi: 800)
+ * - --version          : zobrazit verzi programu
+ * - --lib-versions     : zobrazit verze knihoven
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -51,7 +53,11 @@
 #include "libs/tmz/tmz_blocks.h"
 #include "libs/tmz/tmz_player.h"
 #include "libs/cmt_stream/cmt_stream.h"
+#include "libs/generic_driver/generic_driver.h"
 #include "libs/generic_driver/memory_driver.h"
+
+/** @brief Verze programu tmz2wav (z @version v hlavicce souboru). */
+#define TMZ2WAV_VERSION  "1.0.0"
 
 
 /**
@@ -115,6 +121,18 @@ static const char* pulseset_name ( en_MZTAPE_PULSESET pulseset ) {
 
 
 /**
+ * @brief Vypise verze vsech pouzitych knihoven na stdout.
+ */
+static void print_lib_versions ( void ) {
+    printf ( "Library versions:\n" );
+    printf ( "  tmz            %s (TMZ format v%s)\n", tmz_version (), tmz_format_version () );
+    printf ( "  tzx            %s (TZX format v%s)\n", tzx_version (), tzx_format_version () );
+    printf ( "  cmt_stream     %s\n", cmt_stream_version () );
+    printf ( "  generic_driver %s\n", generic_driver_version () );
+}
+
+
+/**
  * @brief Vypise napovedu programu.
  * @param prog_name Nazev spusteneho programu (argv[0]).
  */
@@ -124,6 +142,8 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "Options:\n" );
     fprintf ( stderr, "  --rate <Hz>          Sample rate (default: 44100)\n" );
     fprintf ( stderr, "  --pulseset <set>     Default pulse set: 700, 800, 80b (default: 800)\n" );
+    fprintf ( stderr, "  --version            Show program version\n" );
+    fprintf ( stderr, "  --lib-versions       Show library versions\n" );
 }
 
 
@@ -143,7 +163,7 @@ int main ( int argc, char *argv[] ) {
     /* inicializace memory driveru (nutne pro cmt_stream_save_wav) */
     memory_driver_init();
 
-    if ( argc < 3 ) {
+    if ( argc < 2 ) {
         print_usage ( argv[0] );
         return EXIT_FAILURE;
     }
@@ -157,7 +177,13 @@ int main ( int argc, char *argv[] ) {
     /* parsovani argumentu */
     int positional = 0;
     for ( int i = 1; i < argc; i++ ) {
-        if ( strcmp ( argv[i], "--rate" ) == 0 ) {
+        if ( strcmp ( argv[i], "--version" ) == 0 ) {
+            printf ( "tmz2wav %s\n", TMZ2WAV_VERSION );
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--lib-versions" ) == 0 ) {
+            print_lib_versions ();
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--rate" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --rate requires a value\n" );
                 return EXIT_FAILURE;

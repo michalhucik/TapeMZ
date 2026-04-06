@@ -19,7 +19,12 @@ tmz2tap <vstup.tmz|vstup.tzx> <vystup.tap>
 | `<vstup>` | Vstupní TMZ nebo TZX soubor |
 | `<vystup>` | Výstupní TAP soubor |
 
-Program nemá žádné volitelné přepínače.
+## Volby
+
+| Volba | Popis |
+|-------|-------|
+| `--version` | Zobrazit verzi programu |
+| `--lib-versions` | Zobrazit verze použitých knihoven |
 
 ## TAP formát
 

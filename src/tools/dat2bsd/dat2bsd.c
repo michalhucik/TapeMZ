@@ -1,7 +1,7 @@
 /**
  * @file   dat2bsd.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  Import binarniho souboru do TMZ jako BSD/BRD blok 0x45.
  *
  * Nacte libovolny binarni soubor, rozreze ho na 256B chunky
@@ -15,12 +15,14 @@
  * @endcode
  *
  * @par Volby:
- * - --name <nazev>     : nazev souboru v MZF hlavicce (vychozi: odvozeno ze vstupu)
- * - --ftype <typ>      : bsd nebo brd (vychozi: bsd)
- * - --machine <typ>    : generic, mz700, mz800, mz1500, mz80b (vychozi: mz800)
- * - --pulseset <sada>  : 700, 800, 80b, auto (vychozi: auto z machine)
- * - --speed <rychlost> : 1:1, 2:1, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 (vychozi: 1:1)
- * - --pause <ms>       : pauza po bloku v ms (vychozi: 1000)
+ * - --name <nazev>      : nazev souboru v MZF hlavicce (vychozi: odvozeno ze vstupu)
+ * - --ftype <typ>       : bsd (0x03) nebo brd (0x04) (vychozi: bsd)
+ * - --machine <typ>     : generic, mz700, mz800, mz1500, mz80b (vychozi: mz800)
+ * - --pulseset <sada>   : 700, 800, 80b, auto (vychozi: auto z machine)
+ * - --speed <rychlost>  : 1:1, 2:1, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 (vychozi: 1:1)
+ * - --pause <ms>        : pauza po bloku v ms (vychozi: 1000)
+ * - --version           : zobrazit verzi programu
+ * - --lib-versions      : zobrazit verze knihoven
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -52,6 +54,10 @@
 #include "libs/mzf/mzf_tools.h"
 #include "libs/endianity/endianity.h"
 #include "libs/cmtspeed/cmtspeed.h"
+
+
+/** @brief Verze programu dat2bsd. */
+#define DAT2BSD_VERSION "1.0.1"
 
 
 /**
@@ -208,6 +214,19 @@ static void extract_basename ( const char *path, char *buf, size_t buf_size ) {
 
 
 /**
+ * @brief Vypise verze vsech pouzitych knihoven na stdout.
+ */
+static void print_lib_versions ( void ) {
+    printf ( "Library versions:\n" );
+    printf ( "  tmz            %s (TMZ format v%s)\n", tmz_version (), tmz_format_version () );
+    printf ( "  tzx            %s (TZX format v%s)\n", tzx_version (), tzx_format_version () );
+    printf ( "  mzf            %s\n", mzf_version () );
+    printf ( "  cmtspeed       %s\n", cmtspeed_version () );
+    printf ( "  endianity      %s\n", endianity_version () );
+}
+
+
+/**
  * @brief Vypise napovedu programu.
  * @param prog_name Nazev spusteneho programu (argv[0]).
  */
@@ -225,6 +244,8 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "  --speed <ratio>     Speed ratio: 1:1, 2:1, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14\n" );
     fprintf ( stderr, "                      (default: 1:1)\n" );
     fprintf ( stderr, "  --pause <ms>        Pause after block in ms (default: 1000)\n" );
+    fprintf ( stderr, "  --version           Show program version\n" );
+    fprintf ( stderr, "  --lib-versions      Show library versions\n" );
 }
 
 
@@ -283,12 +304,16 @@ static int load_binary_file ( const char *path, uint8_t **out_data, size_t *out_
 /**
  * @brief Sestavi pole BSD/BRD chunku z raw dat.
  *
- * Rozreze vstupni data na 256B bloky, kazdy s 2B ID (LE).
- * Posledni datovy chunk muze byt kratsi nez 256B - v tom pripade
- * se zbytek doplni nulami. Na konci se prida terminacni chunk
- * s ID=0xFFFF a nulovymi daty.
+ * Rozreze vstupni data na 256B bloky s 2B chunk ID (LE).
+ * Posledni chunk dostane ID=0xFFFF (terminacni marker) a nese
+ * posledni porci dat (pripadne doplnenou nulami). To odpovida
+ * chovani realneho hardwaru (MZ-800 BASIC), kde terminacni chunk
+ * take nese data a BSD dekoder je zahrnuje do body.
  *
- * @param data Vstupni binarnich data (muze byt NULL pri data_size==0).
+ * Pokud data_size == 0, vytvori se jediny chunk (terminacni,
+ * nulova data).
+ *
+ * @param data Vstupni binarni data (muze byt NULL pri data_size==0).
  * @param data_size Velikost vstupnich dat v bajtech.
  * @param[out] out_chunks Vystupni pole chunku (chunk_count * 258B).
  * @param[out] out_chunk_count Pocet chunku (vcetne terminacniho).
@@ -299,47 +324,47 @@ static int load_binary_file ( const char *path, uint8_t **out_data, size_t *out_
 static int build_chunks ( const uint8_t *data, size_t data_size,
                            uint8_t **out_chunks, uint16_t *out_chunk_count ) {
 
-    /* pocet datovych chunku (kazdy 256B; posledni muze byt kratsi) */
-    uint32_t data_chunks;
+    /* pocet chunku: minimalne 1 (terminacni) */
+    uint32_t total_chunks;
     if ( data_size == 0 ) {
-        data_chunks = 0;
+        total_chunks = 1;
     } else {
-        data_chunks = (uint32_t) ( ( data_size + TMZ_BASIC_CHUNK_DATA_SIZE - 1 ) / TMZ_BASIC_CHUNK_DATA_SIZE );
+        total_chunks = (uint32_t) ( ( data_size + TMZ_BASIC_CHUNK_DATA_SIZE - 1 ) / TMZ_BASIC_CHUNK_DATA_SIZE );
     }
 
-    if ( data_chunks > MAX_DATA_CHUNKS ) {
+    if ( total_chunks > MAX_DATA_CHUNKS + 1 ) {
         fprintf ( stderr, "Error: input file too large (%zu bytes, max %u chunks * 256 = %u bytes)\n",
-                  data_size, MAX_DATA_CHUNKS, MAX_DATA_CHUNKS * TMZ_BASIC_CHUNK_DATA_SIZE );
+                  data_size, (unsigned) ( MAX_DATA_CHUNKS + 1 ),
+                  (unsigned) ( ( MAX_DATA_CHUNKS + 1 ) * TMZ_BASIC_CHUNK_DATA_SIZE ) );
         return -1;
     }
 
-    /* celkovy pocet chunku = datove + 1 terminacni */
-    uint32_t total_chunks = data_chunks + 1;
     size_t chunks_bytes = (size_t) total_chunks * TMZ_BASIC_CHUNK_SIZE;
 
     uint8_t *chunks = calloc ( 1, chunks_bytes );
     if ( !chunks ) return -1;
 
-    /* naplneni datovych chunku */
-    for ( uint32_t i = 0; i < data_chunks; i++ ) {
+    for ( uint32_t i = 0; i < total_chunks; i++ ) {
         uint8_t *chunk = chunks + (size_t) i * TMZ_BASIC_CHUNK_SIZE;
 
-        /* chunk ID (LE) */
-        uint16_t id_le = endianity_bswap16_LE ( (uint16_t) i );
+        /* posledni chunk = terminacni (ID=0xFFFF), ostatni sekvencni */
+        uint16_t chunk_id = ( i == total_chunks - 1 )
+                            ? TMZ_BASIC_LAST_CHUNK_ID
+                            : (uint16_t) i;
+        uint16_t id_le = endianity_bswap16_LE ( chunk_id );
         memcpy ( chunk, &id_le, 2 );
 
-        /* chunk data (256B, posledni se doplni nulami z calloc) */
-        size_t offset = (size_t) i * TMZ_BASIC_CHUNK_DATA_SIZE;
-        size_t remaining = data_size - offset;
-        size_t copy_size = ( remaining < TMZ_BASIC_CHUNK_DATA_SIZE ) ? remaining : TMZ_BASIC_CHUNK_DATA_SIZE;
-        memcpy ( chunk + 2, data + offset, copy_size );
+        /* chunk data (256B, zbytek nulovy z calloc) */
+        if ( data && data_size > 0 ) {
+            size_t offset = (size_t) i * TMZ_BASIC_CHUNK_DATA_SIZE;
+            if ( offset < data_size ) {
+                size_t remaining = data_size - offset;
+                size_t copy_size = ( remaining < TMZ_BASIC_CHUNK_DATA_SIZE )
+                                   ? remaining : TMZ_BASIC_CHUNK_DATA_SIZE;
+                memcpy ( chunk + 2, data + offset, copy_size );
+            }
+        }
     }
-
-    /* terminacni chunk (ID=0xFFFF, data=0x00) */
-    uint8_t *term_chunk = chunks + (size_t) data_chunks * TMZ_BASIC_CHUNK_SIZE;
-    uint16_t term_id_le = endianity_bswap16_LE ( TMZ_BASIC_LAST_CHUNK_ID );
-    memcpy ( term_chunk, &term_id_le, 2 );
-    /* data uz jsou nulova z calloc */
 
     *out_chunks = chunks;
     *out_chunk_count = (uint16_t) total_chunks;
@@ -359,6 +384,18 @@ static int build_chunks ( const uint8_t *data, size_t data_size,
  * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
  */
 int main ( int argc, char *argv[] ) {
+
+    /* kontrola --version a --lib-versions pred kontrolou minimalniho poctu argumentu */
+    for ( int i = 1; i < argc; i++ ) {
+        if ( strcmp ( argv[i], "--version" ) == 0 ) {
+            printf ( "dat2bsd %s\n", DAT2BSD_VERSION );
+            return EXIT_SUCCESS;
+        }
+        if ( strcmp ( argv[i], "--lib-versions" ) == 0 ) {
+            print_lib_versions ();
+            return EXIT_SUCCESS;
+        }
+    }
 
     if ( argc < 3 ) {
         print_usage ( argv[0] );
@@ -532,12 +569,11 @@ int main ( int argc, char *argv[] ) {
     }
 
     /* souhrn */
-    uint32_t data_chunks_count = chunk_count - 1; /* bez terminacniho */
     printf ( "Imported: %s -> %s\n\n", input_file, output_file );
     printf ( "  Filename   : \"%s\"\n", mzf_name );
     printf ( "  File type  : 0x%02X (%s)\n", ftype, ( ftype == MZF_FTYPE_BSD ) ? "BSD" : "BRD" );
     printf ( "  Input size : %zu bytes\n", data_size );
-    printf ( "  Chunks     : %u data + 1 termination = %u total\n", data_chunks_count, chunk_count );
+    printf ( "  Chunks     : %u (%u data + termination)\n", chunk_count, chunk_count - 1 );
     printf ( "  Machine    : %s\n", machine_name ( machine ) );
     printf ( "  Pulseset   : %s\n", pulseset_name ( pulseset ) );
     printf ( "  Speed      : %s\n", g_cmtspeed_ratio[speed] );

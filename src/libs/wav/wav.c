@@ -525,3 +525,8 @@ int wav_get_bit_value_of_sample_compat ( st_HANDLER *h, st_WAV_SIMPLE_HEADER *sh
     en_WAV_ERROR err = wav_get_bit_value_of_sample ( h, sh, sample_position, polarity, bit_value );
     return ( err == WAV_OK ) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+
+
+const char* wav_version ( void ) {
+    return WAV_VERSION;
+}

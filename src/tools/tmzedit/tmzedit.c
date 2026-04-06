@@ -23,6 +23,44 @@
  *   tmzedit validate <file>
  * @endcode
  *
+ * @par Volby:
+ * Prikazy (subcommands):
+ * - list                     : vypsat vsechny bloky v souboru
+ * - dump                     : hex dump dat bloku
+ * - remove                   : odebrat blok podle indexu
+ * - move                     : presunout blok na jinou pozici
+ * - merge                    : spojit vice tape souboru do jednoho
+ * - split                    : rozdelit pasku na jednotlive programy
+ * - add-text                 : pridat Text Description blok (0x30)
+ * - add-message              : pridat Message blok (0x31)
+ * - archive-info             : pridat/nahradit Archive Info blok (0x32)
+ * - set                      : nastavit format/rychlost na MZ blocich (0x40/0x41/0x45)
+ * - validate                 : zkontrolovat integritu souboru
+ *
+ * Spolecne volby:
+ * - -o <soubor>              : vystupni soubor (vychozi: prepsat vstup)
+ * - --name-encoding <enc>    : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
+ * - --version                : zobrazit verzi programu
+ * - --lib-versions           : zobrazit verze knihoven
+ *
+ * Volby pro add-text:
+ * - --text <retezec>         : text popisu
+ *
+ * Volby pro add-message:
+ * - --text <retezec>         : text zpravy
+ * - --time <N>               : doba zobrazeni v sekundach (vychozi: 5)
+ *
+ * Volby pro archive-info:
+ * - --title <text>           : nazev programu
+ * - --publisher <text>       : vydavatel
+ * - --author <text>          : autor(i)
+ * - --year <text>            : rok vydani
+ * - --comment <text>         : komentar
+ *
+ * Volby pro set:
+ * - --format <fmt>           : format zaznamu (normal, turbo, fastipl, ...)
+ * - --speed <spd>            : rychlost zaznamu (1:1, 2:1, ...)
+ *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
  *
@@ -56,6 +94,10 @@
 #include "libs/mzf/mzf_tools.h"
 #include "libs/cmtspeed/cmtspeed.h"
 #include "libs/endianity/endianity.h"
+
+
+/** @brief Verze programu tmzedit. */
+#define TMZEDIT_VERSION "1.0.0"
 
 
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
@@ -1594,6 +1636,19 @@ static int cmd_set ( int argc, char *argv[] ) {
 
 
 /**
+ * @brief Vypise verze vsech pouzitych knihoven na stdout.
+ */
+static void print_lib_versions ( void ) {
+    printf ( "Library versions:\n" );
+    printf ( "  tmz            %s (TMZ format v%s)\n", tmz_version (), tmz_format_version () );
+    printf ( "  tzx            %s (TZX format v%s)\n", tzx_version (), tzx_format_version () );
+    printf ( "  mzf            %s\n", mzf_version () );
+    printf ( "  cmtspeed       %s\n", cmtspeed_version () );
+    printf ( "  endianity      %s\n", endianity_version () );
+}
+
+
+/**
  * @brief Vypise napovedu programu.
  * @param prog_name Nazev spusteneho programu (argv[0]).
  */
@@ -1614,6 +1669,8 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "\nOptions:\n" );
     fprintf ( stderr, "  -o <output>   Output file (default: overwrite input)\n" );
     fprintf ( stderr, "  --name-encoding <enc> Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n" );
+    fprintf ( stderr, "  --version             Show program version\n" );
+    fprintf ( stderr, "  --lib-versions        Show library versions\n" );
 }
 
 
@@ -1637,6 +1694,15 @@ int main ( int argc, char *argv[] ) {
     const char *cmd = argv[1];
     int sub_argc = argc - 2;
     char **sub_argv = argv + 2;
+
+    if ( strcmp ( cmd, "--version" ) == 0 ) {
+        printf ( "tmzedit %s\n", TMZEDIT_VERSION );
+        return EXIT_SUCCESS;
+    }
+    if ( strcmp ( cmd, "--lib-versions" ) == 0 ) {
+        print_lib_versions ();
+        return EXIT_SUCCESS;
+    }
 
     if ( strcmp ( cmd, "list" ) == 0 )          return cmd_list ( sub_argc, sub_argv );
     if ( strcmp ( cmd, "dump" ) == 0 )          return cmd_dump ( sub_argc, sub_argv );

@@ -313,3 +313,8 @@ void mzf_free ( st_MZF *mzf ) {
     }
     free ( mzf );
 }
+
+
+const char* mzf_version ( void ) {
+    return MZF_VERSION;
+}

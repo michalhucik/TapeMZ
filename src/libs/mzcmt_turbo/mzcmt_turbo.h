@@ -341,6 +341,16 @@ extern "C" {
     extern void mzcmt_turbo_set_error_callback ( mzcmt_turbo_error_cb cb );
 
 
+    /** @brief Verze knihovny mzcmt_turbo. */
+#define MZCMT_TURBO_VERSION "1.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny mzcmt_turbo.
+     * @return Statický řetězec s verzí (např. "1.0.0").
+     */
+    extern const char* mzcmt_turbo_version ( void );
+
+
 #ifdef __cplusplus
 }
 #endif

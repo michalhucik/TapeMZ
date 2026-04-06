@@ -30,6 +30,8 @@
 #include <stdint.h>
 #include <sys/param.h>
 
+#include "endianity.h"
+
 
 #ifndef __BYTE_ORDER
 #include <stdint.h>
@@ -158,7 +160,7 @@ uint64_t endianity_bswap64_LE ( uint64_t n ) {
 #ifndef __BYTE_ORDER
     if ( *g_ui8 == 0x01 ) return n;
     return __builtin_bswap64 ( n );
-#else    
+#else
 #if __BYTE_ORDER == __BIG_ENDIAN
     return __builtin_bswap64 ( n );
 #elif __BYTE_ORDER == __LITTLE_ENDIAN
@@ -167,5 +169,10 @@ uint64_t endianity_bswap64_LE ( uint64_t n ) {
 #error "Unknown byte order"
 #endif
 #endif
+}
+
+
+const char* endianity_version ( void ) {
+    return ENDIANITY_VERSION;
 }
 

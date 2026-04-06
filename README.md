@@ -165,7 +165,7 @@ TMZ uses the signature "TapeMZ!" instead of "ZXTape!" and defines 6 types of MZ-
 
 Blocks 0x46-0x4F are reserved for future extensions.
 
-The formal TMZ format specification is in a separate document: **tmz-specification.md**
+The formal TMZ format specification is in a separate document: **[tmz-specification.md](https://github.com/michalhucik/TapeMZ/blob/main/docs/en/tmz-specification.md)**
 
 ## 5. WAV Analyzer
 
@@ -258,7 +258,6 @@ The project draws from the following sources:
 - **Sharp MZ-800 ROM** - routines RHEAD ($04D8), RDATA ($04F8) for tape reading, timing constants
 - **Sharp MZ-700 documentation** - pulse sets, ROM monitor
 - **Sharp MZ-80B documentation** - different timing (1800 Bd base), custom pulse set
-- **PPI 8255** - interface for the cassette interface (SENSE input, MOTOR output)
 
 ### 6.2 Software
 - **Intercopy 10.2** (MZ-800) - reference auto-detection implementation, Z80 disassembly

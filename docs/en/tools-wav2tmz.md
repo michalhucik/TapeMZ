@@ -34,6 +34,8 @@ wav2tmz input.wav [-o output] [options]
 | `--raw-format` | direct | direct | Format for unidentified blocks |
 | `--pass` | `<N>` | 1 | Number of passes (not yet used) |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
+| `--version` | - | - | Show program version |
+| `--lib-versions` | - | - | Show library versions |
 | `--help`, `-h` | - | - | Show help |
 
 ### Option Details

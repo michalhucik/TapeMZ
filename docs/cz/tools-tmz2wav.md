@@ -22,6 +22,8 @@ tmz2wav <vstup.tmz|vstup.tzx> <vystup.wav> [volby]
 |-------|---------|---------|-------|
 | `--rate` | 8000-192000 | 44100 | Vzorkovací frekvence v Hz |
 | `--pulseset` | 700, 800, 80b | 800 | Výchozí pulzní sada |
+| `--version` | - | - | Zobrazit verzi programu |
+| `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 
 ### Podrobnosti k volbám
 

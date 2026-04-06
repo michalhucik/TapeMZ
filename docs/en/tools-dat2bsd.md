@@ -24,6 +24,8 @@ dat2bsd <input.dat> <output.tmz> [options]
 | `--pulseset` | 700, 800, 80b, auto | auto | Pulse set (auto = based on machine) |
 | `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | 1:1 | Speed ratio |
 | `--pause` | 0-65535 | 1000 | Pause after block in milliseconds |
+| `--version` | - | - | Show program version |
+| `--lib-versions` | - | - | Show library versions |
 
 ### Details
 

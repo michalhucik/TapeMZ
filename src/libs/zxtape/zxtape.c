@@ -702,3 +702,8 @@ st_CMT_STREAM* zxtape_create_stream_from_tapblock ( en_ZXTAPE_BLOCK_FLAG flag, u
 
     return stream;
 }
+
+
+const char* zxtape_version ( void ) {
+    return ZXTAPE_VERSION;
+}

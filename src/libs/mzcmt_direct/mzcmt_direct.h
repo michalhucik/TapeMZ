@@ -341,6 +341,16 @@ extern "C" {
     extern void mzcmt_direct_set_error_callback ( mzcmt_direct_error_cb cb );
 
 
+    /** @brief Verze knihovny mzcmt_direct. */
+#define MZCMT_DIRECT_VERSION "1.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny mzcmt_direct.
+     * @return Statický řetězec s verzí (např. "1.0.0").
+     */
+    extern const char* mzcmt_direct_version ( void );
+
+
 #ifdef __cplusplus
 }
 #endif

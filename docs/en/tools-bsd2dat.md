@@ -19,6 +19,8 @@ bsd2dat <input.tmz> [options]
 | `--list` | - | List BSD blocks without extraction |
 | `--chunks` | - | Chunks mode - each chunk as a separate file |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
+| `--version` | - | Show program version |
+| `--lib-versions` | - | Show library versions |
 
 ### Option Details
 

@@ -635,3 +635,8 @@ st_CMT_STREAM* mzcmt_fastipl_create_stream (
 
     return stream;
 }
+
+
+const char* mzcmt_fastipl_version ( void ) {
+    return MZCMT_FASTIPL_VERSION;
+}

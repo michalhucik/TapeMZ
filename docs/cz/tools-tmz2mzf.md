@@ -18,6 +18,8 @@ tmz2mzf <vstup.tmz|vstup.tzx> [volby]
 | `--index` | `<N>` | Extrahovat jen blok na indexu N (0-based) |
 | `--list` | - | Vypsat extrahovatelné bloky bez extrakce |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
+| `--version` | - | Zobrazit verzi programu |
+| `--lib-versions` | - | Zobrazit verze použitých knihoven |
 
 ### Podrobnosti k volbám
 

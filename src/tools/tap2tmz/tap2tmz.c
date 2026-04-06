@@ -21,8 +21,10 @@
  * @endcode
  *
  * @par Volby:
- * - --pause <ms>  : pauza po kazdem bloku (vychozi: 1000)
- * - --tmz         : pouzit TMZ signaturu misto TZX
+ * - --pause <ms>    : pauza po kazdem bloku v ms (vychozi: 1000)
+ * - --tmz           : pouzit TMZ signaturu misto TZX
+ * - --version       : zobrazit verzi programu
+ * - --lib-versions  : zobrazit verze knihoven
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -51,6 +53,9 @@
 
 #include "libs/tmz/tmz.h"
 #include "libs/tzx/tzx.h"
+
+/** @brief Verze programu tap2tmz (z @version v hlavicce souboru). */
+#define TAP2TMZ_VERSION  "1.0.0"
 
 
 /**
@@ -116,6 +121,16 @@ static const char* tap_flag_name ( uint8_t flag ) {
 
 
 /**
+ * @brief Vypise verze vsech pouzitych knihoven na stdout.
+ */
+static void print_lib_versions ( void ) {
+    printf ( "Library versions:\n" );
+    printf ( "  tmz            %s (TMZ format v%s)\n", tmz_version (), tmz_format_version () );
+    printf ( "  tzx            %s (TZX format v%s)\n", tzx_version (), tzx_format_version () );
+}
+
+
+/**
  * @brief Vypise napovedu programu.
  * @param prog_name Nazev spusteneho programu (argv[0]).
  */
@@ -125,6 +140,8 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "Options:\n" );
     fprintf ( stderr, "  --pause <ms>   Pause after each block in ms (default: 1000)\n" );
     fprintf ( stderr, "  --tmz          Use TMZ signature instead of TZX\n" );
+    fprintf ( stderr, "  --version      Show program version\n" );
+    fprintf ( stderr, "  --lib-versions Show library versions\n" );
 }
 
 
@@ -141,7 +158,7 @@ static void print_usage ( const char *prog_name ) {
  */
 int main ( int argc, char *argv[] ) {
 
-    if ( argc < 3 ) {
+    if ( argc < 2 ) {
         print_usage ( argv[0] );
         return EXIT_FAILURE;
     }
@@ -155,7 +172,13 @@ int main ( int argc, char *argv[] ) {
     /* parsovani argumentu */
     int positional = 0;
     for ( int i = 1; i < argc; i++ ) {
-        if ( strcmp ( argv[i], "--pause" ) == 0 ) {
+        if ( strcmp ( argv[i], "--version" ) == 0 ) {
+            printf ( "tap2tmz %s\n", TAP2TMZ_VERSION );
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--lib-versions" ) == 0 ) {
+            print_lib_versions ();
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--pause" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --pause requires a value\n" );
                 return EXIT_FAILURE;

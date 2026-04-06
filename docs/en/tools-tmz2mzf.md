@@ -18,6 +18,8 @@ tmz2mzf <input.tmz|input.tzx> [options]
 | `--index` | `<N>` | Extract only the block at index N (0-based) |
 | `--list` | - | List extractable blocks without extraction |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
+| `--version` | - | Show program version |
+| `--lib-versions` | - | Show library versions |
 
 ### Option Details
 

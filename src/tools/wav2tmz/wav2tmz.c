@@ -1,7 +1,7 @@
 /**
  * @file   wav2tmz.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Konverzni utilita WAV -> MZF/TMZ - dekodovani Sharp MZ kazetovych nahravek.
  *
  * Analyzuje WAV soubor obsahujici nahravku magnetofonove kazety
@@ -20,15 +20,19 @@
  * - --output-format <mzf|tmz> : format vystupu (vychozi: mzf)
  * - --schmitt                  : pouzit Schmitt trigger misto zero-crossing
  * - --tolerance <N>            : tolerance detekce leaderu (0.02-0.35, vychozi 0.10)
- * - --preprocess               : zapnout preprocessing (DC offset + HP filtr + normalizace)
+ * - --preprocess               : zapnout preprocessing (zpetna kompatibilita)
+ * - --no-preprocess            : vypnout preprocessing (DC offset + HP filtr + normalizace)
  * - --histogram                : vypsat histogram delek pulzu
- * - --verbose                  : podrobny vystup
+ * - --verbose (-v)             : podrobny vystup
  * - --channel <L|R>            : vyber kanalu ze sterea (vychozi: L)
- * - --invert                   : invertovana polarita signalu
+ * - --invert                   : invertovat polaritu signalu
  * - --keep-unknown             : ulozit neidentifikovane bloky jako Direct Recording
  * - --raw-format <direct>      : format pro neidentifikovane bloky (vychozi: direct)
  * - --pass <N>                 : pocet pruchodu (vychozi: 1, zatim nepouzit)
- * - --help                     : zobrazit napovedu
+ * - --name-encoding <enc>      : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
+ * - --version                  : zobrazit verzi programu
+ * - --lib-versions             : zobrazit verze knihoven
+ * - --help (-h)                : zobrazit napovedu
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -66,6 +70,10 @@
 #include "libs/wav_analyzer/wav_analyzer.h"
 
 
+/** @brief Verze programu wav2tmz. */
+#define WAV2TMZ_VERSION "2.0.1"
+
+
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
 static en_MZF_NAME_ENCODING name_encoding = MZF_NAME_ASCII;
 
@@ -85,6 +93,22 @@ typedef enum en_OUTPUT_FORMAT {
 
 /** @brief Velikost jednoho BSD chunku v bajtech (2B ID + 256B data). */
 #define BSD_CHUNK_SIZE      258
+
+
+/**
+ * @brief Vypise verze vsech pouzitych knihoven na stdout.
+ */
+static void print_lib_versions ( void ) {
+    printf ( "Library versions:\n" );
+    printf ( "  wav_analyzer   %s\n", wav_analyzer_version () );
+    printf ( "  tmz            %s (TMZ format v%s)\n", tmz_version (), tmz_format_version () );
+    printf ( "  tzx            %s (TZX format v%s)\n", tzx_version (), tzx_format_version () );
+    printf ( "  mzf            %s\n", mzf_version () );
+    printf ( "  wav            %s\n", wav_version () );
+    printf ( "  cmtspeed       %s\n", cmtspeed_version () );
+    printf ( "  generic_driver %s\n", generic_driver_version () );
+    printf ( "  endianity      %s\n", endianity_version () );
+}
 
 
 /**
@@ -113,6 +137,8 @@ static void print_usage ( const char *prog_name ) {
               "  --raw-format <direct>     Format for unidentified blocks (default: direct)\n"
               "  --pass <N>               Number of passes (default: 1, not yet used)\n"
               "  --name-encoding <enc>     Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n"
+              "  --version                 Show program version\n"
+              "  --lib-versions            Show library versions\n"
               "  --help                    Show this help\n",
               prog_name );
 }
@@ -394,7 +420,9 @@ static st_TZX_BLOCK* create_block_turbo ( const st_WAV_ANALYZER_FILE_RESULT *fil
  *
  * Prevede ploche datove telo MZF (z dekoderu) zpet na chunkovany format
  * vyzadovany blokem 0x45: kazdy chunk ma 2B ID (LE) + 256B dat.
- * Posledni chunk ma ID=0xFFFF.
+ * Posledni chunk dostane ID=0xFFFF (terminacni marker) a nese posledni
+ * porci dat - to odpovida chovani realneho hardwaru (MZ-800 BASIC),
+ * kde terminacni chunk take nese data a dekoder je zahrnuje do body.
  *
  * @param file_result Vysledek dekodovani jednoho BSD souboru. Nesmi byt NULL.
  * @return Novy alokovany TMZ blok, nebo NULL pri chybe.
@@ -405,38 +433,42 @@ static st_TZX_BLOCK* create_block_turbo ( const st_WAV_ANALYZER_FILE_RESULT *fil
 static st_TZX_BLOCK* create_block_bsd ( const st_WAV_ANALYZER_FILE_RESULT *file_result ) {
     const st_MZF *mzf = file_result->mzf;
 
-    /* pocet datovych chunku (kazdy ma 256 bajtu dat) */
-    uint32_t data_chunks = ( mzf->body_size + BSD_CHUNK_DATA_SIZE - 1 ) / BSD_CHUNK_DATA_SIZE;
-    /* celkovy pocet chunku vcetne terminatoru 0xFFFF */
-    uint16_t total_chunks = ( uint16_t ) ( data_chunks + 1 );
+    /* pocet chunku: minimalne 1 (terminacni) */
+    uint16_t total_chunks;
+    if ( mzf->body_size == 0 ) {
+        total_chunks = 1;
+    } else {
+        total_chunks = ( uint16_t ) ( ( mzf->body_size + BSD_CHUNK_DATA_SIZE - 1 ) / BSD_CHUNK_DATA_SIZE );
+    }
 
     /* alokace bufferu pro chunky */
     uint32_t chunks_size = ( uint32_t ) total_chunks * BSD_CHUNK_SIZE;
     uint8_t *chunks = ( uint8_t* ) calloc ( 1, chunks_size );
     if ( !chunks ) return NULL;
 
-    /* naplneni datovych chunku */
-    for ( uint32_t i = 0; i < data_chunks; i++ ) {
+    /* naplneni chunku - posledni = terminacni (ID=0xFFFF) */
+    for ( uint32_t i = 0; i < total_chunks; i++ ) {
         uint8_t *chunk = &chunks[i * BSD_CHUNK_SIZE];
-        uint16_t chunk_id = ( uint16_t ) i;
+
+        /* posledni chunk = terminacni, ostatni sekvencni */
+        uint16_t chunk_id = ( i == ( uint32_t ) ( total_chunks - 1 ) )
+                            ? 0xFFFF
+                            : ( uint16_t ) i;
 
         /* 2B ID v little-endian */
         chunk[0] = ( uint8_t ) ( chunk_id & 0xFF );
         chunk[1] = ( uint8_t ) ( chunk_id >> 8 );
 
-        /* 256B dat */
-        uint32_t offset = i * BSD_CHUNK_DATA_SIZE;
-        uint32_t remaining = mzf->body_size - offset;
-        uint32_t copy_size = remaining < BSD_CHUNK_DATA_SIZE ? remaining : BSD_CHUNK_DATA_SIZE;
-        memcpy ( &chunk[2], &mzf->body[offset], copy_size );
-        /* zbytek je nulovy (calloc) */
+        /* 256B dat (zbytek nulovy z calloc) */
+        if ( mzf->body && mzf->body_size > 0 ) {
+            uint32_t offset = i * BSD_CHUNK_DATA_SIZE;
+            if ( offset < mzf->body_size ) {
+                uint32_t remaining = mzf->body_size - offset;
+                uint32_t copy_size = remaining < BSD_CHUNK_DATA_SIZE ? remaining : BSD_CHUNK_DATA_SIZE;
+                memcpy ( &chunk[2], &mzf->body[offset], copy_size );
+            }
+        }
     }
-
-    /* terminatorovy chunk (ID=0xFFFF) */
-    uint8_t *last_chunk = &chunks[data_chunks * BSD_CHUNK_SIZE];
-    last_chunk[0] = 0xFF;
-    last_chunk[1] = 0xFF;
-    /* data terminatoru jsou nulova (calloc) */
 
     /* priprava hlavicky: fsize/fstrt/fexec musi byt 0 pro BSD */
     st_MZF_HEADER bsd_header;
@@ -807,7 +839,13 @@ int main ( int argc, char *argv[] ) {
 
     /* parsovani argumentu */
     for ( int i = 1; i < argc; i++ ) {
-        if ( strcmp ( argv[i], "--help" ) == 0 || strcmp ( argv[i], "-h" ) == 0 ) {
+        if ( strcmp ( argv[i], "--version" ) == 0 ) {
+            printf ( "wav2tmz %s\n", WAV2TMZ_VERSION );
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--lib-versions" ) == 0 ) {
+            print_lib_versions ();
+            return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--help" ) == 0 || strcmp ( argv[i], "-h" ) == 0 ) {
             print_usage ( argv[0] );
             return EXIT_SUCCESS;
         } else if ( strcmp ( argv[i], "-o" ) == 0 ) {

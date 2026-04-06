@@ -1551,3 +1551,13 @@ en_TZX_ERROR tzx_block_create_direct_recording (
 
     return TZX_OK;
 }
+
+
+const char* tzx_version ( void ) {
+    return TZX_VERSION;
+}
+
+
+const char* tzx_format_version ( void ) {
+    return TZX_FORMAT_VERSION;
+}

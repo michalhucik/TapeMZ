@@ -1118,3 +1118,8 @@ st_CMT_STREAM* mzcmt_fsk_create_tape_stream (
 
     return stream;
 }
+
+
+const char* mzcmt_fsk_version ( void ) {
+    return MZCMT_FSK_VERSION;
+}

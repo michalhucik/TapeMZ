@@ -1365,3 +1365,8 @@ void wav_analyzer_print_summary (
 
     fprintf ( stream, "\n" );
 }
+
+
+const char* wav_analyzer_version ( void ) {
+    return WAV_ANALYZER_VERSION;
+}

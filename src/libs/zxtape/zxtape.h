@@ -177,6 +177,15 @@ extern "C" {
     extern int zxtape_validate_checksum ( uint8_t *data, uint16_t data_size );
 
 
+    /** @brief Verze knihovny zxtape. */
+#define ZXTAPE_VERSION "2.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny zxtape.
+     * @return Statický řetězec s verzí (např. "2.0.0").
+     */
+    extern const char* zxtape_version ( void );
+
 #ifdef __cplusplus
 }
 #endif

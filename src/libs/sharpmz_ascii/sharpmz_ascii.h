@@ -39,6 +39,15 @@ extern "C" {
     extern uint8_t sharpmz_cnv_from ( uint8_t c );
     extern uint8_t sharpmz_cnv_to ( uint8_t c );
 
+/** @brief Verze knihovny sharpmz_ascii. */
+#define SHARPMZ_ASCII_VERSION "1.0.0"
+
+/**
+ * @brief Vrátí řetězec s verzí knihovny sharpmz_ascii.
+ * @return Statický řetězec s verzí (např. "1.0.0").
+ */
+extern const char* sharpmz_ascii_version ( void );
+
 #ifdef	__cplusplus
 }
 #endif

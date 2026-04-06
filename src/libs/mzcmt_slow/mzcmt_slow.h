@@ -355,6 +355,16 @@ extern "C" {
     extern void mzcmt_slow_set_error_callback ( mzcmt_slow_error_cb cb );
 
 
+    /** @brief Verze knihovny mzcmt_slow. */
+#define MZCMT_SLOW_VERSION "1.0.0"
+
+    /**
+     * @brief Vrátí řetězec s verzí knihovny mzcmt_slow.
+     * @return Statický řetězec s verzí (např. "1.0.0").
+     */
+    extern const char* mzcmt_slow_version ( void );
+
+
 #ifdef __cplusplus
 }
 #endif
