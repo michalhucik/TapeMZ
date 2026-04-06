@@ -1,7 +1,7 @@
 /**
  * @file   tmzedit.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Editor a spravce TZX/TMZ tape souboru.
  *
  * Nastroj pro manipulaci s bloky v TZX/TMZ souborech:
@@ -97,7 +97,7 @@
 
 
 /** @brief Verze programu tmzedit. */
-#define TMZEDIT_VERSION "1.0.0"
+#define TMZEDIT_VERSION "1.1.0"
 
 
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
@@ -1324,11 +1324,14 @@ static const char* format_name ( en_TMZ_FORMAT format ) {
  * @param file TZX soubor.
  * @param index Index bloku v souboru.
  * @param format Novy format (nebo -1 pro ponechani).
- * @param speed Nova rychlost (nebo -1 pro ponechani).
+ * @param speed Nova rychlost jako en_CMTSPEED (nebo -1 pro ponechani).
+ * @param fsk_speed FSK rychlostni uroven 0-6 (nebo -1 pokud nerelevantni).
+ * @param slow_speed SLOW rychlostni uroven 0-4 (nebo -1 pokud nerelevantni).
  * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
  */
 static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
-                             int format, int speed ) {
+                             int format, int speed,
+                             int fsk_speed, int slow_speed ) {
     st_TZX_BLOCK *b = &file->blocks[index];
 
     /* parsovani bloku do pracovni kopie */
@@ -1352,9 +1355,18 @@ static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
     }
 
     en_TMZ_FORMAT new_format = ( format >= 0 ) ? ( en_TMZ_FORMAT ) format : TMZ_FORMAT_NORMAL;
-    en_CMTSPEED new_speed = ( speed >= 0 ) ? ( en_CMTSPEED ) speed : CMTSPEED_1_1;
 
-    if ( new_format == TMZ_FORMAT_NORMAL && new_speed == CMTSPEED_1_1 ) {
+    /* resolve surove hodnoty speed pro blok 0x41 */
+    uint8_t speed_byte;
+    if ( new_format == TMZ_FORMAT_FSK ) {
+        speed_byte = ( uint8_t ) ( fsk_speed >= 0 ? fsk_speed : 0 );
+    } else if ( new_format == TMZ_FORMAT_SLOW ) {
+        speed_byte = ( uint8_t ) ( slow_speed >= 0 ? slow_speed : 0 );
+    } else {
+        speed_byte = ( speed >= 0 ) ? ( uint8_t ) speed : ( uint8_t ) CMTSPEED_1_1;
+    }
+
+    if ( new_format == TMZ_FORMAT_NORMAL && speed_byte == ( uint8_t ) CMTSPEED_1_1 ) {
         /* neni co menit - blok 0x40 uz odpovida */
         printf ( "Block [%u]: already NORMAL 1:1 (0x40), no change needed\n", index );
         free ( copy );
@@ -1367,7 +1379,7 @@ static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
     params.machine = std->machine;
     params.pulseset = std->pulseset;
     params.format = ( uint8_t ) new_format;
-    params.speed = ( uint8_t ) new_speed;
+    params.speed = speed_byte;
     params.pause_ms = std->pause_ms;
     params.flags = 0;
     memcpy ( &params.mzf_header, &std->mzf_header, sizeof ( st_MZF_HEADER ) );
@@ -1387,8 +1399,17 @@ static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
     *b = *new_block;
     free ( new_block );
 
-    printf ( "Block [%u]: converted 0x40 -> 0x41 (format=%s, speed=%s)\n",
-             index, format_name ( new_format ), g_cmtspeed_ratio[new_speed] );
+    if ( new_format == TMZ_FORMAT_FSK ) {
+        printf ( "Block [%u]: converted 0x40 -> 0x41 (format=%s, speed=level %u)\n",
+                 index, format_name ( new_format ), speed_byte );
+    } else if ( new_format == TMZ_FORMAT_SLOW ) {
+        printf ( "Block [%u]: converted 0x40 -> 0x41 (format=%s, speed=level %u)\n",
+                 index, format_name ( new_format ), speed_byte );
+    } else {
+        printf ( "Block [%u]: converted 0x40 -> 0x41 (format=%s, speed=%s)\n",
+                 index, format_name ( new_format ),
+                 g_cmtspeed_ratio[( en_CMTSPEED ) speed_byte] );
+    }
 
     return EXIT_SUCCESS;
 }
@@ -1404,11 +1425,14 @@ static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
  * @param file TZX soubor.
  * @param index Index bloku v souboru.
  * @param format Novy format (nebo -1 pro ponechani).
- * @param speed Nova rychlost (nebo -1 pro ponechani).
+ * @param speed Nova rychlost jako en_CMTSPEED (nebo -1 pro ponechani).
+ * @param fsk_speed FSK rychlostni uroven 0-6 (nebo -1 pokud nerelevantni).
+ * @param slow_speed SLOW rychlostni uroven 0-4 (nebo -1 pokud nerelevantni).
  * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
  */
 static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
-                             int format, int speed ) {
+                             int format, int speed,
+                             int fsk_speed, int slow_speed ) {
     st_TZX_BLOCK *b = &file->blocks[index];
 
     /* parsovani bloku do pracovni kopie */
@@ -1432,11 +1456,42 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
     }
 
     en_TMZ_FORMAT old_format = ( en_TMZ_FORMAT ) turbo->format;
-    en_CMTSPEED old_speed = ( en_CMTSPEED ) turbo->speed;
+    uint8_t old_speed_byte = turbo->speed;
     en_TMZ_FORMAT new_format = ( format >= 0 ) ? ( en_TMZ_FORMAT ) format : old_format;
-    en_CMTSPEED new_speed = ( speed >= 0 ) ? ( en_CMTSPEED ) speed : old_speed;
 
-    if ( new_format == TMZ_FORMAT_NORMAL && new_speed == CMTSPEED_1_1 ) {
+    /* validace: --speed neni platny pro FSK/SLOW, --fsk-speed/--slow-speed pro ostatni */
+    if ( new_format == TMZ_FORMAT_FSK && speed >= 0 ) {
+        fprintf ( stderr, "Error: --speed is not valid for FSK format, use --fsk-speed 0-6\n" );
+        free ( copy );
+        return EXIT_FAILURE;
+    }
+    if ( new_format == TMZ_FORMAT_SLOW && speed >= 0 ) {
+        fprintf ( stderr, "Error: --speed is not valid for SLOW format, use --slow-speed 0-4\n" );
+        free ( copy );
+        return EXIT_FAILURE;
+    }
+    if ( new_format != TMZ_FORMAT_FSK && fsk_speed >= 0 ) {
+        fprintf ( stderr, "Error: --fsk-speed is only valid with FSK format\n" );
+        free ( copy );
+        return EXIT_FAILURE;
+    }
+    if ( new_format != TMZ_FORMAT_SLOW && slow_speed >= 0 ) {
+        fprintf ( stderr, "Error: --slow-speed is only valid with SLOW format\n" );
+        free ( copy );
+        return EXIT_FAILURE;
+    }
+
+    /* resolve surove hodnoty speed pro blok 0x41 */
+    uint8_t new_speed_byte;
+    if ( new_format == TMZ_FORMAT_FSK ) {
+        new_speed_byte = ( fsk_speed >= 0 ) ? ( uint8_t ) fsk_speed : old_speed_byte;
+    } else if ( new_format == TMZ_FORMAT_SLOW ) {
+        new_speed_byte = ( slow_speed >= 0 ) ? ( uint8_t ) slow_speed : old_speed_byte;
+    } else {
+        new_speed_byte = ( speed >= 0 ) ? ( uint8_t ) speed : old_speed_byte;
+    }
+
+    if ( new_format == TMZ_FORMAT_NORMAL && new_speed_byte == ( uint8_t ) CMTSPEED_1_1 ) {
         /* konverze zpet na blok 0x40 */
         st_MZF mzf;
         memcpy ( &mzf.header, &turbo->mzf_header, sizeof ( st_MZF_HEADER ) );
@@ -1467,7 +1522,7 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
     params.machine = turbo->machine;
     params.pulseset = turbo->pulseset;
     params.format = ( uint8_t ) new_format;
-    params.speed = ( uint8_t ) new_speed;
+    params.speed = new_speed_byte;
     params.lgap_length = turbo->lgap_length;
     params.sgap_length = turbo->sgap_length;
     params.pause_ms = turbo->pause_ms;
@@ -1492,12 +1547,25 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
     *b = *new_block;
     free ( new_block );
 
-    printf ( "Block [%u]: 0x41 set format=%s speed=%s",
-             index, format_name ( new_format ), g_cmtspeed_ratio[new_speed] );
-    if ( new_format != old_format )
-        printf ( " (format: %s -> %s)", format_name ( old_format ), format_name ( new_format ) );
-    if ( new_speed != old_speed )
-        printf ( " (speed: %s -> %s)", g_cmtspeed_ratio[old_speed], g_cmtspeed_ratio[new_speed] );
+    /* vypis o zmene */
+    if ( new_format == TMZ_FORMAT_FSK || new_format == TMZ_FORMAT_SLOW ) {
+        printf ( "Block [%u]: 0x41 set format=%s speed=level %u",
+                 index, format_name ( new_format ), new_speed_byte );
+        if ( new_format != old_format )
+            printf ( " (format: %s -> %s)", format_name ( old_format ), format_name ( new_format ) );
+        if ( new_speed_byte != old_speed_byte )
+            printf ( " (speed: %u -> %u)", old_speed_byte, new_speed_byte );
+    } else {
+        printf ( "Block [%u]: 0x41 set format=%s speed=%s",
+                 index, format_name ( new_format ),
+                 g_cmtspeed_ratio[( en_CMTSPEED ) new_speed_byte] );
+        if ( new_format != old_format )
+            printf ( " (format: %s -> %s)", format_name ( old_format ), format_name ( new_format ) );
+        if ( new_speed_byte != old_speed_byte )
+            printf ( " (speed: %s -> %s)",
+                     g_cmtspeed_ratio[( en_CMTSPEED ) old_speed_byte],
+                     g_cmtspeed_ratio[( en_CMTSPEED ) new_speed_byte] );
+    }
     printf ( "\n" );
 
     return EXIT_SUCCESS;
@@ -1508,13 +1576,15 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
  * @brief Zmeni format a/nebo rychlost na MZ bloku.
  *
  * Podporovane bloky:
- * - 0x40 (MZ Standard Data): --format a --speed. Pokud se nastavi
- *   nestandardni hodnoty, blok se konvertuje na 0x41.
- * - 0x41 (MZ Turbo Data): --format a --speed. Pokud se nastavi
- *   NORMAL 1:1, blok se konvertuje na 0x40.
- * - 0x45 (MZ BASIC Data): pouze --speed (format je vzdy NORMAL).
- *   Blok 0x45 nema pole speed - pokud je rychlost jina nez 1:1,
- *   vypise varovani.
+ * - 0x40 (MZ Standard Data): --format a --speed/--fsk-speed/--slow-speed.
+ *   Pokud se nastavi nestandardni hodnoty, blok se konvertuje na 0x41.
+ * - 0x41 (MZ Turbo Data): --format a --speed/--fsk-speed/--slow-speed.
+ *   Pokud se nastavi NORMAL 1:1, blok se konvertuje na 0x40.
+ *   Pro FSK format se pouziva --fsk-speed (0-6), pro SLOW --slow-speed (0-4),
+ *   pro ostatni formaty --speed (pomer, napr. 2:1).
+ *   Kombinace --speed s FSK/SLOW je chyba, stejne jako --fsk-speed/--slow-speed
+ *   s jinym formatem.
+ * - 0x45 (MZ BASIC Data): rychlost neni podporovana.
  *
  * @param argc Pocet argumentu (za subcommand).
  * @param argv Argumenty.
@@ -1525,8 +1595,10 @@ static int cmd_set ( int argc, char *argv[] ) {
     const char *input = NULL;
     const char *output = NULL;
     const char *idx_str = NULL;
-    int format = -1;  /* -1 = nezmeneno */
-    int speed = -1;
+    int format = -1;     /* -1 = nezmeneno */
+    int speed = -1;      /* -1 = nezmeneno */
+    int fsk_speed = -1;  /* -1 = nezadano; platne hodnoty 0-6 */
+    int slow_speed = -1; /* -1 = nezadano; platne hodnoty 0-4 */
 
     for ( int i = 0; i < argc; i++ ) {
         if ( strcmp ( argv[i], "-o" ) == 0 && i + 1 < argc ) {
@@ -1545,6 +1617,22 @@ static int cmd_set ( int argc, char *argv[] ) {
                 return EXIT_FAILURE;
             }
             speed = ( int ) s;
+        } else if ( strcmp ( argv[i], "--fsk-speed" ) == 0 && i + 1 < argc ) {
+            char *endptr;
+            long val = strtol ( argv[++i], &endptr, 10 );
+            if ( *endptr != '\0' || val < 0 || val > 6 ) {
+                fprintf ( stderr, "Error: --fsk-speed must be 0-6, got '%s'\n", argv[i] );
+                return EXIT_FAILURE;
+            }
+            fsk_speed = ( int ) val;
+        } else if ( strcmp ( argv[i], "--slow-speed" ) == 0 && i + 1 < argc ) {
+            char *endptr;
+            long val = strtol ( argv[++i], &endptr, 10 );
+            if ( *endptr != '\0' || val < 0 || val > 4 ) {
+                fprintf ( stderr, "Error: --slow-speed must be 0-4, got '%s'\n", argv[i] );
+                return EXIT_FAILURE;
+            }
+            slow_speed = ( int ) val;
         } else if ( !input ) {
             input = argv[i];
         } else if ( !idx_str ) {
@@ -1552,14 +1640,64 @@ static int cmd_set ( int argc, char *argv[] ) {
         }
     }
 
-    if ( !input || !idx_str || ( format < 0 && speed < 0 ) ) {
-        fprintf ( stderr, "Usage: tmzedit set <file> <index> [--format <fmt>] [--speed <spd>] [-o <output>]\n\n" );
-        fprintf ( stderr, "Formats: normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape\n" );
-        fprintf ( stderr, "Speeds:  1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14\n\n" );
+    if ( !input || !idx_str || ( format < 0 && speed < 0 && fsk_speed < 0 && slow_speed < 0 ) ) {
+        fprintf ( stderr, "Usage: tmzedit set <file> <index> [options] [-o <output>]\n\n" );
+        fprintf ( stderr, "Options:\n" );
+        fprintf ( stderr, "  --format <fmt>       Recording format: normal, turbo, fastipl, sinclair,\n" );
+        fprintf ( stderr, "                       fsk, slow, direct, cpm-tape\n" );
+        fprintf ( stderr, "  --speed <ratio>      Speed ratio: 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3,\n" );
+        fprintf ( stderr, "                       8:3, 9:7, 25:14 (not valid for FSK/SLOW)\n" );
+        fprintf ( stderr, "  --fsk-speed <level>  FSK speed level: 0-6 (only with --format fsk)\n" );
+        fprintf ( stderr, "  --slow-speed <level> SLOW speed level: 0-4 (only with --format slow)\n\n" );
         fprintf ( stderr, "Block 0x40: --format and --speed (converts to 0x41 if non-standard)\n" );
-        fprintf ( stderr, "Block 0x41: --format and --speed\n" );
-        fprintf ( stderr, "Block 0x45: --speed only (format is always NORMAL)\n" );
+        fprintf ( stderr, "Block 0x41: --format and --speed/--fsk-speed/--slow-speed\n" );
+        fprintf ( stderr, "Block 0x45: speed not supported\n" );
         return EXIT_FAILURE;
+    }
+
+    /* cross-validace parametru rychlosti vs. format */
+    en_TMZ_FORMAT target_format = ( format >= 0 ) ? ( en_TMZ_FORMAT ) format : ( en_TMZ_FORMAT ) -1;
+
+    if ( target_format == TMZ_FORMAT_FSK ) {
+        if ( speed >= 0 ) {
+            fprintf ( stderr, "Error: --speed is not valid for FSK format, use --fsk-speed 0-6\n" );
+            return EXIT_FAILURE;
+        }
+        if ( slow_speed >= 0 ) {
+            fprintf ( stderr, "Error: --slow-speed is not valid for FSK format, use --fsk-speed 0-6\n" );
+            return EXIT_FAILURE;
+        }
+    } else if ( target_format == TMZ_FORMAT_SLOW ) {
+        if ( speed >= 0 ) {
+            fprintf ( stderr, "Error: --speed is not valid for SLOW format, use --slow-speed 0-4\n" );
+            return EXIT_FAILURE;
+        }
+        if ( fsk_speed >= 0 ) {
+            fprintf ( stderr, "Error: --fsk-speed is not valid for SLOW format, use --slow-speed 0-4\n" );
+            return EXIT_FAILURE;
+        }
+    } else if ( format >= 0 ) {
+        /* explicitne zadany ne-FSK/ne-SLOW format */
+        if ( fsk_speed >= 0 ) {
+            fprintf ( stderr, "Error: --fsk-speed is only valid with --format fsk\n" );
+            return EXIT_FAILURE;
+        }
+        if ( slow_speed >= 0 ) {
+            fprintf ( stderr, "Error: --slow-speed is only valid with --format slow\n" );
+            return EXIT_FAILURE;
+        }
+    } else {
+        /* format neni zadany - --fsk-speed/--slow-speed muzou byt platne,
+           pokud existujici blok ma FSK/SLOW format. Validace probehne pozdeji
+           pri zpracovani bloku, nebo zde zkontrolujeme vzajemnou exkluzivitu. */
+        if ( speed >= 0 && ( fsk_speed >= 0 || slow_speed >= 0 ) ) {
+            fprintf ( stderr, "Error: --speed cannot be combined with --fsk-speed or --slow-speed\n" );
+            return EXIT_FAILURE;
+        }
+        if ( fsk_speed >= 0 && slow_speed >= 0 ) {
+            fprintf ( stderr, "Error: --fsk-speed and --slow-speed cannot be used together\n" );
+            return EXIT_FAILURE;
+        }
     }
 
     uint32_t index;
@@ -1587,11 +1725,11 @@ static int cmd_set ( int argc, char *argv[] ) {
     switch ( block_id ) {
 
         case TMZ_BLOCK_ID_MZ_STANDARD_DATA:
-            ret = set_block_0x40 ( file, index, format, speed );
+            ret = set_block_0x40 ( file, index, format, speed, fsk_speed, slow_speed );
             break;
 
         case TMZ_BLOCK_ID_MZ_TURBO_DATA:
-            ret = set_block_0x41 ( file, index, format, speed );
+            ret = set_block_0x41 ( file, index, format, speed, fsk_speed, slow_speed );
             break;
 
         case TMZ_BLOCK_ID_MZ_BASIC_DATA:
@@ -1601,7 +1739,7 @@ static int cmd_set ( int argc, char *argv[] ) {
                 tzx_free ( file );
                 return EXIT_FAILURE;
             }
-            if ( speed >= 0 ) {
+            if ( speed >= 0 || fsk_speed >= 0 || slow_speed >= 0 ) {
                 fprintf ( stderr, "Error: block 0x45 (MZ BASIC Data) does not have a speed field\n" );
                 tzx_free ( file );
                 return EXIT_FAILURE;

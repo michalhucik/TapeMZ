@@ -25,7 +25,9 @@ mzf2tmz <input.mzf|input.mzt> <output.tmz> [options]
 | `--machine` | generic, mz700, mz800, mz1500, mz80b | mz800 | Target computer |
 | `--pulseset` | 700, 800, 80b, auto | auto | Pulse set (auto = based on machine) |
 | `--format` | normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape | normal | Tape recording format |
-| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | 1:1 | Speed ratio |
+| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | 1:1 | Speed ratio (not valid for FSK/SLOW) |
+| `--fsk-speed` | 0-6 | 0 | FSK speed level (0=slowest, 6=fastest; only with `--format fsk`) |
+| `--slow-speed` | 0-4 | 0 | SLOW speed level (0=slowest, 4=fastest; only with `--format slow`) |
 | `--pause` | 0-65535 | 1000 | Pause after block in milliseconds |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
 | `--version` | - | - | Show program version |
@@ -53,9 +55,20 @@ mzf2tmz <input.mzf|input.mzt> <output.tmz> [options]
 - `utf8-eu` - translation to UTF-8, European character set variant (displays actual Sharp MZ glyphs)
 - `utf8-jp` - translation to UTF-8, Japanese character set variant (katakana instead of lowercase letters)
 
-**--speed** - speed ratio relative to the base 1200 Bd:
+**--speed** - speed ratio relative to the base 1200 Bd (for FM formats: normal, turbo, fastipl, sinclair):
 - `1:1` = 1200 Bd, `2:1` = 2400 Bd, `3:1` = 3600 Bd etc.
 - `2:1cpm` = 2400 Bd variant for CP/M
+- Not valid for FSK and SLOW formats (use `--fsk-speed` / `--slow-speed` instead).
+
+**--fsk-speed** - FSK encoder speed level (only with `--format fsk`):
+- Level 0 (slowest): long=8, short=4 samples per cycle
+- Level 6 (fastest): long=3, short=2 samples per cycle
+- Higher level = faster transfer, lower reliability
+
+**--slow-speed** - SLOW encoder speed level (only with `--format slow`):
+- Level 0 (slowest): longest pulses
+- Level 4 (fastest): shortest pulses
+- Higher level = faster transfer, lower reliability
 
 ## Examples
 
@@ -71,10 +84,16 @@ Conversion with TURBO format and double speed (block 0x41):
 mzf2tmz game.mzf game.tmz --format turbo --speed 2:1
 ```
 
-Conversion for MZ-700 with FSK format:
+Conversion for MZ-700 with FSK format at speed level 3:
 
 ```
-mzf2tmz program.mzf tape.tmz --machine mz700 --format fsk
+mzf2tmz program.mzf tape.tmz --machine mz700 --format fsk --fsk-speed 3
+```
+
+Conversion with SLOW format at maximum speed:
+
+```
+mzf2tmz program.mzf tape.tmz --format slow --slow-speed 4
 ```
 
 Conversion of an MZT file (multiple MZFs):

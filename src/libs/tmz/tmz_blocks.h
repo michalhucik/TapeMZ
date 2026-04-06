@@ -113,7 +113,12 @@ extern "C" {
         uint8_t machine;            /**< cilovy model pocitace (en_TMZ_MACHINE) */
         uint8_t pulseset;           /**< pulzni sada (en_TMZ_PULSESET) */
         uint8_t format;             /**< formatova varianta zaznamu (en_TMZ_FORMAT) */
-        uint8_t speed;              /**< index rychlosti zaznamu (en_CMTSPEED) */
+        uint8_t speed;              /**< index rychlosti zaznamu - interpretace zavisi na formatu:
+                                     *   FM formaty (NORMAL/TURBO/FASTIPL/SINCLAIR): en_CMTSPEED (1-9),
+                                     *   FSK: en_MZCMT_FSK_SPEED (0-6),
+                                     *   SLOW: en_MZCMT_SLOW_SPEED (0-4),
+                                     *   DIRECT: ignorovano (0),
+                                     *   CPM_TAPE: nativni uroven (0-2) */
         uint16_t lgap_length;       /**< delka LGAP v poctu kratkych pulzu (0 = vychozi) */
         uint16_t sgap_length;       /**< delka SGAP v poctu kratkych pulzu (0 = vychozi) */
         uint16_t pause_ms;          /**< pauza po bloku v milisekundach */

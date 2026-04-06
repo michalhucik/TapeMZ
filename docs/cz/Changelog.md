@@ -2,6 +2,20 @@
 
 ## 2026-04-06
 
+### mzf2tmz v1.1.0
+- Pridana volba `--fsk-speed 0-6` pro vyber rychlostni urovne FSK formatu.
+- Pridana volba `--slow-speed 0-4` pro vyber rychlostni urovne SLOW formatu.
+- `--speed` (pomer) se nyni pro FSK a SLOW formaty odmitne s chybovym hlasenim
+  a napovedi na spravnou volbu.
+- `--fsk-speed` a `--slow-speed` se odmitnou pro ostatni formaty.
+- Hodnoty rychlosti se do bloku 0x41 ukladaji jako nativni format-specificke
+  urovne (drive se ukladal genericke CMTSPEED index, ktery neodpovidal
+  skutecnym FSK/SLOW rychlostnim urovnim).
+
+### tmzedit v1.1.0
+- Prikaz `set`: pridany volby `--fsk-speed 0-6` a `--slow-speed 0-4`
+  se stejnymi validacnimi pravidly jako v mzf2tmz.
+
 ### bsd2dat v1.0.1
 - Oprava: export dat nyni zahrnuje i data terminacniho chunku (ID=0xFFFF),
   coz odpovida chovani BSD dekoderu a realneho MZ-800 BASIC.

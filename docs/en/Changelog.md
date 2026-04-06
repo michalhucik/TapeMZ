@@ -2,6 +2,20 @@
 
 ## 2026-04-06
 
+### mzf2tmz v1.1.0
+- Added `--fsk-speed 0-6` option for FSK format speed level selection.
+- Added `--slow-speed 0-4` option for SLOW format speed level selection.
+- `--speed` (ratio) is now rejected for FSK and SLOW formats with a clear error
+  message pointing to the correct option.
+- `--fsk-speed` and `--slow-speed` are rejected for non-FSK/non-SLOW formats.
+- Speed values are stored as native format-specific levels in block 0x41
+  (previously the generic CMTSPEED ratio index was stored, which did not
+  correspond to actual FSK/SLOW speed levels).
+
+### tmzedit v1.1.0
+- `set` command: added `--fsk-speed 0-6` and `--slow-speed 0-4` options,
+  with the same validation rules as mzf2tmz.
+
 ### bsd2dat v1.0.1
 - Fix: data export now includes the termination chunk data (ID=0xFFFF),
   matching the BSD decoder and real MZ-800 BASIC behavior.

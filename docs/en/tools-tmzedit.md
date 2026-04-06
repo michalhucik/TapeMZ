@@ -265,7 +265,9 @@ tmzedit set <file> <index> [--format <fmt>] [--speed <spd>] [-o <output>]
 | Option | Values | Description |
 |--------|--------|-------------|
 | `--format` | normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape | Recording format |
-| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | Speed ratio |
+| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | Speed ratio (not valid for FSK/SLOW) |
+| `--fsk-speed` | 0-6 | FSK speed level (only with FSK format) |
+| `--slow-speed` | 0-4 | SLOW speed level (only with SLOW format) |
 
 ### Examples
 
@@ -279,6 +281,18 @@ Changing speed of an existing block 0x41:
 
 ```
 tmzedit set tape.tmz 1 --speed 3:1 -o tape_fast.tmz
+```
+
+Changing an FSK block to speed level 5:
+
+```
+tmzedit set tape.tmz 0 --fsk-speed 5 -o tape_fast_fsk.tmz
+```
+
+Converting a block to SLOW format at speed level 2:
+
+```
+tmzedit set tape.tmz 0 --format slow --slow-speed 2 -o tape_slow.tmz
 ```
 
 Converting block 0x41 back to 0x40 (by setting NORMAL 1:1):

@@ -265,7 +265,9 @@ tmzedit set <soubor> <index> [--format <fmt>] [--speed <spd>] [-o <vystup>]
 | Volba | Hodnoty | Popis |
 |-------|---------|-------|
 | `--format` | normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape | Formát záznamu |
-| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | Poměr rychlosti |
+| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | Poměr rychlosti (neplatný pro FSK/SLOW) |
+| `--fsk-speed` | 0-6 | Rychlostní úroveň FSK (pouze pro FSK formát) |
+| `--slow-speed` | 0-4 | Rychlostní úroveň SLOW (pouze pro SLOW formát) |
 
 ### Příklady
 
@@ -279,6 +281,18 @@ Změna rychlosti existujícího bloku 0x41:
 
 ```
 tmzedit set tape.tmz 1 --speed 3:1 -o tape_fast.tmz
+```
+
+Změna FSK bloku na rychlostní úroveň 5:
+
+```
+tmzedit set tape.tmz 0 --fsk-speed 5 -o tape_fast_fsk.tmz
+```
+
+Konverze bloku na SLOW formát s rychlostní úrovní 2:
+
+```
+tmzedit set tape.tmz 0 --format slow --slow-speed 2 -o tape_slow.tmz
 ```
 
 Konverze bloku 0x41 zpět na 0x40 (nastavením NORMAL 1:1):

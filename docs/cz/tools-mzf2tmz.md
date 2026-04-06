@@ -25,7 +25,9 @@ mzf2tmz <vstup.mzf|vstup.mzt> <vystup.tmz> [volby]
 | `--machine` | generic, mz700, mz800, mz1500, mz80b | mz800 | Cílový počítač |
 | `--pulseset` | 700, 800, 80b, auto | auto | Pulzní sada (auto = dle machine) |
 | `--format` | normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape | normal | Formát záznamu na kazetě |
-| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | 1:1 | Poměr rychlosti |
+| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | 1:1 | Poměr rychlosti (neplatný pro FSK/SLOW) |
+| `--fsk-speed` | 0-6 | 0 | Rychlostní úroveň FSK (0=nejpomalejší, 6=nejrychlejší; pouze s `--format fsk`) |
+| `--slow-speed` | 0-4 | 0 | Rychlostní úroveň SLOW (0=nejpomalejší, 4=nejrychlejší; pouze s `--format slow`) |
 | `--pause` | 0-65535 | 1000 | Pauza po bloku v milisekundách |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
 | `--version` | - | - | Zobrazit verzi programu |
@@ -53,9 +55,20 @@ mzf2tmz <vstup.mzf|vstup.mzt> <vystup.tmz> [volby]
 - `utf8-eu` - překlad do UTF-8, evropská varianta znakové sady (zobrazí skutečné Sharp MZ glyfy)
 - `utf8-jp` - překlad do UTF-8, japonská varianta znakové sady (katakana místo malých písmen)
 
-**--speed** - poměr rychlosti oproti základním 1200 Bd:
+**--speed** - poměr rychlosti oproti základním 1200 Bd (pro FM formáty: normal, turbo, fastipl, sinclair):
 - `1:1` = 1200 Bd, `2:1` = 2400 Bd, `3:1` = 3600 Bd atd.
 - `2:1cpm` = 2400 Bd varianta pro CP/M
+- Neplatný pro FSK a SLOW formáty (použijte `--fsk-speed` / `--slow-speed`).
+
+**--fsk-speed** - rychlostní úroveň FSK kodéru (pouze s `--format fsk`):
+- Úroveň 0 (nejpomalejší): long=8, short=4 vzorků na cyklus
+- Úroveň 6 (nejrychlejší): long=3, short=2 vzorků na cyklus
+- Vyšší úroveň = rychlejší přenos, nižší spolehlivost
+
+**--slow-speed** - rychlostní úroveň SLOW kodéru (pouze s `--format slow`):
+- Úroveň 0 (nejpomalejší): nejdelší pulzy
+- Úroveň 4 (nejrychlejší): nejkratší pulzy
+- Vyšší úroveň = rychlejší přenos, nižší spolehlivost
 
 ## Příklady
 
@@ -71,10 +84,16 @@ Konverze s TURBO formátem a dvojnásobnou rychlostí (blok 0x41):
 mzf2tmz game.mzf game.tmz --format turbo --speed 2:1
 ```
 
-Konverze pro MZ-700 s FSK formátem:
+Konverze pro MZ-700 s FSK formátem na rychlostní úrovni 3:
 
 ```
-mzf2tmz program.mzf tape.tmz --machine mz700 --format fsk
+mzf2tmz program.mzf tape.tmz --machine mz700 --format fsk --fsk-speed 3
+```
+
+Konverze s SLOW formátem na maximální rychlosti:
+
+```
+mzf2tmz program.mzf tape.tmz --format slow --slow-speed 4
 ```
 
 Konverze MZT souboru (více MZF):
