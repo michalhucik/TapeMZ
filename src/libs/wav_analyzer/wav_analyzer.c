@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Implementace hlavního API knihovny wav_analyzer.
  *
  * Orchestruje všechny vrstvy analyzéru:
@@ -488,6 +488,7 @@ static en_WAV_ANALYZER_ERROR process_leader (
                  * přepneme na specializovaný dekodér.
                  */
                 uint32_t consumed_until = 0;
+                uint32_t bsd_recovery = WAV_RECOVERY_NONE;
 
                 if ( refined == WAV_TAPE_FORMAT_TURBO ) {
                     if ( mzf->header.fsize > 0 && mzf->header.fstrt == 0xD400 ) {
@@ -562,11 +563,34 @@ static en_WAV_ANALYZER_ERROR process_leader (
 
                     err = wav_decode_bsd_decode_mzf (
                               seq, leader, &saved_header, pulse_end,
-                              &mzf, &body_res, &consumed_until
+                              config->recover_bsd,
+                              &mzf, &body_res, &consumed_until,
+                              &bsd_recovery
                           );
 
                     free ( hdr_res.data );
                     hdr_res.data = NULL;
+
+                    /* diagnosticky vypis - VZDY pri selhani BSD decode */
+                    if ( err != WAV_ANALYZER_OK ) {
+                        char fname[MZF_FILE_NAME_LENGTH + 1];
+                        memcpy ( fname, saved_header.fname.name, MZF_FILE_NAME_LENGTH );
+                        fname[MZF_FILE_NAME_LENGTH] = '\0';
+                        for ( int j = 0; j < MZF_FILE_NAME_LENGTH; j++ ) {
+                            if ( fname[j] < 0x20 || fname[j] > 0x7E ) fname[j] = '.';
+                        }
+                        fprintf ( stderr, "  BSD header found: \"%s\", ftype=0x%02X, decode failed: %s\n"
+                                          "  Hint: use --recover-bsd to salvage partial data\n",
+                                  fname, saved_header.ftype,
+                                  wav_analyzer_error_string ( err ) );
+                    }
+
+                    /* informace o recovery (vzdy, i pri uspechu) */
+                    if ( err == WAV_ANALYZER_OK && bsd_recovery != WAV_RECOVERY_NONE ) {
+                        fprintf ( stderr, "  WARNING: BSD recovered - %s (%u bytes salvaged)\n",
+                                  wav_recovery_status_string ( bsd_recovery ),
+                                  mzf ? mzf->body_size : 0 );
+                    }
                 } else if ( refined == WAV_TAPE_FORMAT_FSK ||
                             refined == WAV_TAPE_FORMAT_SLOW ||
                             refined == WAV_TAPE_FORMAT_DIRECT ) {
@@ -614,6 +638,11 @@ static en_WAV_ANALYZER_ERROR process_leader (
                     file_result.speed_class = speed;
                     file_result.copy2_used = hdr_res.copy2_used || body_res.copy2_used;
                     file_result.consumed_until_pulse = consumed_until;
+                    file_result.recovery_status = bsd_recovery;
+                    if ( bsd_recovery != WAV_RECOVERY_NONE && mzf ) {
+                        file_result.recovered_bytes = mzf->body_size;
+                        file_result.expected_bytes = 0; /* u BSD neznáme */
+                    }
 
                     err = result_add_file ( result, &file_result );
                     if ( err != WAV_ANALYZER_OK ) {
@@ -1338,6 +1367,14 @@ void wav_analyzer_print_summary (
                 if ( fname[j] < 0x20 || fname[j] > 0x7E ) fname[j] = '.';
             }
             fprintf ( stream, "MZF name: \"%s\"\n", fname );
+        }
+
+        if ( f->recovery_status != WAV_RECOVERY_NONE ) {
+            fprintf ( stream, "*** RECOVERED: %s", wav_recovery_status_string ( f->recovery_status ) );
+            if ( f->recovered_bytes > 0 ) {
+                fprintf ( stream, " (%u bytes salvaged)", f->recovered_bytes );
+            }
+            fprintf ( stream, " ***\n" );
         }
 
         if ( f->copy2_used ) {

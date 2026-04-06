@@ -2,6 +2,27 @@
 
 ## 2026-04-06
 
+### wav2tmz v2.1.0
+- Partial BSD data recovery: incomplete BSD files (missing terminator
+  chunk ID=0xFFFF) can now be salvaged using the `--recover-bsd` option.
+- Diagnostics are always enabled - when BSD decoding fails, the file name,
+  error type and a hint to use `--recover-bsd` are printed.
+- Recovered files are marked `[RECOVERED]` in the output summary
+  and in TMZ archives a Text Description block (0x30) with a warning is added.
+- New options: `--recover` (all recovery modes),
+  `--recover-bsd`, `--recover-body`, `--recover-header`
+  (the latter two prepared for phase 2, currently no effect).
+
+### wav_analyzer v1.1.0
+- BSD decoder: partial data recovery support (allow_partial).
+- BSD decoder: sequential chunk ID validation - prevents reading data
+  from subsequent files on tape as false BSD chunks.
+- BSD decoder: consumed_until fix - when the terminator is missing,
+  the position after the last successfully read chunk is used.
+- New data types: `en_WAV_RECOVERY_STATUS`, recovery fields in config
+  and analysis result.
+- New function: `wav_recovery_status_string()`.
+
 ### mzf2tmz v1.1.0
 - Added `--fsk-speed 0-6` option for FSK format speed level selection.
 - Added `--slow-speed 0-4` option for SLOW format speed level selection.

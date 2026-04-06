@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer_types.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Společné datové typy, struktury a chybové kódy knihovny wav_analyzer.
  *
  * Definuje základní typy používané všemi vrstvami analyzéru:
@@ -243,6 +243,20 @@ extern "C" {
 
 
     /**
+     * @brief Stav obnovy dat u částečně dekódovaného souboru.
+     *
+     * Bitové příznaky - mohou se kombinovat pomocí OR.
+     * Hodnota 0 (WAV_RECOVERY_NONE) znamená kompletní soubor bez problémů.
+     */
+    typedef enum en_WAV_RECOVERY_STATUS {
+        WAV_RECOVERY_NONE           = 0x00, /**< kompletní soubor, žádná obnova */
+        WAV_RECOVERY_BSD_INCOMPLETE = 0x01, /**< BSD soubor bez ukončovacího chunku (ID=0xFFFF) */
+        WAV_RECOVERY_PARTIAL_BODY   = 0x02, /**< neúplné tělo souboru (připraveno pro fázi 2) */
+        WAV_RECOVERY_HEADER_ONLY    = 0x04, /**< osiřelá hlavička bez těla (připraveno pro fázi 2) */
+    } en_WAV_RECOVERY_STATUS;
+
+
+    /**
      * @brief Formát pro uložení neidentifikovaných bloků.
      *
      * Určuje, v jakém TZX blokovém typu se uloží surová data
@@ -353,6 +367,9 @@ extern "C" {
         int keep_unknown;                       /**< 1 = uložit neidentifikované bloky jako Direct Recording */
         int pass_count;                         /**< počet průchodů (výchozí 1, zatím není použit) */
         en_WAV_RAW_FORMAT raw_format;           /**< formát pro neidentifikované bloky */
+        int recover_bsd;                        /**< 1 = uložit částečná BSD data (chybějící terminátor) */
+        int recover_body;                       /**< 1 = uložit částečné tělo (fáze 2, zatím bez efektu) */
+        int recover_header;                     /**< 1 = uložit osiřelou hlavičku (fáze 2, zatím bez efektu) */
     } st_WAV_ANALYZER_CONFIG;
 
 
@@ -375,6 +392,19 @@ extern "C" {
      * @return Textový název formátu (anglicky).
      */
     extern const char* wav_tape_format_name ( en_WAV_TAPE_FORMAT format );
+
+
+    /**
+     * @brief Vrátí textový popis stavu obnovy dat.
+     *
+     * Vždy vrací platný řetězec (nikdy NULL). Pro WAV_RECOVERY_NONE
+     * vrací "complete". Pro kombinace příznaků vrací popis
+     * prvního nastaveného příznaku.
+     *
+     * @param status Bitové OR z en_WAV_RECOVERY_STATUS.
+     * @return Textový popis stavu obnovy (anglicky).
+     */
+    extern const char* wav_recovery_status_string ( uint32_t status );
 
 
     /**

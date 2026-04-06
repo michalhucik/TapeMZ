@@ -1,7 +1,7 @@
 /**
  * @file   wav2tmz.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.1
+ * @version 2.1.0
  * @brief  Konverzni utilita WAV -> MZF/TMZ - dekodovani Sharp MZ kazetovych nahravek.
  *
  * Analyzuje WAV soubor obsahujici nahravku magnetofonove kazety
@@ -30,6 +30,10 @@
  * - --raw-format <direct>      : format pro neidentifikovane bloky (vychozi: direct)
  * - --pass <N>                 : pocet pruchodu (vychozi: 1, zatim nepouzit)
  * - --name-encoding <enc>      : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
+ * - --recover                  : zapnout vsechny recovery mody
+ * - --recover-bsd              : obnovit nekompletni BSD soubory (chybejici terminator)
+ * - --recover-body             : obnovit castecne telo (neni implementovano)
+ * - --recover-header           : ulozit osirele hlavicky (neni implementovano)
  * - --version                  : zobrazit verzi programu
  * - --lib-versions             : zobrazit verze knihoven
  * - --help (-h)                : zobrazit napovedu
@@ -71,7 +75,7 @@
 
 
 /** @brief Verze programu wav2tmz. */
-#define WAV2TMZ_VERSION "2.0.1"
+#define WAV2TMZ_VERSION "2.1.0"
 
 
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
@@ -137,6 +141,13 @@ static void print_usage ( const char *prog_name ) {
               "  --raw-format <direct>     Format for unidentified blocks (default: direct)\n"
               "  --pass <N>               Number of passes (default: 1, not yet used)\n"
               "  --name-encoding <enc>     Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n"
+              "\n"
+              "Recovery options:\n"
+              "  --recover                 Enable all partial data recovery\n"
+              "  --recover-bsd             Recover incomplete BSD files (missing terminator)\n"
+              "  --recover-body            Recover partial body data (not yet implemented)\n"
+              "  --recover-header          Save header-only files (not yet implemented)\n"
+              "\n"
               "  --version                 Show program version\n"
               "  --lib-versions            Show library versions\n"
               "  --help                    Show this help\n",
@@ -701,6 +712,24 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
         /* ZX bloky nemaji MZF, ale maji tap_data */
         if ( !file_result->mzf && !file_result->tap_data ) continue;
 
+        /* recovery metadata jako Text Description (blok 0x30) */
+        if ( file_result->recovery_status != WAV_RECOVERY_NONE ) {
+            char recovery_desc[256];
+            snprintf ( recovery_desc, sizeof ( recovery_desc ),
+                       "WARNING: Recovered - %s",
+                       wav_recovery_status_string ( file_result->recovery_status ) );
+
+            st_TZX_BLOCK rec_desc_block;
+            en_TZX_ERROR rec_err = tzx_block_create_text_description (
+                recovery_desc, &rec_desc_block );
+            if ( rec_err == TZX_OK ) {
+                tzx_err = tzx_file_append_block ( tmz_file, &rec_desc_block );
+                if ( tzx_err != TZX_OK ) {
+                    if ( rec_desc_block.data ) free ( rec_desc_block.data );
+                }
+            }
+        }
+
         st_TZX_BLOCK *block = create_tmz_block_from_result ( file_result );
         if ( !block ) {
             fprintf ( stderr, "Error: failed to create TMZ block for file %u (%s)\n",
@@ -793,13 +822,14 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
             char fname[MZF_FNAME_UTF8_BUF_SIZE];
             mzf_tools_get_fname_ex ( &fr->mzf->header, fname, sizeof ( fname ), name_encoding );
 
-            fprintf ( stdout, "  [%u] \"%s\" - %s, %u bytes, CRC: header=%s body=%s%s\n",
+            fprintf ( stdout, "  [%u] \"%s\" - %s, %u bytes, CRC: header=%s body=%s%s%s\n",
                       i + 1, fname,
                       wav_tape_format_name ( fr->format ),
                       fr->mzf->body_size,
                       fr->header_crc == WAV_CRC_OK ? "OK" : ( fr->header_crc == WAV_CRC_ERROR ? "ERROR" : "N/A" ),
                       fr->body_crc == WAV_CRC_OK ? "OK" : ( fr->body_crc == WAV_CRC_ERROR ? "ERROR" : "N/A" ),
-                      fr->copy2_used ? " (Copy2)" : "" );
+                      fr->copy2_used ? " (Copy2)" : "",
+                      fr->recovery_status != WAV_RECOVERY_NONE ? " [RECOVERED]" : "" );
         }
     }
 
@@ -929,6 +959,16 @@ int main ( int argc, char *argv[] ) {
             }
             config.pass_count = atoi ( argv[++i] );
             if ( config.pass_count < 1 ) config.pass_count = 1;
+        } else if ( strcmp ( argv[i], "--recover" ) == 0 ) {
+            config.recover_bsd = 1;
+            config.recover_body = 1;
+            config.recover_header = 1;
+        } else if ( strcmp ( argv[i], "--recover-bsd" ) == 0 ) {
+            config.recover_bsd = 1;
+        } else if ( strcmp ( argv[i], "--recover-body" ) == 0 ) {
+            config.recover_body = 1;
+        } else if ( strcmp ( argv[i], "--recover-header" ) == 0 ) {
+            config.recover_header = 1;
         } else if ( strcmp ( argv[i], "--name-encoding" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --name-encoding requires a value\n" );
@@ -1035,10 +1075,11 @@ int main ( int argc, char *argv[] ) {
                 fprintf ( stderr, "Warning: skipping ZX Spectrum block #%u (not MZF format, use --output-format tmz)\n", i + 1 );
             } else if ( result.files[i].mzf ) {
                 if ( save_mzf ( result.files[i].mzf, out_name ) == EXIT_SUCCESS ) {
-                    fprintf ( stdout, "Saved: %s (%s, %u bytes)\n",
+                    fprintf ( stdout, "Saved: %s (%s, %u bytes%s)\n",
                               out_name,
                               wav_tape_format_name ( result.files[i].format ),
-                              result.files[i].mzf->body_size );
+                              result.files[i].mzf->body_size,
+                              result.files[i].recovery_status != WAV_RECOVERY_NONE ? " [RECOVERED]" : "" );
                 } else {
                     exit_code = EXIT_FAILURE;
                 }

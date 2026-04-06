@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Hlavní API knihovny wav_analyzer - orchestrace všech vrstev.
  *
  * Poskytuje vysokoúrovňové API pro analýzu WAV nahrávek magnetofonových
@@ -84,6 +84,9 @@ extern "C" {
         uint32_t consumed_until_pulse;     /**< pozice za posledním zpracovaným pulzem
                                                 (pro přeskočení leaderů spotřebovaných
                                                 dvoudílnými formáty jako TURBO/FASTIPL) */
+        uint32_t recovery_status;          /**< bitové OR z en_WAV_RECOVERY_STATUS (0 = kompletní) */
+        uint32_t recovered_bytes;          /**< skutečně dekódovaných bajtů při recovery (0 = kompletní) */
+        uint32_t expected_bytes;           /**< očekávaných bajtů (0 = neznáme, např. BSD) */
     } st_WAV_ANALYZER_FILE_RESULT;
 
 
@@ -164,7 +167,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny wav_analyzer. */
-#define WAV_ANALYZER_VERSION "1.0.0"
+#define WAV_ANALYZER_VERSION "1.1.0"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny wav_analyzer.

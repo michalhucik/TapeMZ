@@ -313,6 +313,12 @@ add_executable(test_bsd_wav
 )
 target_link_libraries(test_bsd_wav PRIVATE wav_analyzer mzcmt_bsd tmz tzx mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed mztape m)
 
+# test_bsd_incomplete (BSD recovery test: nekompletni nahravka s/bez --recover-bsd)
+add_executable(test_bsd_incomplete
+    tests/test_bsd_incomplete.c
+)
+target_link_libraries(test_bsd_incomplete PRIVATE wav_analyzer tmz tzx mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed mztape m)
+
 # test_zx_roundtrip
 add_executable(test_zx_roundtrip
     tests/test_zx_roundtrip.c

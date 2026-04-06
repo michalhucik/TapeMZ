@@ -34,6 +34,10 @@ wav2tmz input.wav [-o output] [options]
 | `--raw-format` | direct | direct | Format for unidentified blocks |
 | `--pass` | `<N>` | 1 | Number of passes (not yet used) |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
+| `--recover` | - | off | Enable all recovery modes |
+| `--recover-bsd` | - | off | Recover incomplete BSD files (missing terminator) |
+| `--recover-body` | - | off | Recover partial body data (not yet implemented) |
+| `--recover-header` | - | off | Save header-only files (not yet implemented) |
 | `--version` | - | - | Show program version |
 | `--lib-versions` | - | - | Show library versions |
 | `--help`, `-h` | - | - | Show help |
@@ -62,6 +66,15 @@ recording has wrong polarity (e.g. from a different recording device).
 - `ascii` - Sharp MZ character set translation to ASCII (default, backward compatible)
 - `utf8-eu` - translation to UTF-8, European character set variant (displays actual Sharp MZ glyphs)
 - `utf8-jp` - translation to UTF-8, Japanese character set variant (katakana instead of lowercase letters)
+
+**--recover-bsd** - if a BSD file on tape is missing the termination chunk
+(ID=0xFFFF), e.g. due to a missing CLOSE in BASIC, all successfully decoded
+chunks are salvaged. Without this option, incomplete BSD data is discarded
+(with a diagnostic message and hint). In TMZ output, a Text Description
+block (0x30) with a warning is inserted before the recovered block.
+
+**--recover** - enables all recovery modes at once (--recover-bsd
+and future --recover-body, --recover-header).
 
 **--keep-unknown** - recording segments that were not identified
 as any known format are saved as TZX block 0x15 (Direct Recording).
@@ -140,6 +153,18 @@ Decoding with filenames displayed in European UTF-8 character set:
 
 ```
 wav2tmz recording.wav --name-encoding utf8-eu
+```
+
+Recovering incomplete BSD files:
+
+```
+wav2tmz tape_with_broken_bsd.wav --recover-bsd
+```
+
+Recovering all partial data into a TMZ archive:
+
+```
+wav2tmz damaged_tape.wav --recover --output-format tmz -o rescued.tmz
 ```
 
 Appending additional recordings to an existing TMZ:

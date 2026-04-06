@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_bsd.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Vrstva 4d analyzeru - BSD dekoder (chunkovany BASIC datovy format).
  *
  * Dekoduje BSD/BRD format z WAV signalu. BSD signal se sklada z:
@@ -74,7 +74,7 @@ extern "C" {
      * (ftype=0x03/0x04, fsize=0). Tato funkce:
      * 1. Najde prvni chunk (STM za SGAP)
      * 2. Iterativne dekoduje chunky (258B = 2B ID + 256B data)
-     * 3. Konci pri chunk ID == 0xFFFF
+     * 3. Konci pri chunk ID == 0xFFFF nebo pri chybe cteni (pokud allow_partial)
      * 4. Sestavi MZF z hlavicky a zretezenych dat chunku
      *
      * @param seq Sekvence pulzu. Nesmi byt NULL.
@@ -84,12 +84,16 @@ extern "C" {
      *        Nesmi byt NULL.
      * @param search_from_pulse Pozice od ktere hledat chunky
      *        (typicky hdr_res.pulse_end z FM dekoderu).
+     * @param allow_partial 1 = pri chybe cteni chunku zachovat dosavadni data
+     *        (recovery mod), 0 = pri chybe vratit chybu a zahodit vse.
      * @param[out] out_mzf Vystupni MZF struktura (volajici uvolni pres mzf_free).
      *             Nesmi byt NULL.
      * @param[out] out_body_result Vysledek dekodovani tela (posledni chunk).
      *             Muze byt NULL.
      * @param[out] out_consumed_until Pozice za poslednim zpracovanym pulzem.
      *             Muze byt NULL.
+     * @param[out] out_recovery_status Stav obnovy (bitove OR z en_WAV_RECOVERY_STATUS).
+     *             Muze byt NULL. Nastaveno i bez allow_partial (informacni).
      * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
      *
      * @pre FM dekoder jiz dekodoval hlavicku a klasifikator urcil
@@ -101,9 +105,11 @@ extern "C" {
         const st_WAV_LEADER_INFO *leader,
         const st_MZF_HEADER *header,
         uint32_t search_from_pulse,
+        int allow_partial,
         st_MZF **out_mzf,
         st_WAV_DECODE_RESULT *out_body_result,
-        uint32_t *out_consumed_until
+        uint32_t *out_consumed_until,
+        uint32_t *out_recovery_status
     );
 
 

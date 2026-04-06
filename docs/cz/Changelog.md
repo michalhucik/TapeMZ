@@ -2,6 +2,27 @@
 
 ## 2026-04-06
 
+### wav2tmz v2.1.0
+- Obnova castecnych BSD dat: nekompletni BSD soubory (chybejici ukoncovaci
+  chunk ID=0xFFFF) lze nyni zachranit pomoci volby `--recover-bsd`.
+- Diagnostika je vzdy zapnuta - pri selhani BSD dekodovani se vypise
+  nazev souboru, typ chyby a napoveda na `--recover-bsd`.
+- Obnovene soubory jsou ve vystupu oznaceny `[RECOVERED]`
+  a v TMZ archivu jsou doplneny blokem Text Description (0x30) s varovanim.
+- Nove volby: `--recover` (vsechny recovery mody),
+  `--recover-bsd`, `--recover-body`, `--recover-header`
+  (posledni dve pripraveny pro fazi 2, zatim bez efektu).
+
+### wav_analyzer v1.1.0
+- BSD dekoder: podpora obnovy castecnych dat (allow_partial).
+- BSD dekoder: validace sekvencnich chunk ID - zamezuje cteni dat
+  z nasledujicich souboru na pasce jako falesnych BSD chunku.
+- BSD dekoder: oprava consumed_until - pri chybejicim terminatoru
+  se pouziva pozice za poslednim uspesne prectenim chunkem.
+- Nove datove typy: `en_WAV_RECOVERY_STATUS`, recovery pole v konfiguraci
+  a ve vysledku analyzy.
+- Nova funkce: `wav_recovery_status_string()`.
+
 ### mzf2tmz v1.1.0
 - Pridana volba `--fsk-speed 0-6` pro vyber rychlostni urovne FSK formatu.
 - Pridana volba `--slow-speed 0-4` pro vyber rychlostni urovne SLOW formatu.

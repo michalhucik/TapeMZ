@@ -28,6 +28,7 @@ TESTS := \
     test_direct_tape_roundtrip \
     test_direct_tape_wav \
     test_bsd_wav \
+    test_bsd_incomplete \
     test_zx_roundtrip \
     test_ic_normal \
     test_tc_normal

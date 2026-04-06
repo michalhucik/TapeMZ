@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_bsd.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Implementace vrstvy 4d - BSD dekoder.
  *
  * BSD signal: hlavicka (fsize=0) nasledovana sekvenci chunku.
@@ -51,9 +51,11 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
     const st_WAV_LEADER_INFO *leader,
     const st_MZF_HEADER *header,
     uint32_t search_from_pulse,
+    int allow_partial,
     st_MZF **out_mzf,
     st_WAV_DECODE_RESULT *out_body_result,
-    uint32_t *out_consumed_until
+    uint32_t *out_consumed_until,
+    uint32_t *out_recovery_status
 ) {
     if ( !seq || !leader || !header || !out_mzf ) {
         return WAV_ANALYZER_ERROR_INVALID_PARAM;
@@ -61,6 +63,7 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
 
     *out_mzf = NULL;
     if ( out_consumed_until ) *out_consumed_until = 0;
+    if ( out_recovery_status ) *out_recovery_status = WAV_RECOVERY_NONE;
 
     /* === 1. Inicializace FM dekoderu === */
 
@@ -84,9 +87,18 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
     uint16_t last_crc_stored = 0, last_crc_computed = 0;
     uint32_t first_chunk_pulse_start = 0;
 
+    int found_terminator = 0;
+
     /* === 3. Dekodovani chunku === */
 
     en_WAV_ANALYZER_ERROR err;
+
+    /*
+     * Pozice za poslednim uspesne prectenim chunkem.
+     * Pri partial recovery se dec.pos vraci na tuto pozici,
+     * aby find_tapemark nepozrel leadery nasledujicich souboru.
+     */
+    uint32_t last_good_pos = dec.pos;
 
     for ( ;; ) {
         /* ochrana proti nekonecne smycce */
@@ -123,6 +135,18 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
 
         err = wav_decode_fm_read_block ( &dec, chunk, WAV_BSD_CHUNK_SIZE );
         if ( err != WAV_ANALYZER_OK ) {
+            if ( allow_partial && chunk_count > 0 ) {
+                /*
+                 * Recovery mod: zachovame dosavadni chunky.
+                 * Vracime dec.pos na konec posledniho uspesneho chunku,
+                 * aby consumed_until neukazoval za falsny tapemark
+                 * (ktery muze byt leader nasledujiciho souboru).
+                 */
+                dec.pos = last_good_pos;
+                if ( out_recovery_status )
+                    *out_recovery_status = WAV_RECOVERY_BSD_INCOMPLETE;
+                break;
+            }
             free ( body_data );
             return WAV_ANALYZER_ERROR_DECODE_DATA;
         }
@@ -135,6 +159,21 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
         uint16_t chunk_id;
         memcpy ( &chunk_id, chunk, 2 );
         chunk_id = endianity_bswap16_LE ( chunk_id );
+
+        /*
+         * Validace chunk ID sekvence: realne BSD chunky maji
+         * sekvencni ID (0x0000, 0x0001, ...) nebo terminator (0xFFFF).
+         * Pokud je ID mimo ocekavanou sekvenci, jedna se o data
+         * z jineho souboru na pasce (falsny tapemark).
+         */
+        uint16_t expected_id = ( uint16_t ) chunk_count;
+        if ( chunk_id != expected_id && chunk_id != WAV_BSD_LAST_CHUNK_ID ) {
+            /* chunk ID mimo sekvenci - konec BSD dat */
+            dec.pos = last_good_pos;
+            if ( out_recovery_status )
+                *out_recovery_status |= WAV_RECOVERY_BSD_INCOMPLETE;
+            break;
+        }
 
         /* zvetsime buffer pokud je potreba */
         if ( body_size + WAV_BSD_CHUNK_DATA_SIZE > body_capacity ) {
@@ -153,15 +192,34 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
         body_size += WAV_BSD_CHUNK_DATA_SIZE;
         chunk_count++;
 
+        /* aktualizujeme pozici za poslednim uspesnym chunkem */
+        last_good_pos = dec.pos;
+
         /* chunk ID == 0xFFFF znamena posledni chunk */
         if ( chunk_id == WAV_BSD_LAST_CHUNK_ID ) {
+            found_terminator = 1;
             break;
         }
+    }
+
+    /* detekce chybejiciho terminatoru (informacni, i bez allow_partial) */
+    if ( chunk_count > 0 && !found_terminator ) {
+        if ( out_recovery_status )
+            *out_recovery_status |= WAV_RECOVERY_BSD_INCOMPLETE;
     }
 
     /* === 4. Sestaveni MZF struktury === */
 
     if ( chunk_count == 0 ) {
+        free ( body_data );
+        return WAV_ANALYZER_ERROR_DECODE_DATA;
+    }
+
+    /*
+     * Bez terminatoru a bez allow_partial zahodime data.
+     * Toto zachovava stavajici chovani (bez --recover-bsd).
+     */
+    if ( !found_terminator && !allow_partial ) {
         free ( body_data );
         return WAV_ANALYZER_ERROR_DECODE_DATA;
     }
@@ -197,7 +255,13 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
     /* === 5. Consumed until === */
 
     if ( out_consumed_until ) {
-        *out_consumed_until = dec.pos;
+        /*
+         * Pokud chybi terminator, pouzijeme last_good_pos (pozici za
+         * poslednim uspesne prectenim chunkem). Jinak find_tapemark
+         * mohl skenovat daleko za BSD daty a spotrebovat leadery
+         * nasledujicich souboru na pasce.
+         */
+        *out_consumed_until = found_terminator ? dec.pos : last_good_pos;
     }
 
     return WAV_ANALYZER_OK;

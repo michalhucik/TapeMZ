@@ -34,6 +34,10 @@ wav2tmz vstup.wav [-o vystup] [volby]
 | `--raw-format` | direct | direct | Formát pro neidentifikované bloky |
 | `--pass` | `<N>` | 1 | Počet průchodů (zatím nepoužito) |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
+| `--recover` | - | vypnuto | Zapnout všechny recovery módy |
+| `--recover-bsd` | - | vypnuto | Obnovit nekompletní BSD soubory (chybějící terminátor) |
+| `--recover-body` | - | vypnuto | Obnovit částečné tělo (zatím neimplementováno) |
+| `--recover-header` | - | vypnuto | Uložit osiřelé hlavičky (zatím neimplementováno) |
 | `--version` | - | - | Zobrazit verzi programu |
 | `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 | `--help`, `-h` | - | - | Zobrazit nápovědu |
@@ -62,6 +66,15 @@ nahrávka ve špatné polaritě (např. z jiného nahrávacího zařízení).
 - `ascii` - překlad Sharp MZ znakové sady do ASCII (výchozí, zpětně kompatibilní)
 - `utf8-eu` - překlad do UTF-8, evropská varianta znakové sady (zobrazí skutečné Sharp MZ glyfy)
 - `utf8-jp` - překlad do UTF-8, japonská varianta znakové sady (katakana místo malých písmen)
+
+**--recover-bsd** - pokud BSD soubor na pásce nemá ukončovací chunk
+(ID=0xFFFF), např. kvůli chybějícímu CLOSE v BASICu, jsou všechny úspěšně
+dekódované chunky zachráněny. Bez této volby se nekompletní BSD data zahodí
+(s diagnostickou zprávou a nápovědou). V TMZ výstupu je před obnovený
+blok vložen Text Description (0x30) s varováním.
+
+**--recover** - zapne všechny recovery módy najednou (--recover-bsd
+a budoucí --recover-body, --recover-header).
 
 **--keep-unknown** - úseky nahrávky, které nebyly identifikovány
 jako žádný známý formát, se uloží jako TZX blok 0x15 (Direct Recording).
@@ -140,6 +153,18 @@ Dekódování se zobrazením názvů v evropské UTF-8 znakové sadě:
 
 ```
 wav2tmz recording.wav --name-encoding utf8-eu
+```
+
+Obnova nekompletních BSD souborů:
+
+```
+wav2tmz tape_with_broken_bsd.wav --recover-bsd
+```
+
+Obnova všech částečných dat do TMZ archivu:
+
+```
+wav2tmz damaged_tape.wav --recover --output-format tmz -o rescued.tmz
 ```
 
 Přidání dalších nahrávek do existujícího TMZ:
