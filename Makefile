@@ -1,5 +1,15 @@
-export TEMP := $(shell cygpath -w /tmp)
-export TMP  := $(TEMP)
+# Detekce platformy: MSYS2/MinGW vs Linux/POSIX
+# Pozn: MSYS2 make neimportuje promennou OS, pouzijeme MSYSTEM (nastavuje MSYS2)
+ifneq ($(MSYSTEM),)
+    # MSYS2/MinGW: GCC linker (collect2) vyzaduje zapisovatelny TEMP adresar
+    export TEMP := $(shell cygpath -w /tmp)
+    export TMP  := $(TEMP)
+    CMAKE_CONFIGURE := cmake --preset default
+    EXE_SUFFIX := .exe
+else
+    CMAKE_CONFIGURE := cmake -B build
+    EXE_SUFFIX :=
+endif
 
 BUILD_DIR := build
 JOBS      := $(shell nproc)
@@ -30,7 +40,7 @@ all: $(BUILD_DIR)/Makefile
 configure: $(BUILD_DIR)/Makefile
 
 $(BUILD_DIR)/Makefile:
-	cmake --preset default
+	$(CMAKE_CONFIGURE)
 
 clean:
 	cmake --build $(BUILD_DIR) --target clean
@@ -48,6 +58,6 @@ test: all
 	@echo "=== Running tests ==="
 	@cd $(BUILD_DIR) && for t in $(TESTS); do \
 	    echo "--- $$t ---"; \
-	    ./$$t.exe || exit 1; \
+	    ./$$t$(EXE_SUFFIX) || exit 1; \
 	done
 	@echo "=== All tests passed ==="

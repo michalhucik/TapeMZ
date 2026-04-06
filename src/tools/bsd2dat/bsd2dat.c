@@ -235,7 +235,12 @@ static int export_chunks ( const st_TZX_BLOCK *block, uint32_t block_index,
     }
 
     /* vytvoreni vystupniho adresare */
+    /* POSIX mkdir() vyzaduje druhy argument (mode), Windows mkdir() ne */
+#if defined ( _WIN32 )
     if ( mkdir ( output_dir ) != 0 && errno != EEXIST ) {
+#else
+    if ( mkdir ( output_dir, 0755 ) != 0 && errno != EEXIST ) {
+#endif
         fprintf ( stderr, "Error: cannot create output directory '%s': %s\n",
                   output_dir, strerror ( errno ) );
         free ( data_copy );
