@@ -81,17 +81,17 @@ Do této kategorie patří i **CP/M CMT** (cmt.com pod CP/M, 2400 Bd) a **MZ-80B
 
 #### Kategorie 3: Loader v hlavičce (comment pole)
 
-Záznam se tváří jako kategorie 1, ale do pole comment MZF hlavičky byl vložen krátký program (loader). Hlavičkové informace SIZE, STRT a EXEC byly změněny tak, že SIZE=0 a EXEC ukazuje do oblasti comment. ROM nahraje jen hlavičku a spustí loader, který upraví ROM rutiny na adaptabilní rychlost a provede nahrání body bloku.
+Záznam se tváří jako kategorie 1, ale do pole comment MZF hlavičky byl vložen krátký program (loader). SIZE=0, EXEC ukazuje do oblasti comment. ROM nahraje jen hlavičku (bez body) a spustí loader.
 
 Formáty v této kategorii:
-- **TURBO** - loader v comment, identifikace přes NIPSOFT signaturu nebo Z80 opcode vzor (TurboCopy)
-- **FASTIPL** - $BB prefix v header bloku, V02/V07 loader (Intercopy)
+- **FASTIPL** - $BB prefix v header bloku, V02/V07 loader (Intercopy, Marek Šmihla - NIPSOFT)
 
 #### Kategorie 4: Loader jako samostatný program
 
-Záznam je složen z více částí: preloader header (NORMAL 1:1, fsize=0, fexec=$1110) + loader body (NORMAL FM) + uživatelská data (v cílovém formátu). ROM načte a spustí loader, ten pak přečte data v nestandardním formátu.
+Preloader se skládá z hlavičky + body v NORMAL FM 1:1. ROM načte hlavičku i body a spustí loader. Loader patchne ROM rutiny a načte uživatelská data z pásky v cílovém formátu.
 
 Formáty v této kategorii:
+- **TURBO** (TurboCopy varianta) - 90B loader na $D400, fsize=90, fstrt/fexec=$D400, identifikace přes signaturu v cmnt[0..6] (TurboCopy, Michal Kreidl). Loader patchne ROM rychlost a volá standardní CMT read ($002A). TURBO data = body-only (STM tapemark + body + CRC, bez hlavičky).
 - **FSK** (Frequency Shift Keying) - bit určen frekvencí cyklu, 7 rychlostních úrovní
 - **SLOW** (kvarternální) - 2 bity na pulz (4 symboly), 5 rychlostních úrovní
 - **DIRECT** (přímý bitový zápis) - 1 vzorek = 1 bit, rychlost daná sample ratem
@@ -109,7 +109,7 @@ CP/M Tape (Pezik/MarVan, ZTAPE/TAPE.COM) používá zcela odlišný protokol - m
 | CP/M CMT  | 2         | FM           | 2400 Bd     | žádný   | 0x41     |
 | MZ-80B    | 2         | FM           | 1800 Bd     | žádný   | 0x41     |
 | BSD/BRD   | 1/2       | FM (chunky)  | 1200+ Bd    | žádný   | 0x45     |
-| TURBO     | 3         | FM           | konfig.     | comment | 0x41     |
+| TURBO     | 4         | FM           | konfig.     | $D400   | 0x41     |
 | FASTIPL   | 3         | FM + $BB     | konfig.     | comment | 0x41     |
 | FSK       | 4         | FSK          | 7 úrovní    | program | 0x41     |
 | SLOW      | 4         | kvarternální | 5 úrovní    | program | 0x41     |
@@ -260,8 +260,8 @@ Projekt čerpá z následujících zdrojů:
 - **Sharp MZ-80B dokumentace** - odlišný timing (1800 Bd základ), vlastní pulsní sada
 
 ### 6.2 Software
-- **Intercopy 10.2** (MZ-800) - referenční implementace autodetekce, Z80 disassembly
-- **TurboCopy** (MZ-800) - TURBO loader implementace, NIPSOFT signatura
+- **Intercopy 10.2** (MZ-800, Marek Šmihla - NIPSOFT) - referenční implementace autodetekce, Z80 disassembly
+- **TurboCopy V1.21** (MZ-800, Michal Kreidl) - TURBO loader implementace
 - **cmt.com / ztape.com** (CP/M) - CP/M kazetové utility, manchesterské kódování
 - **mzftools** (mz-fuzzy, GPLv3) - referenční C implementace MZF konverzí, FSK/SLOW/DIRECT Z80 loadery
 
@@ -361,7 +361,7 @@ Stávající funkce pro načítání prostých MZF/MZT a WAV souborů zůstanou 
 
 Projekt je licencován pod GNU General Public License v3 (GPLv3).
 
-Některé knihovny (mzcmt_fsk, mzcmt_slow, mzcmt_turbo) obsahují embedded Z80 loader binárky odvozené z projektu mzftools (mz-fuzzy, GPLv3).
+Některé knihovny (mzcmt_fsk, mzcmt_slow) obsahují embedded Z80 loader binárky odvozené z projektu mzftools (mz-fuzzy, GPLv3). Knihovna mzcmt_turbo obsahuje loader odvozený z reverse engineeringu TurboCopy V1.21 (Michal Kreidl).
 
 ## 11. Autoři
 

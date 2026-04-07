@@ -298,10 +298,10 @@ en_WAV_TAPE_FORMAT wav_classify_from_header (
     }
 
     /*
-     * Test Intercopy preloader: fstrt=fexec=$D400, fsize <= 500.
-     * Intercopy TURBO/FSK/SLOW/DIRECT pouziva preloader nahravany
+     * Test TurboCopy preloader: fstrt=fexec=$D400, fsize <= 500.
+     * TurboCopy TURBO/FSK/SLOW/DIRECT pouziva preloader nahravany
      * na adresu $D400. Na rozdil od mzftools formatu (fsize=0, loader
-     * v comment poli), Intercopy ma loader v body (fsize=90..360).
+     * v comment poli), TurboCopy ma loader v body (fsize=90..360).
      * Typ loaderu urcime z velikosti body:
      *   ~90 = TURBO, ~191 = FSK, ~249 = SLOW, ~360 = DIRECT
      */

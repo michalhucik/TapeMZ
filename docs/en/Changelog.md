@@ -1,5 +1,60 @@
 # Changelog
 
+## 2026-04-07
+
+### wav_analyzer v1.2.0
+- Support for decoding TurboCopy TURBO recordings (speeds 2:1, 7:3, 8:3, 3:1 etc.).
+  TurboCopy TURBO preloader (fsize=90, fstrt=$D400) patches the ROM and uses
+  the standard CMT read routine to read the body at TURBO speed. The decoder
+  extracts metadata (fsize/fstrt/fexec) from the preloader body and decodes
+  TURBO data as standard FM (body-only, STM tapemark).
+- Support for mzftools TURBO format (fsize=0, loader in comment). Metadata
+  extracted from header comment area (cmnt[1..6]).
+- New function: `wav_decode_turbo_turbocopy_mzf()` - TurboCopy body-only decoding.
+- New function: `wav_decode_turbo_mzftools_mzf()` - mzftools body-only decoding.
+- Fix: TURBO dispatch in `process_leader()` - missing `else` between TurboCopy
+  and mzftools TURBO paths caused the decode result to be discarded.
+- Fix: leader skip condition `leader_end < skip_until_pulse` instead of
+  `start_index < skip_until_pulse` - leader at consumed boundary was
+  incorrectly skipped (round-trip 3/5 -> 5/5).
+- Improvement: TURBO decoder uses `wav_leader_detect()` to find the actual
+  TURBO leader instead of a synthetic leader with pulse_count=0.
+
+### mzcmt_turbo v2.0.0
+- Complete rewrite of tape encoder to TurboCopy compatible format.
+  Preloader now generates fsize=90, fstrt=$D400 (instead of mzftools fsize=0, $1110).
+  TurboCopy format works on real hardware, in emulators, and with TurboCopy/Intercopy.
+- Embedded TurboCopy loader (75B generic code from reverse eng. TurboCopy V1.21)
+  with patchable data section (speed_val, fsize/fstrt/fexec, ROM params).
+- Preloader header: TurboCopy identification signature in cmnt[0..6],
+  original comment data in cmnt[7..103].
+- TURBO data section: body-only format (STM tapemark + body + CRC).
+  Matches the structure of real TurboCopy recordings.
+- ROM delay: formula `round(82/speed_ratio)` derived from measurements of real
+  TurboCopy recordings. Replaces incorrect mzftools lookup table.
+- Pulseset MZ-800: symmetric pulses (249/249 us SHORT, 498/498 us LONG).
+  ROM generates symmetric pulses; original asymmetric values (246/278, 470/494)
+  caused incorrect rounding at 44100 Hz.
+- Pulseset MZ-700: similarly symmetric (252/252, 504/504).
+
+### wav2tmz v2.2.0
+- TURBO file speed estimation from leader average half-period
+  (previously only for NORMAL/MZ-80B, now also for TURBO format).
+- More accurate speed for TurboCopy from speed_val byte in preloader ($4B).
+
+### New utility: extract_preloader
+- Extracts TurboCopy TURBO preloader binary (90B) from WAV recordings.
+
+### New test data
+- `tstdata/tc-loader-all.wav` - 5 copies of Turbo Copy V1.21 with TURBO loader
+  (speeds 1:1, 2:1, 7:3, 8:3, 3:1).
+- `tstdata/mzf/Turbo_Copy_V1.21.mzf` - reference MZF for verification.
+- `tests/test_tc_loader_all.c` - integration test (5 copies, body match, CRC OK).
+
+### Attribution
+- Fixed attribution: TURBO = TurboCopy (Michal Kreidl),
+  FAST IPL = Intercopy (Marek Smihla - NIPSOFT).
+
 ## 2026-04-06
 
 ### wav2tmz v2.1.0

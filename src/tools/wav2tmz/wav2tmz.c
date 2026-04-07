@@ -1,7 +1,7 @@
 /**
  * @file   wav2tmz.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.1.0
+ * @version 2.2.0
  * @brief  Konverzni utilita WAV -> MZF/TMZ - dekodovani Sharp MZ kazetovych nahravek.
  *
  * Analyzuje WAV soubor obsahujici nahravku magnetofonove kazety
@@ -75,7 +75,7 @@
 
 
 /** @brief Verze programu wav2tmz. */
-#define WAV2TMZ_VERSION "2.1.0"
+#define WAV2TMZ_VERSION "2.2.0"
 
 
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
@@ -409,7 +409,13 @@ static st_TZX_BLOCK* create_block_turbo ( const st_WAV_ANALYZER_FILE_RESULT *fil
      * pro CPM-CMT je pevne 2:1, ostatni CMTSPEED_NONE.
      */
     if ( file_result->format == WAV_TAPE_FORMAT_NORMAL ||
-         file_result->format == WAV_TAPE_FORMAT_MZ80B ) {
+         file_result->format == WAV_TAPE_FORMAT_MZ80B ||
+         file_result->format == WAV_TAPE_FORMAT_TURBO ) {
+        /*
+         * NORMAL/MZ-80B/TURBO: rychlost odhadneme z leader avg.
+         * Pro TURBO file_result->leader obsahuje TURBO datovy leader
+         * (nastaveno wav_analyzerem), ne preloader.
+         */
         params.speed = ( uint8_t ) estimate_speed_from_leader (
                                        file_result->leader.avg_period_us );
     } else {

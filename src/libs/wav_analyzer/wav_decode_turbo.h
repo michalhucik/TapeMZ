@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_turbo.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.2.0
  * @brief  Vrstva 4b analyzeru - TURBO dekoder (NIPSOFT signatura).
  *
  * Dekoduje TURBO format z WAV signalu. TURBO signal se sklada ze dvou casti:
@@ -84,6 +84,71 @@ extern "C" {
         st_WAV_DECODE_RESULT *out_header_result,
         st_WAV_DECODE_RESULT *out_body_result,
         uint32_t *out_consumed_until
+    );
+
+
+    /**
+     * @brief Dekoduje TurboCopy TURBO body-only signal.
+     *
+     * TurboCopy TURBO preloader (fsize>0, fstrt=$D400) patchne ROM
+     * a vola standardni CMT read rutinu $002A, ktera cte POUZE telo
+     * (bez hlavicky). Metadata (fsize/fstrt/fexec) jsou extrahovana
+     * z preloader body (90B loader na $D400).
+     *
+     * Struktura TURBO dat na pasce:
+     * - LGAP (leader SHORT pulzy v TURBO rychlosti)
+     * - STM tapemark (20 LONG + 20 SHORT pulzu)
+     * - Sync (2 LONG hp)
+     * - BODY data (fsize bajtu, standardni FM se start bity)
+     * - CRC (2 bajty)
+     *
+     * @param seq Sekvence pulzu. Nesmi byt NULL.
+     * @param search_from_pulse Pozice od ktere hledat TURBO LGAP.
+     * @param preloader_header Hlavicka preloaderu (ftype, fname pro vysledny MZF).
+     * @param preloader_body Telo preloaderu (90B loader, obsahuje user_params).
+     * @param preloader_body_size Velikost tela preloaderu.
+     * @param[out] out_mzf Vystupni MZF (volajici uvolni pres mzf_free). Nesmi byt NULL.
+     * @param[out] out_body_result Vysledek dekodovani tela. Muze byt NULL.
+     * @param[out] out_consumed_until Pozice za poslednim zpracovanym pulzem. Muze byt NULL.
+     * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
+     */
+    extern en_WAV_ANALYZER_ERROR wav_decode_turbo_turbocopy_mzf (
+        const st_WAV_PULSE_SEQUENCE *seq,
+        uint32_t search_from_pulse,
+        const st_MZF_HEADER *preloader_header,
+        const uint8_t *preloader_body,
+        uint32_t preloader_body_size,
+        st_MZF **out_mzf,
+        st_WAV_DECODE_RESULT *out_body_result,
+        uint32_t *out_consumed_until,
+        st_WAV_LEADER_INFO *out_turbo_leader
+    );
+
+
+    /**
+     * @brief Dekoduje mzftools TURBO body-only signal.
+     *
+     * mzftools TURBO preloader (fsize=0, loader v comment) pouziva
+     * stejny princip jako TurboCopy - patchne ROM a vola RDATA.
+     * Metadata (fsize/fstrt/fexec) jsou v comment oblasti preloader hlavicky.
+     *
+     * @param seq Sekvence pulzu. Nesmi byt NULL.
+     * @param search_from_pulse Pozice od ktere hledat TURBO LGAP.
+     * @param preloader_header Hlavicka preloaderu (metadata v cmnt).
+     * @param[out] out_mzf Vystupni MZF. Nesmi byt NULL.
+     * @param[out] out_body_result Vysledek dekodovani tela. Muze byt NULL.
+     * @param[out] out_consumed_until Pozice za poslednim pulzem. Muze byt NULL.
+     * @param[out] out_turbo_leader Detekovany TURBO leader. Muze byt NULL.
+     * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
+     */
+    extern en_WAV_ANALYZER_ERROR wav_decode_turbo_mzftools_mzf (
+        const st_WAV_PULSE_SEQUENCE *seq,
+        uint32_t search_from_pulse,
+        const st_MZF_HEADER *preloader_header,
+        st_MZF **out_mzf,
+        st_WAV_DECODE_RESULT *out_body_result,
+        uint32_t *out_consumed_until,
+        st_WAV_LEADER_INFO *out_turbo_leader
     );
 
 

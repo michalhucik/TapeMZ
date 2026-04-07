@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_turbo.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 2.0.0
  * @brief  Implementace TURBO koderu pro Sharp MZ.
  *
  * TURBO je standardni NORMAL FM modulace s konfigurovatelnym pulznim
@@ -19,7 +19,7 @@
  * @par Popis vychozich pulznich konstant:
  * @verbatim
  *   MZ-700:  long 464+494 us, short 240+264 us
- *   MZ-800:  long 470+494 us, short 246+278 us  (Intercopy mereni)
+ *   MZ-800:  long 498+498 us, short 249+249 us  (symetricke, ROM chovani)
  *   MZ-80B:  long 333+334 us, short 167+166 us
  *
  *   Pri rychlosti 2:1 se vsechny casy deli 2, pri 7:3 deli 7/3 atd.
@@ -137,23 +137,32 @@ typedef struct st_turbo_pulses_length {
 /**
  * @brief Vychozi pulzni konstanty pro MZ-700, MZ-80K, MZ-80A.
  *
- * Prevzato z mztape.c (g_mztape_pulses_700).
+ * Symetricke hodnoty - MZ-700 ROM pouziva stejnou delay smycku
+ * pro obe poloviny pulzu. Zakladni casovani: SHORT = 252 us,
+ * LONG = 504 us (pomer 1:2). Odvozeno ze stredni hodnoty
+ * puvodniho mereni (240+264)/2 = 252, (464+494)/2 = 479 ~ 504.
  */
 static const st_turbo_pulses_length g_pulses_700 = {
-    { 0.000464, 0.000494 },   /* long: 464 us H + 494 us L */
-    { 0.000240, 0.000264 },   /* short: 240 us H + 264 us L */
+    { 0.000504, 0.000504 },   /* long: 504 us H + 504 us L */
+    { 0.000252, 0.000252 },   /* short: 252 us H + 252 us L */
 };
 
 
 /**
  * @brief Vychozi pulzni konstanty pro MZ-800, MZ-1500.
  *
- * Presne hodnoty z mereni Intercopy 10.2 (GDG ticky na MZ-800,
- * pixel clock 17 721 600 Hz). Prevzato z mztape.c.
+ * Symetricke hodnoty odpovidajici chovani MZ-800 ROM - ROM pouziva
+ * stejnou delay smycku pro HIGH i LOW cast pulzu, takze obe poloviny
+ * maji shodnou delku. Puvodni asym. hodnoty (246/278, 470/494) z mereni
+ * Intercopy 10.2 zpusobovaly spatne zaokrouhlovani na 44100 Hz
+ * (11+12 vzorku misto 11+11 pro SHORT), coz se projevilo odchylkou
+ * namerenene rychlosti v Intercopy (~1099 Bd misto ~1150 Bd).
+ *
+ * Zakladni casovani: SHORT = 249 us, LONG = 498 us (pomer 1:2).
  */
 static const st_turbo_pulses_length g_pulses_800 = {
-    { 0.000470330, 0.000494308 },   /* long */
-    { 0.000245802, 0.000278204 },   /* short */
+    { 0.000498, 0.000498 },         /* long: 498 us H + 498 us L */
+    { 0.000249, 0.000249 },         /* short: 249 us H + 249 us L */
 };
 
 
@@ -584,88 +593,111 @@ st_CMT_STREAM* mzcmt_turbo_create_stream (
 
 
 /* =========================================================================
- *  Embedded TURBO loader pro tape generovani
+ *  Embedded TurboCopy TURBO loader pro tape generovani
  * ========================================================================= */
 
 /**
- * @brief Binarni kod TURBO loaderu (loader_turbo z mzftools, 128 bajtu).
+ * @brief Genericka cast TurboCopy TURBO loaderu (75 bajtu, $D400-$D44A).
  *
- * Kompletni MZF hlavicka s fsize=0 a Z80 kodem v komentarove oblasti.
- * ROM ho nacte standardnim NORMAL FM 1:1, vidi fsize=0, spusti kod
- * z fexec=$1110. Kod kopiruje ROM do RAM, modifikuje readpoint
- * a vola ROM cteci rutinu pro nacteni uzivatelskeho datoveho bloku.
+ * Loader se nahraje jako body preloaderu na adresu $D400 a spusti.
+ * Funkce: zkopiruje ROM do RAM, patchne rychlostni parametry,
+ * zkopiruje metadata programu (fsize/fstrt/fexec) do $1102,
+ * a zavola ROM rutinu $002A pro nacteni TURBO dat.
  *
- * Patchovatelna mista v comment casti (offset od bajtu 24):
- * - comment[1..2]: fsize ciloveho programu (2B LE)
- * - comment[3..4]: fstrt ciloveho programu (2B LE)
- * - comment[5..6]: fexec ciloveho programu (2B LE)
- * - comment[54]:   readpoint delay (1B)
+ * Struktura kompletniho 90B loaderu:
+ * - bajty 0x00-0x4A: genericka cast (75B, vzdy stejna) = toto pole
+ * - bajt 0x4B: speed_val (ROM delay pro $0A4B)
+ * - bajt 0x4C: read_param (vzdy $01, pro $0512)
+ * - bajty 0x4D-0x4E: user fsize (2B LE)
+ * - bajty 0x4F-0x50: user fstrt (2B LE)
+ * - bajty 0x51-0x52: user fexec (2B LE)
+ * - bajty 0x53-0x59: extra ROM parametry (7B, z cmnt[0..6] originalu)
+ *
+ * Odvozeno z reverse engineeringu TurboCopy V1.21 (Michal Kreidl).
  */
-static const uint8_t g_turbo_loader[128] = {
-    0x01,0x3E,0x11,0x09,0x11,0x0B,0x11,0x0D,0x11,0x0D,0x0D,0x0D,0x0D,0x0D,0x0D,
-    0x0D,0x0D,0x0D,0x00,0x00,0x00,0x12,0x10,0x11,0x00,0x00,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x3E,0x08,0xD3,0xCE,0xCD,0x3E,0x07,0x36,0x01,0x97,0x57,0x5F,0xCD,
-    0xBE,0x02,0xD3,0xE2,0x1A,0xD3,0xE0,0x12,0x13,0xCB,0x62,0x28,0xF5,0x3E,0xC3,
-    0x32,0x1F,0x06,0x21,0x60,0x11,0x22,0x20,0x06,0x21,0x12,0x05,0x36,0x01,0x21,
-    0x4B,0x0A,0x36,0x00,0x2A,0x09,0x11,0x22,0x02,0x11,0x3E,0xC9,0x32,0x9F,0x06,
-    0x32,0x00,0x07,0xCD,0xF8,0x04,0x01,0xCF,0x06,0xED,0x71,0xD3,0xE2,0xDA,0xAA,
-    0xE9,0x21,0x09,0x11,0xC3,0x08,0xED,0xC5,0x3A,0x10,0x11,0xEE,0x0F,0x32,0x10,
-    0x11,0x01,0xCF,0x06,0xED,0x79,0xC1,0xC9
+static const uint8_t g_tc_loader_generic[75] = {
+    0x3E,0x08,0xD3,0xCE,0xE5,0x21,0x00,0x00,0xD3,0xE4,0x7E,0xD3,0xE0,0x77,0x23,
+    0x7C,0xFE,0x10,0x20,0xF4,0x3A,0x4B,0xD4,0x32,0x4B,0x0A,0x3A,0x4C,0xD4,0x32,
+    0x12,0x05,0x21,0x4D,0xD4,0x11,0x02,0x11,0x01,0x0D,0x00,0xED,0xB0,0xE1,0x7C,
+    0xFE,0xD4,0x28,0x12,0x2A,0x04,0x11,0xD9,0x21,0x00,0x12,0x22,0x04,0x11,0xCD,
+    0x2A,0x00,0xD3,0xE4,0xC3,0x9A,0xE9,0xCD,0x2A,0x00,0xD3,0xE4,0xC3,0x24,0x01
 };
 
 
-/** @brief Offset fsize v comment casti TURBO loaderu (od bajtu 24). */
-#define TURBO_LOADER_OFF_SIZE    1
-/** @brief Offset fstrt v comment casti TURBO loaderu (od bajtu 24). */
-#define TURBO_LOADER_OFF_FROM    3
-/** @brief Offset fexec v comment casti TURBO loaderu (od bajtu 24). */
-#define TURBO_LOADER_OFF_EXEC    5
-/** @brief Offset readpoint delay v comment casti TURBO loaderu (od bajtu 24). */
-#define TURBO_LOADER_OFF_DELAY   54
+/** @brief Velikost genericke casti TurboCopy loaderu (bajty). */
+#define TC_LOADER_GENERIC_SIZE  75
+
+/** @brief Celkova velikost TurboCopy loader body (bajty). */
+#define TC_LOADER_BODY_SIZE     90
+
+/** @brief Load/exec adresa TurboCopy loaderu v pameti Z80. */
+#define TC_LOADER_ADDR          0xD400
+
+/** @brief Offset speed_val v loader body (1B, ROM delay hodnota pro $0A4B). */
+#define TC_OFF_SPEED            0x4B
+
+/** @brief Offset read_param v loader body (1B, vzdy $01, pro $0512). */
+#define TC_OFF_RDPARAM          0x4C
+
+/** @brief Offset user fsize v loader body (2B LE). */
+#define TC_OFF_FSIZE            0x4D
+
+/** @brief Offset user fstrt v loader body (2B LE). */
+#define TC_OFF_FSTRT            0x4F
+
+/** @brief Offset user fexec v loader body (2B LE). */
+#define TC_OFF_FEXEC            0x51
+
+/** @brief Offset extra ROM parametru v loader body (7B, z cmnt[0..6]). */
+#define TC_OFF_ROMPARAMS        0x53
+
+/**
+ * @brief TurboCopy identifikacni signatura (7 bajtu).
+ *
+ * TurboCopy zapisuje tuto signaturu do cmnt[0..6] preloader hlavicky.
+ * Intercopy 10.2 ji porovnava s hodnotou na $18CA pro detekci
+ * TURBO formatu. Signatura nahradi puvodni cmnt[0..6], ktere se
+ * ulozi do loader body na offsetu $53 (extra ROM parametry).
+ */
+static const uint8_t g_tc_signature[7] = {
+    0x5B, 0x96, 0xA5, 0x9D, 0x9A, 0xB7, 0x5D
+};
 
 
 /* =========================================================================
- *  ROM delay tabulky pro TURBO loader
+ *  ROM delay vypocet pro TurboCopy loader
  * ========================================================================= */
 
-/** @brief ROM delay tabulka pro 44100 Hz (speed 0-6). */
-static const uint8_t g_rom_delay_44k[] = { 76, 29, 17, 9, 4, 2, 1 };
-/** @brief ROM delay tabulka pro 48000 Hz (speed 0-6). */
-static const uint8_t g_rom_delay_48k[] = { 76, 29, 17, 7, 2, 1, 1 };
-
-
 /**
- * @brief Vrati ROM delay pro danou rychlost a vzorkovaci frekvenci.
+ * @brief Referencni ROM delay hodnota pro rychlost 1:1 (NORMAL).
  *
- * Delay urcuje prodlevu v ROM cteci smycce. Pro frekvence >= 46050 Hz
- * pouziva tabulku pro 48000 Hz, jinak 44100 Hz.
+ * Odvozeno z mereni realnych TurboCopy nahravek:
+ *   2:1 -> delay 41 ($29), 82/2.0 = 41.0
+ *   7:3 -> delay 35 ($23), 82/2.333 = 35.1
+ *   8:3 -> delay 30 ($1E), 82/2.667 = 30.75
+ *   3:1 -> delay 27 ($1B), 82/3.0 = 27.3
  *
- * @param speed Rychlost (0-6, indexovano z cmtspeed). Hodnoty > 6 se oriznou.
- * @param rate Vzorkovaci frekvence (Hz).
- * @return Hodnota delay pro patchovani loaderu.
+ * Vzorec: delay = round(82 / speed_ratio)
  */
-static uint8_t turbo_tape_get_rom_delay ( uint8_t speed, uint32_t rate ) {
-    if ( speed > 6 ) speed = 6;
-    if ( rate >= 46050 ) return g_rom_delay_48k[speed];
-    return g_rom_delay_44k[speed];
-}
-
+#define TC_ROM_DELAY_REF    82.0
 
 /**
- * @brief Prevede en_CMTSPEED na index (0-6) pro delay tabulku.
+ * @brief Spocita ROM delay pro TurboCopy loader z rychlostniho pomeru.
  *
- * CMTSPEED_1_1 = index 0 (standardni rychlost, delay 76).
- * Vyssi rychlosti maji nizsi delay (kratsi prodleva = rychlejsi cteni).
+ * TurboCopy loader patchne ROM na adrese $0A4B timto delay.
+ * Delay urcuje prodlevu v ROM cteci smycce - nizsi delay = rychlejsi
+ * cteni = vyssi rychlostni pomer.
  *
  * @param speed en_CMTSPEED hodnota.
- * @return Index 0-6 pro delay tabulku. Vraci 0 pro neplatne hodnoty.
+ * @return Hodnota delay pro patchovani loaderu (1-82).
  */
-static uint8_t turbo_tape_speed_to_index ( en_CMTSPEED speed ) {
-    if ( !cmtspeed_is_valid ( speed ) ) return 0;
-    int idx = ( int ) speed - ( int ) CMTSPEED_1_1;
-    if ( idx < 0 ) return 0;
-    if ( idx > 6 ) return 6;
-    return ( uint8_t ) idx;
+static uint8_t turbo_tape_get_rom_delay ( en_CMTSPEED speed ) {
+    double divisor = cmtspeed_get_divisor ( speed );
+    if ( divisor <= 0.0 ) divisor = 1.0;
+    int delay = ( int ) ( TC_ROM_DELAY_REF / divisor + 0.5 );
+    if ( delay < 1 ) delay = 1;
+    if ( delay > 255 ) delay = 255;
+    return ( uint8_t ) delay;
 }
 
 
@@ -676,16 +708,22 @@ static uint8_t turbo_tape_speed_to_index ( en_CMTSPEED speed ) {
 /**
  * @brief Vytvori CMT vstream s kompletnim paskovym signalem vcetne loaderu.
  *
- * Generuje dvoudilny signal:
- * 1. TURBO loader header v NORMAL FM 1:1 (ROM ho nacte, fsize=0)
- *    LGAP(22000) + LTM(40L+40S) + 2L + HDR(128B) + CHKH + 2L
- * 2. Uzivatelska data v TURBO formatu (loader je nacte modifikovanym ROMem)
- *    Kompletni TURBO ramec: LGAP + LTM + 2L + HDR + CHKH + 2L + SGAP + STM + ...
+ * Generuje dvoudilny signal v TurboCopy kompatibilnim formatu:
  *
- * Loader je patchovan s parametry ciloveho programu (fsize, fstrt, fexec)
- * a readpoint delay odpovidajicim TURBO rychlosti.
+ * Cast 1 - preloader v NORMAL FM 1:1:
+ *   LGAP(22000) + LTM(40L+40S) + 2L + HDR(128B, fsize=90) + CHKH + 2L
+ *   + SGAP + STM(20L+20S) + 2L + BODY(90B TurboCopy loader) + CHKB + 2L
  *
- * @param original  Originalni MZF hlavicka.
+ * Cast 2 - uzivatelska data v TURBO rychlosti (body-only):
+ *   LGAP + STM(20L+20S) + 2L + BODY + CHKB + 2L + [kopie]
+ *
+ * TurboCopy loader (90B na $D400) patchne ROM:
+ * - $0A4B = speed delay (rychlost TURBO cteni)
+ * - $0512 = $01 (body-only rezim)
+ * Pak vola $002A (CMT read), ktera cte pouze telo v TURBO rychlosti.
+ * Metadata (fsize/fstrt/fexec) jsou v loader body na offsetu $4D.
+ *
+ * @param original  Originalni MZF hlavicka (v host byte-order).
  * @param body      Datove telo.
  * @param body_size Velikost datoveho tela.
  * @param config    Konfigurace (pulseset, speed, GAP delky, flags).
@@ -730,27 +768,49 @@ st_CMT_VSTREAM* mzcmt_turbo_create_tape_vstream (
         return NULL;
     }
 
-    /* ===== A. Priprava patchovaneho TURBO loaderu ===== */
+    /* ===== A. Sestaveni TurboCopy preloader hlavicky ===== */
 
-    uint8_t loader[128];
-    memcpy ( loader, g_turbo_loader, 128 );
+    st_MZF_HEADER preloader_hdr;
+    memcpy ( &preloader_hdr, original, sizeof ( st_MZF_HEADER ) );
 
-    /* kopirovat fname z originalu */
-    memcpy ( &loader[1], &original->fname, sizeof ( original->fname ) );
+    /* nahradime fsize/fstrt/fexec hodnotami loaderu */
+    preloader_hdr.fsize = TC_LOADER_BODY_SIZE;  /* 90 */
+    preloader_hdr.fstrt = TC_LOADER_ADDR;       /* $D400 */
+    preloader_hdr.fexec = TC_LOADER_ADDR;       /* $D400 */
 
-    /* patch comment cast (od bajtu 24): fsize, fstrt, fexec uzivatele */
-    uint16_t user_size = ( uint16_t ) body_size;
-    uint16_t user_from = original->fstrt;
-    uint16_t user_exec = original->fexec;
-    memcpy ( &loader[24 + TURBO_LOADER_OFF_SIZE], &user_size, 2 );
-    memcpy ( &loader[24 + TURBO_LOADER_OFF_FROM], &user_from, 2 );
-    memcpy ( &loader[24 + TURBO_LOADER_OFF_EXEC], &user_exec, 2 );
+    /* vlozime TurboCopy signaturu do cmnt[0..6] */
+    memcpy ( &preloader_hdr.cmnt[0], g_tc_signature, 7 );
+    /* cmnt[7..103] zustava z originalni hlavicky */
 
-    /* patch delay pro TURBO rychlost */
-    uint8_t speed_idx = turbo_tape_speed_to_index ( config->speed );
-    loader[24 + TURBO_LOADER_OFF_DELAY] = turbo_tape_get_rom_delay ( speed_idx, rate );
+    /* konverze na LE pro zakodovani do signalu */
+    mzf_header_items_correction ( &preloader_hdr );
 
-    /* ===== B. Pulzy pro loader header (1:1 rychlost) ===== */
+    /* ===== B. Sestaveni patchovaneho TurboCopy loader body (90B) ===== */
+
+    uint8_t tc_body[TC_LOADER_BODY_SIZE];
+    memset ( tc_body, 0, TC_LOADER_BODY_SIZE );
+    memcpy ( tc_body, g_tc_loader_generic, TC_LOADER_GENERIC_SIZE );
+
+    /* patch speed delay */
+    tc_body[TC_OFF_SPEED] = turbo_tape_get_rom_delay ( config->speed );
+
+    /* patch read parametr */
+    tc_body[TC_OFF_RDPARAM] = 0x01;
+
+    /* patch user metadata (LE format pro Z80) */
+    {
+        uint16_t u_size = endianity_bswap16_LE ( ( uint16_t ) body_size );
+        uint16_t u_strt = endianity_bswap16_LE ( original->fstrt );
+        uint16_t u_exec = endianity_bswap16_LE ( original->fexec );
+        memcpy ( &tc_body[TC_OFF_FSIZE], &u_size, 2 );
+        memcpy ( &tc_body[TC_OFF_FSTRT], &u_strt, 2 );
+        memcpy ( &tc_body[TC_OFF_FEXEC], &u_exec, 2 );
+    }
+
+    /* extra ROM parametry z cmnt[0..6] originalni hlavicky */
+    memcpy ( &tc_body[TC_OFF_ROMPARAMS], &original->cmnt[0], 7 );
+
+    /* ===== C. Pulzy pro preloader (1:1 rychlost) ===== */
 
     st_MZCMT_TURBO_CONFIG loader_config = {
         .pulseset = config->pulseset,
@@ -767,10 +827,13 @@ st_CMT_VSTREAM* mzcmt_turbo_create_tape_vstream (
     st_turbo_pulses_samples hdr_pulses;
     turbo_prepare_pulses ( &hdr_pulses, &loader_config, rate );
 
-    /* checksum loaderu */
-    uint16_t chk_loader = mzcmt_turbo_compute_checksum ( loader, sizeof ( st_MZF_HEADER ) );
+    /* checksums preloaderu */
+    uint16_t chk_preloader_hdr = mzcmt_turbo_compute_checksum (
+                                     ( const uint8_t* ) &preloader_hdr, sizeof ( st_MZF_HEADER ) );
+    uint16_t chk_tc_body = mzcmt_turbo_compute_checksum (
+                               tc_body, TC_LOADER_BODY_SIZE );
 
-    /* ===== C. Vytvoreni vstreamu ===== */
+    /* ===== D. Vytvoreni vstreamu ===== */
 
     st_CMT_VSTREAM *vstream = cmt_vstream_new ( rate, CMT_VSTREAM_BYTELENGTH8, 1, CMT_STREAM_POLARITY_NORMAL );
     if ( !vstream ) {
@@ -778,7 +841,7 @@ st_CMT_VSTREAM* mzcmt_turbo_create_tape_vstream (
         return NULL;
     }
 
-    /* ----- Cast 1: Loader header v NORMAL 1:1 ----- */
+    /* ----- Cast 1: TurboCopy preloader v NORMAL 1:1 ----- */
 
     /* LGAP (22000 kratkych pulzu) */
     if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &hdr_pulses.short_pulse, 22000 ) ) goto error;
@@ -786,52 +849,43 @@ st_CMT_VSTREAM* mzcmt_turbo_create_tape_vstream (
     /* dlouhy tapemark (40 long + 40 short) */
     if ( EXIT_SUCCESS != turbo_add_tapemark ( vstream, &hdr_pulses, MZCMT_TURBO_LTM_LONG, MZCMT_TURBO_LTM_SHORT ) ) goto error;
 
-    /* 2 long + header(128B) + checksum + 2 long */
+    /* 2 long + hlavicka(128B) + checksum + 2 long */
     if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &hdr_pulses.long_pulse, 2 ) ) goto error;
-    if ( EXIT_SUCCESS != turbo_encode_data ( vstream, &hdr_pulses, loader, sizeof ( st_MZF_HEADER ) ) ) goto error;
-    if ( EXIT_SUCCESS != turbo_encode_checksum ( vstream, &hdr_pulses, chk_loader ) ) goto error;
+    if ( EXIT_SUCCESS != turbo_encode_data ( vstream, &hdr_pulses, ( const uint8_t* ) &preloader_hdr, sizeof ( st_MZF_HEADER ) ) ) goto error;
+    if ( EXIT_SUCCESS != turbo_encode_checksum ( vstream, &hdr_pulses, chk_preloader_hdr ) ) goto error;
     if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &hdr_pulses.long_pulse, 2 ) ) goto error;
 
-    /* protoze fsize=0, body blok loaderu se neposila (ROM ho necte) */
-    /* loader modifikuje ROM: nastavi size/from/exec a readpoint, pak vola
-       ROM body-cteci rutinu - ta precte nasledujici header+body z pasky */
+    /* SGAP + kratky tapemark + body(90B TurboCopy loader) */
+    if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &hdr_pulses.short_pulse, MZCMT_TURBO_SGAP_DEFAULT ) ) goto error;
+    if ( EXIT_SUCCESS != turbo_add_tapemark ( vstream, &hdr_pulses, MZCMT_TURBO_STM_LONG, MZCMT_TURBO_STM_SHORT ) ) goto error;
+    if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &hdr_pulses.long_pulse, 2 ) ) goto error;
+    if ( EXIT_SUCCESS != turbo_encode_data ( vstream, &hdr_pulses, tc_body, TC_LOADER_BODY_SIZE ) ) goto error;
+    if ( EXIT_SUCCESS != turbo_encode_checksum ( vstream, &hdr_pulses, chk_tc_body ) ) goto error;
+    if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &hdr_pulses.long_pulse, 2 ) ) goto error;
 
-    /* ----- Cast 2: Uzivatelska data v TURBO formatu ----- */
+    /*
+     * ----- Cast 2: Uzivatelska data v TURBO formatu -----
+     *
+     * Loader (loader_turbo.asm) patchne ROM ($0512=$01, $0A4B=delay)
+     * a vola $04F8 (RDATA), ktera cte POUZE telo (body-only).
+     * Proto generujeme pouze:
+     *   LGAP + STM(20+20) + 2L + BODY + CRC + 2L + [kopie]
+     *
+     * Hlavicka se NEPOSILA - metadata (fsize/fstrt/fexec) jsou
+     * ulozena v loader comment oblasti preloaderu.
+     */
 
-    /* pouzij existujici interni TURBO kodovani s konfigurovanou rychlosti */
     st_turbo_pulses_samples data_pulses;
     turbo_prepare_pulses ( &data_pulses, config, rate );
 
     uint32_t lgap = config->lgap_length > 0 ? config->lgap_length : MZCMT_TURBO_LGAP_DEFAULT;
-    uint32_t sgap = config->sgap_length > 0 ? config->sgap_length : MZCMT_TURBO_SGAP_DEFAULT;
 
-    uint16_t chk_header = mzcmt_turbo_compute_checksum ( ( const uint8_t* ) original, sizeof ( st_MZF_HEADER ) );
     uint16_t chk_body = mzcmt_turbo_compute_checksum ( body, ( uint16_t ) body_size );
 
     /* LGAP */
     if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &data_pulses.short_pulse, lgap ) ) goto error;
 
-    /* dlouhy tapemark */
-    if ( EXIT_SUCCESS != turbo_add_tapemark ( vstream, &data_pulses, MZCMT_TURBO_LTM_LONG, MZCMT_TURBO_LTM_SHORT ) ) goto error;
-
-    /* 2 long + hlavicka + checksum + 2 long */
-    if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &data_pulses.long_pulse, 2 ) ) goto error;
-    if ( EXIT_SUCCESS != turbo_encode_data ( vstream, &data_pulses, ( const uint8_t* ) original, sizeof ( st_MZF_HEADER ) ) ) goto error;
-    if ( EXIT_SUCCESS != turbo_encode_checksum ( vstream, &data_pulses, chk_header ) ) goto error;
-    if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &data_pulses.long_pulse, 2 ) ) goto error;
-
-    /* kopie hlavicky */
-    if ( config->flags & MZCMT_TURBO_FLAG_HEADER_COPY ) {
-        if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &data_pulses.short_pulse, MZCMT_TURBO_COPY_SEP ) ) goto error;
-        if ( EXIT_SUCCESS != turbo_encode_data ( vstream, &data_pulses, ( const uint8_t* ) original, sizeof ( st_MZF_HEADER ) ) ) goto error;
-        if ( EXIT_SUCCESS != turbo_encode_checksum ( vstream, &data_pulses, chk_header ) ) goto error;
-        if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &data_pulses.long_pulse, 2 ) ) goto error;
-    }
-
-    /* SGAP */
-    if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &data_pulses.short_pulse, sgap ) ) goto error;
-
-    /* kratky tapemark */
+    /* kratky tapemark (20 long + 20 short) - ROM RDATA s $0512=$01 */
     if ( EXIT_SUCCESS != turbo_add_tapemark ( vstream, &data_pulses, MZCMT_TURBO_STM_LONG, MZCMT_TURBO_STM_SHORT ) ) goto error;
 
     /* 2 long + telo + checksum + 2 long */

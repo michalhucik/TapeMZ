@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.0
+ * @version 1.2.0
  * @brief  Implementace hlavního API knihovny wav_analyzer.
  *
  * Orchestruje všechny vrstvy analyzéru:
@@ -489,22 +489,86 @@ static en_WAV_ANALYZER_ERROR process_leader (
                  */
                 uint32_t consumed_until = 0;
                 uint32_t bsd_recovery = WAV_RECOVERY_NONE;
+                st_WAV_LEADER_INFO turbo_data_leader;
+                memset ( &turbo_data_leader, 0, sizeof ( turbo_data_leader ) );
 
                 if ( refined == WAV_TAPE_FORMAT_TURBO ) {
                     if ( mzf->header.fsize > 0 && mzf->header.fstrt == 0xD400 ) {
                         /*
-                         * Intercopy TURBO preloader (kategorie 4):
+                         * TurboCopy TURBO preloader (kategorie 4):
                          * fstrt=$D400, fsize=90 (realne loader body).
-                         * Spustime TURBO dekoder od body_res.pulse_end
-                         * (za preloader copy2 oblasti).
+                         *
+                         * TurboCopy loader patchne ROM a vola standardni CMT read
+                         * rutinu $002A, ktera cte POUZE telo (bez hlavicky).
+                         * Metadata (fsize/fstrt/fexec) jsou v preloader body
+                         * na offsetu $4D.
                          */
                         uint32_t turbo_search = body_res.pulse_end > 0
                                                 ? body_res.pulse_end
                                                 : hdr_res.pulse_end;
                         if ( config->verbose ) {
-                            fprintf ( stderr, "  Intercopy preloader (fsize=%u) -> TURBO decode from pulse %u\n",
+                            fprintf ( stderr, "  TurboCopy preloader (fsize=%u) -> TURBO body-only decode from pulse %u\n",
                                       mzf->header.fsize, turbo_search );
                         }
+
+                        /* ulozime preloader metadata pred uvolnenim */
+                        st_MZF_HEADER saved_header;
+                        memcpy ( &saved_header, &mzf->header, sizeof ( st_MZF_HEADER ) );
+                        uint8_t *saved_body = body_res.data;
+                        uint32_t saved_body_size = body_res.data_size;
+                        body_res.data = NULL; /* vlastnictvi predano */
+
+                        mzf_free ( mzf );
+                        mzf = NULL;
+                        free ( hdr_res.data ); hdr_res.data = NULL;
+                        memset ( &hdr_res, 0, sizeof ( hdr_res ) );
+                        memset ( &body_res, 0, sizeof ( body_res ) );
+
+                        err = wav_decode_turbo_turbocopy_mzf (
+                                  seq, turbo_search,
+                                  &saved_header, saved_body, saved_body_size,
+                                  &mzf, &body_res, &consumed_until,
+                                  &turbo_data_leader
+                              );
+
+                        /* aktualizujeme speed na TURBO hodnoty */
+                        if ( err == WAV_ANALYZER_OK && turbo_data_leader.pulse_count > 0 ) {
+                            speed = wav_classify_speed_class ( turbo_data_leader.avg_period_us );
+
+                            /*
+                             * Spocteme rychlostni pomer z speed_val v preloader body.
+                             * speed_val je ROM delay na $0A4B. Referencni delay pro 1:1
+                             * je ~82 ($52), odvozeno z mereni: 82/41=2.0 (2:1),
+                             * 82/35=2.34 (7:3), 82/30=2.73 (8:3), 82/27=3.04 (3:1).
+                             * Dosazene pomery presne odpovidaji TurboCopy rychlostem.
+                             * Pouzijeme speed_val pro presnejsi odhad nez leader avg
+                             * (ktery trpi kvantizaci pri 44100 Hz).
+                             */
+                            if ( saved_body_size > 0x4B ) {
+                                uint8_t speed_val = saved_body[0x4B];
+                                if ( speed_val > 0 ) {
+                                    double ratio = 82.0 / ( double ) speed_val;
+                                    turbo_data_leader.avg_period_us = 249.0 / ratio;
+                                }
+                            }
+                        }
+
+                        free ( saved_body );
+                    } else {
+                        /* mzftools TURBO (kategorie 3): fsize=0, loader v comment.
+                         * Metadata (fsize/fstrt/fexec) v comment oblasti hlavicky.
+                         * TURBO data = body-only (loader vola RDATA). */
+                        uint32_t turbo_search = hdr_res.pulse_end > 0
+                                                ? hdr_res.pulse_end
+                                                : leader->start_index + leader->pulse_count;
+                        if ( config->verbose ) {
+                            fprintf ( stderr, "  mzftools TURBO preloader -> TURBO body-only decode from pulse %u\n",
+                                      turbo_search );
+                        }
+
+                        st_MZF_HEADER saved_mzf_header;
+                        memcpy ( &saved_mzf_header, &mzf->header, sizeof ( st_MZF_HEADER ) );
+
                         mzf_free ( mzf );
                         mzf = NULL;
                         free ( hdr_res.data ); hdr_res.data = NULL;
@@ -512,27 +576,11 @@ static en_WAV_ANALYZER_ERROR process_leader (
                         memset ( &hdr_res, 0, sizeof ( hdr_res ) );
                         memset ( &body_res, 0, sizeof ( body_res ) );
 
-                        err = wav_decode_turbo_decode_mzf (
-                                  seq, turbo_search,
-                                  &mzf, &hdr_res, &body_res, &consumed_until
+                        err = wav_decode_turbo_mzftools_mzf (
+                                  seq, turbo_search, &saved_mzf_header,
+                                  &mzf, &body_res, &consumed_until, &turbo_data_leader
                               );
                     }
-
-                    /* mzftools TURBO (kategorie 3): fsize=0, loader v comment */
-                    uint32_t turbo_search = hdr_res.pulse_end > 0
-                                            ? hdr_res.pulse_end
-                                            : leader->start_index + leader->pulse_count;
-                    mzf_free ( mzf );
-                    mzf = NULL;
-                    free ( hdr_res.data ); hdr_res.data = NULL;
-                    free ( body_res.data ); body_res.data = NULL;
-                    memset ( &hdr_res, 0, sizeof ( hdr_res ) );
-                    memset ( &body_res, 0, sizeof ( body_res ) );
-
-                    err = wav_decode_turbo_decode_mzf (
-                              seq, turbo_search,
-                              &mzf, &hdr_res, &body_res, &consumed_until
-                          );
                 } else if ( refined == WAV_TAPE_FORMAT_FASTIPL ) {
                     /* FASTIPL: Cast 2 obsahuje pouze telo */
                     uint8_t *bb_raw = hdr_res.data;
@@ -634,8 +682,11 @@ static en_WAV_ANALYZER_ERROR process_leader (
                     file_result.format = refined;
                     file_result.header_crc = hdr_res.crc_status;
                     file_result.body_crc = body_res.crc_status;
-                    file_result.leader = *leader;
+                    /* pro TURBO pouzijeme datovy leader (rychlost), ne preloader */
+                    file_result.leader = ( turbo_data_leader.pulse_count > 0 )
+                                         ? turbo_data_leader : *leader;
                     file_result.speed_class = speed;
+
                     file_result.copy2_used = hdr_res.copy2_used || body_res.copy2_used;
                     file_result.consumed_until_pulse = consumed_until;
                     file_result.recovery_status = bsd_recovery;
@@ -1052,8 +1103,13 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
     uint32_t skip_until_pulse = 0;
 
     for ( uint32_t i = 0; i < out_result->leaders.count; i++ ) {
-        /* přeskočíme leadery spotřebované předchozím dekodérem */
-        if ( out_result->leaders.leaders[i].start_index < skip_until_pulse ) {
+        /* přeskočíme leadery spotřebované předchozím dekodérem.
+         * Leader přeskočíme jen pokud jeho KONEC je v consumed oblasti.
+         * Leader, který začíná těsně před consumed ale většinou leží za ní,
+         * je platný (nastává na hranici TURBO body → další preloader LGAP). */
+        uint32_t leader_end = out_result->leaders.leaders[i].start_index
+                              + out_result->leaders.leaders[i].pulse_count;
+        if ( leader_end < skip_until_pulse ) {
             if ( config->verbose ) {
                 fprintf ( stderr, "Leader at pulse #%u: skipped (consumed by previous decode)\n",
                           out_result->leaders.leaders[i].start_index );

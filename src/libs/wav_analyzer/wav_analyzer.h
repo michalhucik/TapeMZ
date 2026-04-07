@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.0
+ * @version 1.2.0
  * @brief  Hlavní API knihovny wav_analyzer - orchestrace všech vrstev.
  *
  * Poskytuje vysokoúrovňové API pro analýzu WAV nahrávek magnetofonových
@@ -167,7 +167,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny wav_analyzer. */
-#define WAV_ANALYZER_VERSION "1.1.0"
+#define WAV_ANALYZER_VERSION "1.2.0"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny wav_analyzer.

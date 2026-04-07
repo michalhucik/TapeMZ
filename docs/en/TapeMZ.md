@@ -81,17 +81,17 @@ This category also includes **CP/M CMT** (cmt.com under CP/M, 2400 Bd) and **MZ-
 
 #### Category 3: Loader in Header (Comment Field)
 
-The recording appears as category 1, but a short program (loader) was inserted into the comment field of the MZF header. The header fields SIZE, STRT, and EXEC were modified so that SIZE=0 and EXEC points into the comment area. ROM loads only the header and launches the loader, which modifies ROM routines for adaptive speed and performs the body block loading.
+The recording appears as category 1, but a short program (loader) was inserted into the comment field of the MZF header. SIZE=0, EXEC points into the comment area. ROM loads only the header (no body) and launches the loader.
 
 Formats in this category:
-- **TURBO** - loader in comment, identified by NIPSOFT signature or Z80 opcode pattern (TurboCopy)
-- **FASTIPL** - $BB prefix in header block, V02/V07 loader (Intercopy)
+- **FASTIPL** - $BB prefix in header block, V02/V07 loader (Intercopy, Marek Šmihla - NIPSOFT)
 
 #### Category 4: Loader as a Separate Program
 
-The recording consists of multiple parts: preloader header (NORMAL 1:1, fsize=0, fexec=$1110) + loader body (NORMAL FM) + user data (in the target format). ROM loads and launches the loader, which then reads data in the non-standard format.
+The preloader consists of a header + body in NORMAL FM 1:1. ROM loads both header and body, then launches the loader. The loader patches ROM routines and reads user data from tape in the target format.
 
 Formats in this category:
+- **TURBO** (TurboCopy variant) - 90B loader at $D400, fsize=90, fstrt/fexec=$D400, identified by signature in cmnt[0..6] (TurboCopy, Michal Kreidl). The loader patches ROM speed and calls standard CMT read ($002A). TURBO data = body-only (STM tapemark + body + CRC, no header).
 - **FSK** (Frequency Shift Keying) - bit determined by cycle frequency, 7 speed levels
 - **SLOW** (quaternary) - 2 bits per pulse (4 symbols), 5 speed levels
 - **DIRECT** (direct bit writing) - 1 sample = 1 bit, speed determined by sample rate
@@ -109,7 +109,7 @@ CP/M Tape (Pezik/MarVan, ZTAPE/TAPE.COM) uses a completely different protocol - 
 | CP/M CMT  | 2         | FM           | 2400 Bd     | none    | 0x41      |
 | MZ-80B    | 2         | FM           | 1800 Bd     | none    | 0x41      |
 | BSD/BRD   | 1/2       | FM (chunked) | 1200+ Bd    | none    | 0x45      |
-| TURBO     | 3         | FM           | config.     | comment | 0x41      |
+| TURBO     | 4         | FM           | config.     | $D400   | 0x41      |
 | FASTIPL   | 3         | FM + $BB     | config.     | comment | 0x41      |
 | FSK       | 4         | FSK          | 7 levels    | program | 0x41      |
 | SLOW      | 4         | quaternary   | 5 levels    | program | 0x41      |
@@ -260,8 +260,8 @@ The project draws from the following sources:
 - **Sharp MZ-80B documentation** - different timing (1800 Bd base), custom pulse set
 
 ### 6.2 Software
-- **Intercopy 10.2** (MZ-800) - reference auto-detection implementation, Z80 disassembly
-- **TurboCopy** (MZ-800) - TURBO loader implementation, NIPSOFT signature
+- **Intercopy 10.2** (MZ-800, Marek Šmihla - NIPSOFT) - reference auto-detection implementation, Z80 disassembly
+- **TurboCopy V1.21** (MZ-800, Michal Kreidl) - TURBO loader implementation
 - **cmt.com / ztape.com** (CP/M) - CP/M cassette utilities, Manchester encoding
 - **mzftools** (mz-fuzzy, GPLv3) - reference C implementation of MZF conversions, FSK/SLOW/DIRECT Z80 loaders
 
@@ -361,7 +361,7 @@ Existing functionality for loading plain MZF/MZT and WAV files will be preserved
 
 The project is licensed under the GNU General Public License v3 (GPLv3).
 
-Some libraries (mzcmt_fsk, mzcmt_slow, mzcmt_turbo) contain embedded Z80 loader binaries derived from the mzftools project (mz-fuzzy, GPLv3).
+Some libraries (mzcmt_fsk, mzcmt_slow) contain embedded Z80 loader binaries derived from the mzftools project (mz-fuzzy, GPLv3). The mzcmt_turbo library contains a loader derived from reverse engineering of TurboCopy V1.21 (Michal Kreidl).
 
 ## 11. Authors
 

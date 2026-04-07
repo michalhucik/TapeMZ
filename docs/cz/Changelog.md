@@ -1,5 +1,60 @@
 # Changelog
 
+## 2026-04-07
+
+### wav_analyzer v1.2.0
+- Podpora dekodovani TurboCopy TURBO nahravek (rychlosti 2:1, 7:3, 8:3, 3:1 atd.).
+  TurboCopy TURBO preloader (fsize=90, fstrt=$D400) patchne ROM a pouzije
+  standardni CMT read rutinu pro cteni tela v TURBO rychlosti. Dekoder
+  extrahuje metadata (fsize/fstrt/fexec) z preloader body a dekoduje
+  TURBO data jako standardni FM (body-only, STM tapemark).
+- Podpora mzftools TURBO formatu (fsize=0, loader v comment). Metadata
+  se extrahuje z comment oblasti hlavicky (cmnt[1..6]).
+- Nova funkce: `wav_decode_turbo_turbocopy_mzf()` - TurboCopy body-only dekodovani.
+- Nova funkce: `wav_decode_turbo_mzftools_mzf()` - mzftools body-only dekodovani.
+- Oprava: TURBO dispatch v `process_leader()` - chybejici `else` mezi TurboCopy
+  a mzftools TURBO cestami zpusoboval zahozeni vysledku dekodovani.
+- Oprava: leader skip podminka `leader_end < skip_until_pulse` misto
+  `start_index < skip_until_pulse` - leader na hranici consumed oblasti
+  se chybne preskakoval (round-trip 3/5 -> 5/5).
+- Vylepseni: TURBO dekoder pouziva `wav_leader_detect()` pro nalezeni
+  skutecneho TURBO leaderu misto syntetickeho leaderu s pulse_count=0.
+
+### mzcmt_turbo v2.0.0
+- Kompletni prepis tape encoderu na TurboCopy kompatibilni format.
+  Preloader nyni generuje fsize=90, fstrt=$D400 (misto mzftools fsize=0, $1110).
+  TurboCopy format funguje na realnem HW, v emulatoru i v TurboCopy/Intercopy.
+- Embedded TurboCopy loader (75B genericky kod z reverse eng. TurboCopy V1.21)
+  s patchovatelnou datovou casti (speed_val, fsize/fstrt/fexec, ROM params).
+- Preloader hlavicka: TurboCopy identifikacni signatura v cmnt[0..6],
+  originalni comment data v cmnt[7..103].
+- TURBO datova sekce: body-only format (STM tapemark + body + CRC).
+  Odpovidajici strukture realne TurboCopy nahravky.
+- ROM delay: vzorec `round(82/speed_ratio)` odvozeny z mereni realnych
+  TurboCopy nahravek. Nahrazuje chybnou lookup tabulku z mzftools.
+- Pulseset MZ-800: symetricke pulzy (249/249 us SHORT, 498/498 us LONG).
+  ROM generuje symetricke pulzy; puvodni asym. hodnoty (246/278, 470/494)
+  zpusobovaly spatne zaokrouhlovani na 44100 Hz.
+- Pulseset MZ-700: analogicky symetricke (252/252, 504/504).
+
+### wav2tmz v2.2.0
+- Odhad rychlosti TURBO souboru z leader avg pul-periody
+  (drive jen pro NORMAL/MZ-80B, nyni i pro TURBO format).
+- Presnejsi rychlost pro TurboCopy z speed_val bajtu preloaderu ($4B).
+
+### Nova utilita: extract_preloader
+- Extrakce TurboCopy TURBO preloader binarky (90B) z WAV nahravky.
+
+### Nova testovaci data
+- `tstdata/tc-loader-all.wav` - 5 kopii Turbo Copy V1.21 s TURBO loaderem
+  (rychlosti 1:1, 2:1, 7:3, 8:3, 3:1).
+- `tstdata/mzf/Turbo_Copy_V1.21.mzf` - referencni MZF pro verifikaci.
+- `tests/test_tc_loader_all.c` - integracni test (5 kopii, body match, CRC OK).
+
+### Atribuce
+- Opravena atribuce: TURBO = TurboCopy (Michal Kreidl),
+  FAST IPL = Intercopy (Marek Smihla - NIPSOFT).
+
 ## 2026-04-06
 
 ### wav2tmz v2.1.0

@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer_types.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.0
+ * @version 1.2.0
  * @brief  Implementace společných funkcí knihovny wav_analyzer.
  *
  * Obsahuje implementace destruktorů, textových popisů chybových kódů,
