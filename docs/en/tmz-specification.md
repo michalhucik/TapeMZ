@@ -320,19 +320,15 @@ A value of 0 means "use default from pulse set".
 
 | Parameter      | MZ-700/80K/80A | MZ-800/1500 | MZ-80B |
 |----------------|----------------|-------------|--------|
-| Long high (us) | ~464           | ~470        | ~333   |
-| Long low (us)  | ~494           | ~494        | ~334   |
-| Short high (us)| ~240           | ~240        | ~167   |
-| Short low (us) | ~264           | ~278        | ~166   |
+| Long high (us) | ~464           | ~498        | ~333   |
+| Long low (us)  | ~494           | ~498        | ~334   |
+| Short high (us)| ~240           | ~249        | ~167   |
+| Short low (us) | ~264           | ~249        | ~166   |
 
-Precise values for MZ-800 (Intercopy 10.2, GDG ticks):
-
-| Parameter   | GDG ticks | us      |
-|-------------|-----------|---------|
-| Long high   | 8335      | 470.330 |
-| Long low    | 8760      | 494.308 |
-| Short high  | 4356      | 245.802 |
-| Short low   | 4930      | 278.204 |
+MZ-800/1500 uses symmetric pulses - the ROM uses the same delay loop for both HIGH
+and LOW pulse halves. Original asymmetric values from Intercopy 10.2 measurements
+(GDG ticks {8335,8760}, {4356,4930} -> 470/494/246/278 us) caused incorrect rounding
+at 44100 Hz (short pulse 11+12=23 samples instead of 11+11=22).
 
 ### 5.3 Standard TZX Blocks (0x10-0x19)
 

@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_turbo.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  TURBO koder pro kazetovy zaznam Sharp MZ (NORMAL FM s konfigurovatelnym casovanim).
  *
  * Knihovna implementuje TURBO kodovani pro Sharp MZ. TURBO je standardni

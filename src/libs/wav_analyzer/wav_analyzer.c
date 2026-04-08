@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
+ * @version 1.4.0
  * @brief  Implementace hlavního API knihovny wav_analyzer.
  *
  * Orchestruje všechny vrstvy analyzéru:
@@ -582,9 +582,11 @@ static en_WAV_ANALYZER_ERROR process_leader (
                               );
                     }
                 } else if ( refined == WAV_TAPE_FORMAT_FASTIPL ) {
-                    /* FASTIPL: Cast 2 obsahuje pouze telo */
+                    /* FASTIPL: body blok s vlastnim LGAP za header CRC */
                     uint8_t *bb_raw = hdr_res.data;
                     uint32_t pulse_end = hdr_res.pulse_end;
+                    st_WAV_LEADER_INFO fastipl_data_leader;
+                    memset ( &fastipl_data_leader, 0, sizeof ( fastipl_data_leader ) );
 
                     mzf_free ( mzf );
                     mzf = NULL;
@@ -593,8 +595,15 @@ static en_WAV_ANALYZER_ERROR process_leader (
 
                     err = wav_decode_fastipl_decode_mzf (
                               seq, bb_raw, pulse_end, &mzf,
-                              &body_res, &consumed_until
+                              &body_res, &consumed_until,
+                              &fastipl_data_leader
                           );
+
+                    /* aktualizace speed z body LGAP leaderu */
+                    if ( err == WAV_ANALYZER_OK && fastipl_data_leader.pulse_count > 0 ) {
+                        speed = wav_classify_speed_class ( fastipl_data_leader.avg_period_us );
+                        turbo_data_leader = fastipl_data_leader;
+                    }
 
                     free ( bb_raw );
                     hdr_res.data = NULL;
@@ -688,6 +697,7 @@ static en_WAV_ANALYZER_ERROR process_leader (
                     file_result.speed_class = speed;
 
                     file_result.copy2_used = hdr_res.copy2_used || body_res.copy2_used;
+                    file_result.header_leader_pulse = leader->start_index;
                     file_result.consumed_until_pulse = consumed_until;
                     file_result.recovery_status = bsd_recovery;
                     if ( bsd_recovery != WAV_RECOVERY_NONE && mzf ) {
@@ -724,6 +734,56 @@ static en_WAV_ANALYZER_ERROR process_leader (
                     fprintf ( stderr, "  Decode failed: %s\n", wav_analyzer_error_string ( err ) );
                 }
                 err = WAV_ANALYZER_OK;
+
+                /*
+                 * ZX fallback: kdyz FM tapemark detekce selze, zkusime
+                 * ZX Spectrum dekoder. SINCLAIR format pouziva ZX protokol
+                 * (sync + ZX datove kodovani) pri ruznych rychlostech,
+                 * takze leader muze spadat do tridy ZX (612 us) i NORMAL
+                 * (476, 408, 340 us pro vyssi rychlosti).
+                 *
+                 * Bezpecnost: pro skutecny NORMAL FM signal ZX sync
+                 * detekce selze (zadne kratke pulzy relativne k leaderu),
+                 * takze fallback je bezpecny pro vsechny FM formaty.
+                 */
+                {
+                    uint8_t *tap_data = NULL;
+                    uint32_t tap_size = 0;
+                    en_WAV_CRC_STATUS zx_crc = WAV_CRC_NOT_AVAILABLE;
+                    uint32_t zx_consumed = 0;
+
+                    err = wav_decode_zx_decode_block (
+                              seq, leader, &tap_data, &tap_size, &zx_crc, &zx_consumed );
+
+                    if ( err == WAV_ANALYZER_OK && tap_data ) {
+                        st_WAV_ANALYZER_FILE_RESULT file_result;
+                        memset ( &file_result, 0, sizeof ( file_result ) );
+                        file_result.tap_data = tap_data;
+                        file_result.tap_data_size = tap_size;
+                        file_result.format = WAV_TAPE_FORMAT_SINCLAIR;
+                        file_result.header_crc = zx_crc;
+                        file_result.body_crc = WAV_CRC_NOT_AVAILABLE;
+                        file_result.leader = *leader;
+                        file_result.speed_class = speed;
+                        file_result.consumed_until_pulse = zx_consumed;
+
+                        err = result_add_file ( result, &file_result );
+                        if ( err != WAV_ANALYZER_OK ) {
+                            free ( tap_data );
+                        }
+
+                        if ( config->verbose ) {
+                            fprintf ( stderr, "  ZX fallback: format=SINCLAIR, flag=0x%02X, size=%u, CRC=%s\n",
+                                      tap_data[0], tap_size,
+                                      ( zx_crc == WAV_CRC_OK ) ? "OK" : "ERROR" );
+                        }
+                    } else {
+                        if ( config->verbose ) {
+                            fprintf ( stderr, "  ZX fallback also failed\n" );
+                        }
+                        err = WAV_ANALYZER_OK;
+                    }
+                }
             }
             break;
         }
@@ -871,7 +931,7 @@ static en_WAV_ANALYZER_ERROR pulses_to_direct_recording (
  * @brief Sesbírá mezery mezi dekódovanými soubory a konvertuje je na raw bloky.
  *
  * Sestaví seznam "pokrytých" oblastí z dekódovaných souborů
- * (leader.start_index .. consumed_until_pulse), identifikuje mezery
+ * (header_leader_pulse .. consumed_until_pulse), identifikuje mezery
  * a pro každou dostatečně velkou mezeru vytvoří Direct Recording blok.
  *
  * @param result Výsledek analýzy (přidá raw_blocks).
@@ -898,7 +958,10 @@ static en_WAV_ANALYZER_ERROR collect_gaps (
         if ( !cov ) return WAV_ANALYZER_ERROR_ALLOC;
 
         for ( uint32_t i = 0; i < cov_count; i++ ) {
-            cov[i].start = result->files[i].leader.start_index;
+            /* pouzijeme header_leader_pulse (pozice header leaderu),
+             * ne leader.start_index (ktery pro TURBO/FASTIPL obsahuje
+             * datovy leader, ne header leader) */
+            cov[i].start = result->files[i].header_leader_pulse;
             cov[i].end = result->files[i].consumed_until_pulse;
             /* pokud consumed_until_pulse == 0, nemáme info o konci */
             if ( cov[i].end == 0 ) {

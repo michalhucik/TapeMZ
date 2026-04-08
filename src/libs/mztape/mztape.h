@@ -1,7 +1,7 @@
 /**
  * @file   mztape.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Veřejné API knihovny mztape — konverze MZF souborů na CMT audio streamy.
  *
  * Definuje typy, enumy, struktury a funkce pro práci s kazetovým záznamem

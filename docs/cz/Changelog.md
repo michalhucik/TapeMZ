@@ -1,5 +1,123 @@
 # Changelog
 
+## 2026-04-08
+
+### tmzinfo v1.2.0
+- Zobrazeni rychlosti v Bd pro TZX bloky 0x10 (Standard Speed Data)
+  a 0x11 (Turbo Speed Data). Vzorec: Bd = 3500000 / (zero + one).
+
+### tmzedit v1.3.0
+- Nova volba `--sinclair-speed <Bd>` pro editaci casovani bloku 0x11
+  (Turbo Speed Data). Akceptuje presne 4 hodnoty: 1381, 1772, 2074, 2487.
+  Prepocitava vsechny casovaci parametry (pilot, sync, zero, one)
+  se zachovanim ZX pomeru zero:one = 1:2.
+
+### wav_analyzer v1.4.0
+- Podpora SINCLAIR formatu (ZX Spectrum protokol na Sharp MZ).
+  SINCLAIR pouziva ZX kodovani (pilot -> sync -> data s 1:2 pulsnim
+  pomerem) pri ruznych rychlostech. Intercopy nahraba v tomto rezimu
+  pri 1381, 1772, 2074 a 2487 Bd.
+- ZX fallback po selhani FM tapemark detekce: kdyz FM dekoder nenajde
+  tapemark, zkusi ZX Spectrum dekoder. Pri uspechu klasifikuje vysledek
+  jako SINCLAIR. Bezpecne pro vsechny FM formaty (u NORMAL FM ZX sync
+  detekce spolehive selze, protoze nema dostatecne kratke pulzy).
+- Novy test `test_ic_sinclair_all` - overeni 4 kopii Turbo Copy V1.21
+  nahrane Intercopy v SINCLAIR rezimu (1381-2487 Bd).
+
+### wav2tmz v2.4.0
+- SINCLAIR bloky se ukladaji jako TZX blok 0x11 (Turbo Speed Data)
+  s casovanim skalovaym z prumerne pul-periody leader tonu vuci
+  standardnimu ZX pilotu (2168 T-states = 619.4 us). Zachovava
+  rychlost pres TMZ round-trip.
+- Oprava segfault pri konverzi SINCLAIR nahravek: SINCLAIR vysledky
+  maji tap_data (ne mzf), ale drive se smerovaly na create_block_turbo
+  ktera pristupovala k mzf (NULL pointer dereference).
+- Zobrazeni rychlosti SINCLAIR bloku v sumarnim vypisu
+  (napr. "SINCLAIR flag=0xFF, speed=1.30x (476 us)").
+
+### wav_analyzer v1.3.0
+- Podpora dekodovani Intercopy FAST IPL nahravek ve vsech rychlostech
+  (1200, 2400, 2800, 3200 Bd). FASTIPL je standardni dvou-blokovy MZF:
+  header blok (LGAP 22000 p.p. + LTM + $BB hlavicka) pri NORMAL rychlosti,
+  body blok (LGAP 11000 p.p. + STM + body data) pri TURBO rychlosti.
+- FASTIPL dekoder zalozeny na analyze Intercopy 10.2 write handleru
+  (sub_19EE): body LGAP ma 5500 pulzu (polovina header LGAP), body
+  tapemark je STM (20+20, ne LTM 40+40). Snizeny FM threshold faktor
+  1.4x (vs globalni 1.6x) pro spolehlivou detekci tapemarku pri 2800+ Bd.
+- FASTIPL body leader vracen pres novy parametr `out_data_leader`
+  pro spravnou rychlostni tridu a leader info ve vysledcich.
+- Nove pole `header_leader_pulse` ve vysledcich pro spravny vypocet
+  pokryti u dvoudilnych formatu (TURBO/FASTIPL).
+
+### wav2tmz v2.3.0
+- Odhad rychlosti FASTIPL z body LGAP leader avg pul-periody.
+- Chronologicke prokladani dekodovanych souboru a raw bloku (Direct
+  Recording) ve vystupu TMZ. Drive se vsechny soubory zapsaly prvni
+  a raw bloky az na konec.
+- Pokryti raw bloku pouziva `header_leader_pulse` misto
+  `leader.start_index` aby nezahrnovalo header cast zaznamu.
+
+### mzf2tmz v1.2.0
+- `--speed` nyne prijima i hodnoty baudrate (napr. `--speed 2800`)
+  krome pomeru (`--speed 7:3`). Baudrate se mapuje na nejblizsi CMTSPEED.
+- FASTIPL rychlost zobrazena jako baudrate (napr. "2800 Bd") misto pomeru.
+
+### tmzedit v1.2.0
+- `--speed` nyne prijima i hodnoty baudrate (napr. `--speed 2800`)
+  krome pomeru (`--speed 7:3`). Baudrate se mapuje na nejblizsi CMTSPEED.
+- FASTIPL rychlost zobrazena jako baudrate v prikazech `convert` a `set`.
+
+### tmzinfo v1.1.0
+- FASTIPL rychlost zobrazena jako baudrate (napr. "2800 Bd") misto
+  formatu pomeru ("7:3 - 2800 Bd"), shodne s konvenci Intercopy.
+
+### cmtspeed v2.0.0
+- Nova funkce: `cmtspeed_from_bdspeed()` - mapuje baudrate na nejblizsi
+  hodnotu `en_CMTSPEED`.
+
+### mzcmt_fastipl v1.2.0
+- Oprava signalove struktury podle analyzy Intercopy 10.2 (sub_19EE):
+  - Header LGAP: 11000 pulzu (drive 22000 - dvojnasobek oproti Intercopy).
+  - Body LGAP: 5500 pulzu (drive 22000, Intercopy: HL=$157C=5500).
+  - Body tapemark: STM 20+20 (drive LTM 40+40, Intercopy pise STM pro body).
+  - Odstranena SGAP+STM+CRC(=0) sekce z header bloku (Intercopy ji nepise).
+  - Odstranena pauza 1000 ms mezi bloky (Intercopy pise bez pauzy).
+  - Loader binary rozsiren z 96B na 110B (pokryva offsety $12-$7F,
+    shodne s Intercopy sub_2035 layoutem).
+- Readpoint: lookup tabulka z referencni nahravky ic-loader-all.wav
+  (1:1=77, 2:1=32, 7:3=22, 8:3=17). Predchozi vzorec floor(82/divisor)
+  daval spatne hodnoty (82, 41, 35, 30) - Intercopy pocita readpoint
+  pres sub_201C/sub_1E09, ne prostym delenim.
+- Pulseset MZ-800: asymetricky (227/272 us SHORT, 476/499 us LONG)
+  z referencni nahravky. Pri 44100 Hz: SHORT=10+12=22 smp,
+  LONG=21+22=43 smp. Asymetricky pulseset je nutny pro spravne
+  skalovani turbo rychlosti (2:1 dava 5+6=11 smp, ne sym. 5+5=10).
+  Readpoint a pulseset musi byt konzistentni (oba ze stejne reference).
+- Overeno v emulatoru: ROM nacte vsechny 4 rychlosti (1200-3200 Bd),
+  Intercopy statistiky odpovidaji referencni nahravce.
+
+### mzcmt_bsd v1.1.0
+- Pulseset MZ-800: symetricke 498/498 us LONG, 249/249 us SHORT
+  (drive asymetricke 470/494, 246/278 z Intercopy mereni).
+- Pulseset MZ-700: symetricke 504/504, 252/252 (drive 464/494, 240/264).
+- Konzistentni s mzcmt_turbo a mztape vstream pulsesety.
+
+### mzcmt_turbo v2.0.1
+- Oprava ROM delay: vzorec zmenen z `round(82/speed_ratio)` na
+  `floor(82/speed_ratio)` (truncation). TurboCopy na Z80 pouziva
+  celociselne deleni, ktere orezava desetinnou cast. Rounding
+  zpusoboval chybu u rychlosti 8:3 (delay 31 misto 30), coz vedlo
+  k ~2.5% odchylce v namerenene rychlosti (2625 Bd misto 2692 Bd).
+
+### mztape v2.0.1
+- Oprava MZ-800 vstream pulsesetu: prechod z asymetrickych pulzu
+  (Intercopy 10.2 mereni: 245.8/278.2 us SHORT) na symetricke
+  (249/249 us SHORT, 498/498 us LONG). Asymetricke hodnoty se
+  pri 44100 Hz zaokrouhlovaly na 11+12=23 vzorku misto 11+11=22,
+  coz zpusobovalo ~4.5% odchylku v rychlosti (1099 Bd misto 1150 Bd).
+  Symetricke hodnoty odpovidaji ROM chovani a jsou shodne
+  s mzcmt_turbo g_pulses_800.
+
 ## 2026-04-07
 
 ### wav_analyzer v1.2.0

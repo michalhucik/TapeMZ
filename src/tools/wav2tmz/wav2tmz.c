@@ -1,7 +1,7 @@
 /**
  * @file   wav2tmz.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.2.0
+ * @version 2.4.0
  * @brief  Konverzni utilita WAV -> MZF/TMZ - dekodovani Sharp MZ kazetovych nahravek.
  *
  * Analyzuje WAV soubor obsahujici nahravku magnetofonove kazety
@@ -75,7 +75,7 @@
 
 
 /** @brief Verze programu wav2tmz. */
-#define WAV2TMZ_VERSION "2.2.0"
+#define WAV2TMZ_VERSION "2.3.0"
 
 
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
@@ -410,11 +410,12 @@ static st_TZX_BLOCK* create_block_turbo ( const st_WAV_ANALYZER_FILE_RESULT *fil
      */
     if ( file_result->format == WAV_TAPE_FORMAT_NORMAL ||
          file_result->format == WAV_TAPE_FORMAT_MZ80B ||
-         file_result->format == WAV_TAPE_FORMAT_TURBO ) {
+         file_result->format == WAV_TAPE_FORMAT_TURBO ||
+         file_result->format == WAV_TAPE_FORMAT_FASTIPL ) {
         /*
-         * NORMAL/MZ-80B/TURBO: rychlost odhadneme z leader avg.
-         * Pro TURBO file_result->leader obsahuje TURBO datovy leader
-         * (nastaveno wav_analyzerem), ne preloader.
+         * NORMAL/MZ-80B/TURBO/FASTIPL: rychlost odhadneme z leader avg.
+         * Pro TURBO a FASTIPL file_result->leader obsahuje datovy leader
+         * (nastaveno wav_analyzerem), ne preloader/header leader.
          */
         params.speed = ( uint8_t ) estimate_speed_from_leader (
                                        file_result->leader.avg_period_us );
@@ -551,15 +552,113 @@ static st_TZX_BLOCK* create_block_zx ( const st_WAV_ANALYZER_FILE_RESULT *file_r
 }
 
 
+/** @brief Standardni ZX Spectrum pilot pulz (T-states pri 3.5 MHz). */
+#define ZX_PILOT_TSTATES    2168
+/** @brief Standardni ZX Spectrum 1. sync pulz (T-states). */
+#define ZX_SYNC1_TSTATES    667
+/** @brief Standardni ZX Spectrum 2. sync pulz (T-states). */
+#define ZX_SYNC2_TSTATES    735
+/** @brief Standardni ZX Spectrum ZERO bit pulz (T-states). */
+#define ZX_ZERO_TSTATES     855
+/** @brief Standardni ZX Spectrum ONE bit pulz (T-states). */
+#define ZX_ONE_TSTATES      1710
+/** @brief Standardni ZX Spectrum pilot pulz (us). */
+#define ZX_PILOT_US         619.4
+/** @brief TZX CPU takt (Hz). 1 T-state = 1/3500000 s = 0.2857 us. */
+#define TZX_CPU_FREQ        3500000.0
+
+
+/**
+ * @brief Vytvori TZX blok 0x11 (Turbo Speed Data) z TAP dat SINCLAIR bloku.
+ *
+ * SINCLAIR format pouziva ZX Spectrum protokol pri ruznych rychlostech.
+ * Casovaci parametry jsou skalovany z prumerne pul-periody leader tonu
+ * vuci standardnimu ZX casovani (pilot = 2168 T-states = 619.4 us).
+ *
+ * Struktura bloku 0x11:
+ * [2B pilot] [2B sync1] [2B sync2] [2B zero] [2B one]
+ * [2B pilot_count] [1B used_bits] [2B pause] [3B data_len] [data]
+ *
+ * @param file_result Vysledek dekodovani jednoho SINCLAIR bloku. Nesmi byt NULL.
+ * @return Novy alokovany TZX blok, nebo NULL pri chybe.
+ *         Volajici musi uvolnit data po appendu do TMZ souboru.
+ */
+static st_TZX_BLOCK* create_block_sinclair ( const st_WAV_ANALYZER_FILE_RESULT *file_result ) {
+    if ( !file_result->tap_data || file_result->tap_data_size == 0 ) return NULL;
+
+    /* skalovaci faktor z leader avg vuci standardnimu ZX pilotu */
+    double ratio = file_result->leader.avg_period_us / ZX_PILOT_US;
+
+    uint16_t pilot_pulse = ( uint16_t ) round ( ZX_PILOT_TSTATES * ratio );
+    uint16_t sync1_pulse = ( uint16_t ) round ( ZX_SYNC1_TSTATES * ratio );
+    uint16_t sync2_pulse = ( uint16_t ) round ( ZX_SYNC2_TSTATES * ratio );
+    uint16_t zero_pulse  = ( uint16_t ) round ( ZX_ZERO_TSTATES * ratio );
+    uint16_t one_pulse   = ( uint16_t ) round ( ZX_ONE_TSTATES * ratio );
+    uint16_t pilot_count = ( uint16_t ) file_result->leader.pulse_count;
+    uint16_t pause_ms    = DEFAULT_PAUSE_MS;
+    uint32_t data_len    = file_result->tap_data_size;
+
+    /* blok 0x11: 18B hlavicka + data */
+    uint32_t header_size = 18;
+    uint32_t total = header_size + data_len;
+
+    st_TZX_BLOCK *block = ( st_TZX_BLOCK* ) calloc ( 1, sizeof ( st_TZX_BLOCK ) );
+    if ( !block ) return NULL;
+
+    block->id = TZX_BLOCK_ID_TURBO_SPEED;
+    block->length = total;
+    block->data = ( uint8_t* ) calloc ( 1, total );
+    if ( !block->data ) {
+        free ( block );
+        return NULL;
+    }
+
+    uint8_t *d = block->data;
+
+    /* 00-01: pilot pulse LE */
+    d[0] = ( uint8_t ) ( pilot_pulse & 0xFF );
+    d[1] = ( uint8_t ) ( pilot_pulse >> 8 );
+    /* 02-03: sync1 pulse LE */
+    d[2] = ( uint8_t ) ( sync1_pulse & 0xFF );
+    d[3] = ( uint8_t ) ( sync1_pulse >> 8 );
+    /* 04-05: sync2 pulse LE */
+    d[4] = ( uint8_t ) ( sync2_pulse & 0xFF );
+    d[5] = ( uint8_t ) ( sync2_pulse >> 8 );
+    /* 06-07: zero bit pulse LE */
+    d[6] = ( uint8_t ) ( zero_pulse & 0xFF );
+    d[7] = ( uint8_t ) ( zero_pulse >> 8 );
+    /* 08-09: one bit pulse LE */
+    d[8] = ( uint8_t ) ( one_pulse & 0xFF );
+    d[9] = ( uint8_t ) ( one_pulse >> 8 );
+    /* 0A-0B: pilot tone length (pulse count) LE */
+    d[10] = ( uint8_t ) ( pilot_count & 0xFF );
+    d[11] = ( uint8_t ) ( pilot_count >> 8 );
+    /* 0C: used bits in last byte */
+    d[12] = 8;
+    /* 0D-0E: pause after block LE */
+    d[13] = ( uint8_t ) ( pause_ms & 0xFF );
+    d[14] = ( uint8_t ) ( pause_ms >> 8 );
+    /* 0F-11: data length (3 bytes LE) */
+    d[15] = ( uint8_t ) ( data_len & 0xFF );
+    d[16] = ( uint8_t ) ( ( data_len >> 8 ) & 0xFF );
+    d[17] = ( uint8_t ) ( ( data_len >> 16 ) & 0xFF );
+    /* 12...: TAP data */
+    memcpy ( &d[18], file_result->tap_data, data_len );
+
+    return block;
+}
+
+
 /**
  * @brief Vytvori TMZ blok z dekodovaneho souboru podle jeho formatu.
  *
  * Mapovani formatu na TMZ bloky:
  *   - NORMAL, MZ-80B        -> blok 0x40 (MZ Standard Data)
- *   - TURBO, FASTIPL, SINCLAIR, CPM-CMT, CPM-TAPE, FSK, SLOW, DIRECT
+ *   - TURBO, FASTIPL, CPM-CMT, CPM-TAPE, FSK, SLOW, DIRECT
  *                            -> blok 0x41 (MZ Turbo Data)
  *   - BSD                    -> blok 0x45 (MZ BASIC Data)
  *   - ZX_SPECTRUM            -> blok 0x10 (Standard Speed Data)
+ *   - SINCLAIR               -> blok 0x11 (Turbo Speed Data)
  *
  * @param file_result Vysledek dekodovani jednoho souboru. Nesmi byt NULL.
  * @return Novy alokovany TMZ blok, nebo NULL pri chybe.
@@ -567,9 +666,13 @@ static st_TZX_BLOCK* create_block_zx ( const st_WAV_ANALYZER_FILE_RESULT *file_r
  */
 static st_TZX_BLOCK* create_tmz_block_from_result ( const st_WAV_ANALYZER_FILE_RESULT *file_result ) {
     switch ( file_result->format ) {
-        /* ZX Spectrum nativni format -> blok 0x10 (Standard Speed Data) */
+        /* ZX Spectrum -> blok 0x10 (Standard Speed Data) */
         case WAV_TAPE_FORMAT_ZX_SPECTRUM:
             return create_block_zx ( file_result );
+
+        /* SINCLAIR -> blok 0x11 (Turbo Speed Data s casovanim z leaderu) */
+        case WAV_TAPE_FORMAT_SINCLAIR:
+            return create_block_sinclair ( file_result );
 
         /* NORMAL FM - 1200 Bd -> blok 0x40, jina rychlost -> blok 0x41 */
         case WAV_TAPE_FORMAT_NORMAL:
@@ -593,7 +696,6 @@ static st_TZX_BLOCK* create_tmz_block_from_result ( const st_WAV_ANALYZER_FILE_R
         /* nestandardni formaty (kategorie 3, 4, mimo) -> blok 0x41 */
         case WAV_TAPE_FORMAT_TURBO:
         case WAV_TAPE_FORMAT_FASTIPL:
-        case WAV_TAPE_FORMAT_SINCLAIR:
         case WAV_TAPE_FORMAT_CPM_CMT:
         case WAV_TAPE_FORMAT_CPM_TAPE:
         case WAV_TAPE_FORMAT_FSK:
@@ -711,76 +813,92 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
         /* data ownership predano na tmz_file, desc_block je lokalni na zasobniku */
     }
 
-    /* 2. datove bloky pro kazdy dekodovany soubor */
-    for ( uint32_t i = 0; i < result->file_count; i++ ) {
-        const st_WAV_ANALYZER_FILE_RESULT *file_result = &result->files[i];
+    /*
+     * 2. datove bloky a raw bloky chronologicky prokladane.
+     *
+     * Dekodovane soubory (files[]) a neidentifikovane useky (raw_blocks[])
+     * se radi podle pozice ve WAV: files[].leader.start_index
+     * a raw_blocks[].pulse_start. Vypisujeme v poradi na pasce.
+     */
+    uint32_t fi = 0;   /* index do files[] */
+    uint32_t ri = 0;   /* index do raw_blocks[] */
 
-        /* ZX bloky nemaji MZF, ale maji tap_data */
-        if ( !file_result->mzf && !file_result->tap_data ) continue;
+    while ( fi < result->file_count || ri < result->raw_block_count ) {
+        /* urcime pozici dalsiho souboru a dalsiho raw bloku */
+        uint32_t file_pos = ( fi < result->file_count )
+                            ? result->files[fi].leader.start_index
+                            : UINT32_MAX;
+        uint32_t raw_pos = ( ri < result->raw_block_count )
+                           ? result->raw_blocks[ri].pulse_start
+                           : UINT32_MAX;
 
-        /* recovery metadata jako Text Description (blok 0x30) */
-        if ( file_result->recovery_status != WAV_RECOVERY_NONE ) {
-            char recovery_desc[256];
-            snprintf ( recovery_desc, sizeof ( recovery_desc ),
-                       "WARNING: Recovered - %s",
-                       wav_recovery_status_string ( file_result->recovery_status ) );
+        if ( raw_pos < file_pos ) {
+            /* raw blok je drive - zapsat Direct Recording */
+            const st_WAV_ANALYZER_RAW_BLOCK *rb = &result->raw_blocks[ri];
+            ri++;
 
-            st_TZX_BLOCK rec_desc_block;
-            en_TZX_ERROR rec_err = tzx_block_create_text_description (
-                recovery_desc, &rec_desc_block );
-            if ( rec_err == TZX_OK ) {
-                tzx_err = tzx_file_append_block ( tmz_file, &rec_desc_block );
+            if ( !rb->data || rb->data_size == 0 ) continue;
+
+            uint16_t tstates = ( uint16_t ) ( TZX_DEFAULT_CPU_CLOCK / rb->sample_rate );
+            st_TZX_BLOCK raw_block;
+            en_TZX_ERROR raw_err = tzx_block_create_direct_recording (
+                tstates, 0, rb->used_bits_last,
+                rb->data, rb->data_size, &raw_block
+            );
+
+            if ( raw_err == TZX_OK ) {
+                tzx_err = tzx_file_append_block ( tmz_file, &raw_block );
                 if ( tzx_err != TZX_OK ) {
-                    if ( rec_desc_block.data ) free ( rec_desc_block.data );
+                    fprintf ( stderr, "Error: failed to append raw block: %s\n",
+                              tzx_error_string ( tzx_err ) );
+                    free ( raw_block.data );
+                    tzx_free ( tmz_file );
+                    return EXIT_FAILURE;
                 }
             }
-        }
+        } else {
+            /* dekodovany soubor je drive (nebo stejne) - zapsat datovy blok */
+            const st_WAV_ANALYZER_FILE_RESULT *file_result = &result->files[fi];
+            fi++;
 
-        st_TZX_BLOCK *block = create_tmz_block_from_result ( file_result );
-        if ( !block ) {
-            fprintf ( stderr, "Error: failed to create TMZ block for file %u (%s)\n",
-                      i + 1, wav_tape_format_name ( file_result->format ) );
-            tzx_free ( tmz_file );
-            return EXIT_FAILURE;
-        }
+            if ( !file_result->mzf && !file_result->tap_data ) continue;
 
-        /* pridame blok do souboru (ownership dat predano) */
-        tzx_err = tzx_file_append_block ( tmz_file, block );
-        if ( tzx_err != TZX_OK ) {
-            fprintf ( stderr, "Error: failed to append block: %s\n",
-                      tzx_error_string ( tzx_err ) );
-            tmz_block_free ( block );
-            tzx_free ( tmz_file );
-            return EXIT_FAILURE;
-        }
+            /* recovery metadata jako Text Description (blok 0x30) */
+            if ( file_result->recovery_status != WAV_RECOVERY_NONE ) {
+                char recovery_desc[256];
+                snprintf ( recovery_desc, sizeof ( recovery_desc ),
+                           "WARNING: Recovered - %s",
+                           wav_recovery_status_string ( file_result->recovery_status ) );
 
-        /* uvolnime pouze wrapper strukturu, data vlastni tmz_file */
-        free ( block );
-    }
+                st_TZX_BLOCK rec_desc_block;
+                en_TZX_ERROR rec_err = tzx_block_create_text_description (
+                    recovery_desc, &rec_desc_block );
+                if ( rec_err == TZX_OK ) {
+                    tzx_err = tzx_file_append_block ( tmz_file, &rec_desc_block );
+                    if ( tzx_err != TZX_OK ) {
+                        if ( rec_desc_block.data ) free ( rec_desc_block.data );
+                    }
+                }
+            }
 
-    /* 3. raw bloky (neidentifikované úseky jako TZX Direct Recording) */
-    for ( uint32_t i = 0; i < result->raw_block_count; i++ ) {
-        const st_WAV_ANALYZER_RAW_BLOCK *rb = &result->raw_blocks[i];
-        if ( !rb->data || rb->data_size == 0 ) continue;
-
-        /* T-states na vzorek: CPU_CLOCK / sample_rate */
-        uint16_t tstates = ( uint16_t ) ( TZX_DEFAULT_CPU_CLOCK / rb->sample_rate );
-
-        st_TZX_BLOCK raw_block;
-        en_TZX_ERROR raw_err = tzx_block_create_direct_recording (
-            tstates, 0, rb->used_bits_last,
-            rb->data, rb->data_size, &raw_block
-        );
-
-        if ( raw_err == TZX_OK ) {
-            tzx_err = tzx_file_append_block ( tmz_file, &raw_block );
-            if ( tzx_err != TZX_OK ) {
-                fprintf ( stderr, "Error: failed to append raw block: %s\n",
-                          tzx_error_string ( tzx_err ) );
-                free ( raw_block.data );
+            st_TZX_BLOCK *block = create_tmz_block_from_result ( file_result );
+            if ( !block ) {
+                fprintf ( stderr, "Error: failed to create TMZ block for file %u (%s)\n",
+                          fi, wav_tape_format_name ( file_result->format ) );
                 tzx_free ( tmz_file );
                 return EXIT_FAILURE;
             }
+
+            tzx_err = tzx_file_append_block ( tmz_file, block );
+            if ( tzx_err != TZX_OK ) {
+                fprintf ( stderr, "Error: failed to append block: %s\n",
+                          tzx_error_string ( tzx_err ) );
+                tmz_block_free ( block );
+                tzx_free ( tmz_file );
+                return EXIT_FAILURE;
+            }
+
+            free ( block );
         }
     }
 
@@ -820,10 +938,18 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
         const st_WAV_ANALYZER_FILE_RESULT *fr = &result->files[i];
 
         if ( fr->tap_data && fr->tap_data_size > 0 ) {
-            /* ZX Spectrum blok */
-            fprintf ( stdout, "  [%u] ZX SPECTRUM flag=0x%02X, %u bytes, CRC: %s\n",
-                      i + 1, fr->tap_data[0], fr->tap_data_size,
-                      fr->header_crc == WAV_CRC_OK ? "OK" : ( fr->header_crc == WAV_CRC_ERROR ? "ERROR" : "N/A" ) );
+            /* ZX Spectrum / SINCLAIR blok */
+            if ( fr->format == WAV_TAPE_FORMAT_SINCLAIR ) {
+                double ratio = fr->leader.avg_period_us / ZX_PILOT_US;
+                fprintf ( stdout, "  [%u] SINCLAIR flag=0x%02X, %u bytes, speed=%.2fx (%.0f us), CRC: %s\n",
+                          i + 1, fr->tap_data[0], fr->tap_data_size,
+                          1.0 / ratio, fr->leader.avg_period_us,
+                          fr->header_crc == WAV_CRC_OK ? "OK" : ( fr->header_crc == WAV_CRC_ERROR ? "ERROR" : "N/A" ) );
+            } else {
+                fprintf ( stdout, "  [%u] ZX SPECTRUM flag=0x%02X, %u bytes, CRC: %s\n",
+                          i + 1, fr->tap_data[0], fr->tap_data_size,
+                          fr->header_crc == WAV_CRC_OK ? "OK" : ( fr->header_crc == WAV_CRC_ERROR ? "ERROR" : "N/A" ) );
+            }
         } else if ( fr->mzf ) {
             char fname[MZF_FNAME_UTF8_BUF_SIZE];
             mzf_tools_get_fname_ex ( &fr->mzf->header, fname, sizeof ( fname ), name_encoding );

@@ -79,12 +79,18 @@ Stejná struktura jako kategorie 1, ale při jiné rychlosti (2400, 2800, 3200+ 
 
 Do této kategorie patří i **CP/M CMT** (cmt.com pod CP/M, 2400 Bd) a **MZ-80B** (vlastní pulsní sada, 1800 Bd základ).
 
-#### Kategorie 3: Loader v hlavičce (comment pole)
+#### Kategorie 3: Loader v hlavičce (komentářová oblast)
 
-Záznam se tváří jako kategorie 1, ale do pole comment MZF hlavičky byl vložen krátký program (loader). SIZE=0, EXEC ukazuje do oblasti comment. ROM nahraje jen hlavičku (bez body) a spustí loader.
+Záznam vypadá jako kategorie 1, ale do komentářové oblasti MZF hlavičky byl vložen krátký program (loader). Standardní pole hlavičky jsou nastavena tak, aby ROM načetl pouze hlavičku a spustil loader: SIZE=0 (ROM přeskočí čtení těla), EXEC ukazuje do komentářové oblasti.
+
+Na pásce je standardní dvou-blokový MZF záznam:
+- Header blok v NORMAL 1:1 rychlosti (hlavička s embedded loaderem)
+- Body blok v konfigurovatelné rychlosti (vlastní data programu)
+
+ROM přečte pouze header blok, přeskočí body (SIZE=0) a spustí loader. Loader pak sám přečte body blok z pásky na cílové rychlosti.
 
 Formáty v této kategorii:
-- **FASTIPL** - $BB prefix v header bloku, V02/V07 loader (Intercopy, Marek Šmihla - NIPSOFT)
+- **FASTIPL** - $BB prefix, V02/V07 loader (Intercopy, Marek Šmihla - NIPSOFT). Skutečné parametry (fsize, fstrt, fexec) uloženy na offsetech $1A-$1F v hlavičce. Rychlost body bloku: 1200-3200 Bd.
 
 #### Kategorie 4: Loader jako samostatný program
 
@@ -117,18 +123,47 @@ CP/M Tape (Pezik/MarVan, ZTAPE/TAPE.COM) používá zcela odlišný protokol - m
 | CP/M Tape | (mimo)    | Manchester   | 1200-3200   | CP/M    | 0x41     |
 | SINCLAIR  | -         | vlastní      | 1400 Bd     | -       | TZX 0x10 |
 
-### 3.3 Pulsní sady
+### 3.3 Specialní případy
 
-Délky pulzů se liší podle modelu počítače:
+#### Formáty s ochranou proti kopírování
 
-| Parametr     | MZ-700/80K/80A | MZ-800/1500 | MZ-80B   |
-|--------------|----------------|-------------|----------|
-| Long high    | ~464 us        | ~470 us     | ~333 us  |
-| Long low     | ~494 us        | ~494 us     | ~334 us  |
-| Short high   | ~240 us        | ~240 us     | ~167 us  |
-| Short low    | ~264 us        | ~278 us     | ~166 us  |
+V 90. letech se u některých programů pro Sharp MZ-800 objevily obskurní kazetové formáty sloužící k obfuskaci kódu nebo ochraně proti kopírování. Tyto formáty ke své činnosti zpravidla využívaly refresh registr CPU Z80 nebo (předem pevně dané) dynamicky se měnící nastavení CTC i8253, popřípadě kombinaci obojího. Tento zdroj entropie pak byl použit k dynamickým změnám pulsesetu během záznamu/přehrávání, nebo k prostému XORování obsahu datového bloku.
 
-### 3.4 Checksum
+Vzhledem k tomu, že tyto snahy byly Sharp komunitou většinou přijaty jako výzva, tak vždy poměrně rychle došlo k cracknutí původní ochrany a k masivnímu rozšíření těchto programů v již běžném formátu. Z tohoto důvodu se TapeMZ těmito formáty dále do hloubky nezabývá. Nic však nebrání tomu, aby byly v TMZ formátu uloženy jako neidentifikovaný audio blok (TZX blok 0x15 - Direct Recording).
+
+#### Předělávky ze ZX Spectra
+
+Poměrně častou kombinaci vytvářely hry, které se na MZ-800 dostaly jako předělávky z platformy ZX Spectrum. Ty měly na pásce většinou NORMAL FM loader, za kterým následoval načítací obrázek ve formátu SINCLAIR a za ním pak pokračoval NORMAL FM blok obsahující upravenou hru.
+
+Díky různým předělávkám za účelem zjednodušeného spouštění z disket nebo z prostých MZF formátů se bohužel často zachovala jen ta druhá část programu (hra). Pokud však ještě někde naleznete tyto programy v kompletní podobě, tak TMZ je připraven k tomu, aby je zachoval tak, jak se používaly původně - se všemi třemi bloky v původním pořadí.
+
+#### Audio labely Intercopy
+
+Program Intercopy generuje při ukládání na pásku speciální audio bloky umístěné před vlastním headerem záznamu. Prostřednictvím hradla i8255 PPI syntetizuje hlasový label oznamující jméno programu, který následuje. Tato audio data mohou být v TMZ uložena jako neidentifikovaný audio blok (TZX blok 0x15 - Direct Recording).
+
+### 3.4 Pulsní sady
+
+Délky pulzů se liší podle modelu počítače. ROM používá stejnou delay smyčku pro obě poloviny pulzu, takže teoretické časování je symetrické (HIGH = LOW). Reálné nahrávky z magnetofonu vykazují asymetrický duty cycle vlivem analogových artefaktů (magnetofon, zesilovač, hlavy).
+
+Teoretické ROM hodnoty (symetrické):
+
+| Parametr      | MZ-700/80K/80A | MZ-800/1500   | MZ-80B        |
+|---------------|----------------|---------------|---------------|
+| Long (H + L)  | ~504 + 504 us  | ~498 + 498 us | ~333 + 334 us |
+| Short (H + L) | ~252 + 252 us  | ~249 + 249 us | ~167 + 166 us |
+
+Typické hodnoty naměřené z reálných nahrávek (Intercopy 10.2 na MZ-800):
+
+| Parametr     | MZ-800/1500 měřené |
+|--------------|--------------------|
+| Long high    | ~476 us            |
+| Long low     | ~499 us            |
+| Short high   | ~227 us            |
+| Short low    | ~272 us            |
+
+Pozn.: Asymetrické hodnoty z reálných nahrávek jsou důležité pro FASTIPL kódování, kde readpoint (parametr ROM delay) musí být konzistentní s pulsní sadou. Pro formáty NORMAL a TURBO fungují symetrické hodnoty správně, protože ROM se automaticky kalibruje z leader tónu.
+
+### 3.5 Checksum
 
 Všechny Sharp MZ formáty používají 16bitový checksum založený na population count - součtu jedničkových bitů přes všechny bajty bloku. Mechanismus je jednoduchý, ale dostatečný pro detekci většiny chyb při čtení z pásky.
 

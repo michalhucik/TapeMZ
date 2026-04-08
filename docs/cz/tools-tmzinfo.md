@@ -52,8 +52,8 @@ Všechny informace se vypisují na standardní výstup.
 
 ### TZX bloky
 
-- **0x10 Standard Speed Data** - pauza, délka dat, flag (header/data)
-- **0x11 Turbo Speed Data** - pilot, sync, časování bitů, počet bajtů
+- **0x10 Standard Speed Data** - rychlost v Bd, pauza, délka dat, flag (header/data)
+- **0x11 Turbo Speed Data** - rychlost v Bd, pilot, sync, časování bitů, počet bajtů
 - **0x12 Pure Tone** - délka pulzů v T-states, počet pulzů
 - **0x13 Pulse Sequence** - jednotlivé pulzy v T-states
 - **0x14 Pure Data** - časování bitů, pauza, data

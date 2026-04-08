@@ -320,19 +320,15 @@ Hodnota 0 znamená "použij default z pulsní sady".
 
 | Parametr       | MZ-700/80K/80A | MZ-800/1500 | MZ-80B |
 |----------------|----------------|-------------|--------|
-| Long high (us) | ~464           | ~470        | ~333   |
-| Long low (us)  | ~494           | ~494        | ~334   |
-| Short high (us)| ~240           | ~240        | ~167   |
-| Short low (us) | ~264           | ~278        | ~166   |
+| Long high (us) | ~464           | ~498        | ~333   |
+| Long low (us)  | ~494           | ~498        | ~334   |
+| Short high (us)| ~240           | ~249        | ~167   |
+| Short low (us) | ~264           | ~249        | ~166   |
 
-Přesné hodnoty pro MZ-800 (Intercopy 10.2, GDG ticky):
-
-| Parametr    | GDG ticky | us      |
-|-------------|-----------|---------|
-| Long high   | 8335      | 470.330 |
-| Long low    | 8760      | 494.308 |
-| Short high  | 4356      | 245.802 |
-| Short low   | 4930      | 278.204 |
+MZ-800/1500 používá symetrické pulzy - ROM používá stejnou delay smyčku pro HIGH i LOW
+část pulzu. Původní asym. hodnoty z měření Intercopy 10.2 (GDG ticky {8335,8760},
+{4356,4930} -> 470/494/246/278 us) způsobovaly špatné zaokrouhlování při 44100 Hz
+(short pulz 11+12=23 vzorků místo 11+11=22).
 
 ### 5.3 Standardní TZX bloky (0x10-0x19)
 

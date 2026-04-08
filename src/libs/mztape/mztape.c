@@ -1,7 +1,7 @@
 /**
  * @file   mztape.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Implementace knihovny mztape — generování CMT audio streamů z MZF souborů.
  *
  * Obsahuje logiku konverze MZF dat na CMT bitstream/vstream, výpočet pulzů,
@@ -192,14 +192,21 @@ const st_MZTAPE_PULSES_LENGTH g_mztape_pulses_800 = {
 };
 
 /**
- * @brief Přesné pulzní konstanty pro MZ-800 — Intercopy 10.2 (vstream path).
+ * @brief Symetricke pulzni konstanty pro MZ-800 (vstream path).
  *
- * Přepočet z naměřených GDG ticků na MZ-800 (pixel clock 17 721 600 Hz).
- * GDG ticky: {8335,8760}, {4356,4930}.
+ * MZ-800 ROM pouziva stejnou delay smycku pro HIGH i LOW cast pulzu,
+ * takze obe poloviny maji shodnou delku. Puvodni asym. hodnoty
+ * z mereni Intercopy 10.2 (GDG ticky {8335,8760}, {4356,4930})
+ * zpusobovaly spatne zaokrouhlovani na 44100 Hz - short pulz
+ * se zaokrouhlil na 11+12=23 vzorku misto 11+11=22, coz vedlo
+ * k odchylce ~4.5% v namerenene rychlosti (1099 Bd misto 1150 Bd).
+ *
+ * Symetricke hodnoty (498/498/249/249 us) jsou shodne s mzcmt_turbo
+ * g_pulses_800 a odpovidaji skutecnemu ROM chovani.
  */
 static const st_MZTAPE_PULSES_LENGTH g_mztape_pulses_800_intercopy = {
-    { 0.000470330, 0.000494308, 0.000964638 }, /* LONG */
-    { 0.000245802, 0.000278204, 0.000524006 }, /* SHORT */
+    { 0.000498, 0.000498, 0.000996 }, /* LONG: 498 us H + 498 us L */
+    { 0.000249, 0.000249, 0.000498 }, /* SHORT: 249 us H + 249 us L */
 };
 
 /**

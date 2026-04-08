@@ -23,7 +23,7 @@ tmzedit <prikaz> [volby] <soubor> [argumenty...]
 | `add-text` | Přidá textový popis (blok 0x30) |
 | `add-message` | Přidá zobrazovanou zprávu (blok 0x31) |
 | `archive-info` | Přidá nebo nahradí metadata (blok 0x32) |
-| `set` | Změní formát/rychlost na MZ bloku (0x40/0x41) |
+| `set` | Změní formát/rychlost na MZ bloku (0x40/0x41) nebo časování na bloku 0x11 |
 | `validate` | Zkontroluje integritu souboru |
 
 ## Společné volby
@@ -251,12 +251,14 @@ tmzedit archive-info tape.tmz --comment "Dumped from original tape" -o tape.tmz
 
 ## set - Změna formátu/rychlosti MZ bloků
 
-Změní formát a/nebo rychlost záznamu na MZ bloku (0x40 nebo 0x41).
+Změní formát a/nebo rychlost záznamu na MZ bloku (0x40 nebo 0x41),
+nebo časování na bloku 0x11 (Turbo Speed Data / SINCLAIR).
 
 Pravidla konverze:
 - Blok 0x40 s nestandardním formátem/rychlostí se překonvertuje na blok 0x41
 - Blok 0x41 s formátem NORMAL a rychlostí 1:1 se překonvertuje zpět na blok 0x40
 - Blok 0x40 s NORMAL 1:1 zůstává beze změny
+- Blok 0x11 podporuje pouze `--sinclair-speed`
 
 ```
 tmzedit set <soubor> <index> [--format <fmt>] [--speed <spd>] [-o <vystup>]
@@ -265,9 +267,10 @@ tmzedit set <soubor> <index> [--format <fmt>] [--speed <spd>] [-o <vystup>]
 | Volba | Hodnoty | Popis |
 |-------|---------|-------|
 | `--format` | normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape | Formát záznamu |
-| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | Poměr rychlosti (neplatný pro FSK/SLOW) |
+| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14, nebo baudrate (napr. 2800) | Poměr rychlosti nebo baudrate v Bd (neplatný pro FSK/SLOW/SINCLAIR) |
 | `--fsk-speed` | 0-6 | Rychlostní úroveň FSK (pouze pro FSK formát) |
 | `--slow-speed` | 0-4 | Rychlostní úroveň SLOW (pouze pro SLOW formát) |
+| `--sinclair-speed` | 1381, 1772, 2074, 2487 | SINCLAIR rychlost v Bd (pouze pro blok 0x11) |
 
 ### Příklady
 
@@ -293,6 +296,12 @@ Konverze bloku na SLOW formát s rychlostní úrovní 2:
 
 ```
 tmzedit set tape.tmz 0 --format slow --slow-speed 2 -o tape_slow.tmz
+```
+
+Změna rychlosti SINCLAIR bloku (0x11) na 2074 Bd:
+
+```
+tmzedit set tape.tmz 3 --sinclair-speed 2074 -o tape_sinclair.tmz
 ```
 
 Konverze bloku 0x41 zpět na 0x40 (nastavením NORMAL 1:1):

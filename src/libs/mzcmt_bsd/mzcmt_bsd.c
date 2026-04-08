@@ -127,23 +127,23 @@ typedef struct st_bsd_pulses_length {
 /**
  * @brief Vychozi pulzni konstanty pro MZ-700, MZ-80K, MZ-80A.
  *
- * Prevzato z mztape.c (g_mztape_pulses_700).
+ * Symetricke hodnoty - shodne s mzcmt_turbo g_pulses_700.
  */
 static const st_bsd_pulses_length g_pulses_700 = {
-    { 0.000464, 0.000494 },   /* long: 464 us H + 494 us L */
-    { 0.000240, 0.000264 },   /* short: 240 us H + 264 us L */
+    { 0.000504, 0.000504 },   /* long: 504 us H + 504 us L */
+    { 0.000252, 0.000252 },   /* short: 252 us H + 252 us L */
 };
 
 
 /**
  * @brief Vychozi pulzni konstanty pro MZ-800, MZ-1500.
  *
- * Presne hodnoty z mereni Intercopy 10.2 (GDG ticky na MZ-800,
- * pixel clock 17 721 600 Hz). Prevzato z mztape.c.
+ * Symetricke hodnoty - shodne s mzcmt_turbo g_pulses_800.
+ * ROM pouziva stejnou delay smycku pro obe poloviny pulzu.
  */
 static const st_bsd_pulses_length g_pulses_800 = {
-    { 0.000470330, 0.000494308 },   /* long */
-    { 0.000245802, 0.000278204 },   /* short */
+    { 0.000498, 0.000498 },   /* long: 498 us H + 498 us L */
+    { 0.000249, 0.000249 },   /* short: 249 us H + 249 us L */
 };
 
 

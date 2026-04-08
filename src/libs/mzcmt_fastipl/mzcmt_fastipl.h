@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_fastipl.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.2.0
  * @brief  FASTIPL koder pro kazetovy zaznam Sharp MZ ($BB prefix, Intercopy).
  *
  * Knihovna implementuje FASTIPL (Fast IPL) kodovani pouzivane programy
@@ -138,10 +138,12 @@ extern "C" {
     } en_MZCMT_FASTIPL_ERROR;
 
 
-/** @brief Vychozi delka LGAP - 22 000 kratkych pulzu. */
-#define MZCMT_FASTIPL_LGAP_DEFAULT   22000
-/** @brief Vychozi delka SGAP - 11 000 kratkych pulzu. */
-#define MZCMT_FASTIPL_SGAP_DEFAULT   11000
+/** @brief Vychozi delka header LGAP - 11000 pulzu (= 22000 pul-period).
+ *  Intercopy sub_19EE: header mode HL=$157C*2 = 11000 pulzu. */
+#define MZCMT_FASTIPL_HEADER_LGAP_DEFAULT   11000
+/** @brief Vychozi delka body LGAP - 5500 pulzu (= 11000 pul-period).
+ *  Intercopy sub_19EE: body mode HL=$157C = 5500 pulzu. */
+#define MZCMT_FASTIPL_BODY_LGAP_DEFAULT     5500
 
 /** @brief Pocet long pulzu v dlouhem tapemarku. */
 #define MZCMT_FASTIPL_LTM_LONG       40
@@ -169,10 +171,14 @@ extern "C" {
 #define MZCMT_FASTIPL_OFF_FSTRT      0x1C
 /** @brief Offset skutecneho fexec v $BB hlavicce. */
 #define MZCMT_FASTIPL_OFF_FEXEC      0x1E
-/** @brief Offset kodu loaderu v $BB hlavicce. */
-#define MZCMT_FASTIPL_OFF_LOADER     0x20
-/** @brief Velikost kodu loaderu v bajtech. */
-#define MZCMT_FASTIPL_LOADER_SIZE    96
+/** @brief Offset kodu loaderu v $BB hlavicce (= standardni fsize pozice).
+ *  Loader zabira offsety $12-$7F (110 bajtu). Prvnich 6 bajtu ($12-$17)
+ *  se zaroven interpretuje jako fsize=0, fstrt=$1200, fexec=$1110.
+ *  Intercopy patchuje offsety $18-$1F parametry (blcount, readpoint,
+ *  skutecne fsize/fstrt/fexec). */
+#define MZCMT_FASTIPL_OFF_LOADER     0x12
+/** @brief Velikost kodu loaderu v bajtech (110 = $6E). */
+#define MZCMT_FASTIPL_LOADER_SIZE    110
 
 /** @brief Vychozi readpoint pro standardni rychlost (ROM = $52 = 82). */
 #define MZCMT_FASTIPL_READPOINT_DEFAULT 82
@@ -187,26 +193,22 @@ extern "C" {
      * - cmtspeed_is_valid(speed)
      *
      * @par Vychozi hodnoty (pri 0):
-     * - lgap_length: 22000
-     * - sgap_length: 11000
+     * - lgap_length: 5500 (body LGAP, Intercopy sub_19EE body mode)
      * - blcount: 1 (bez opakovani)
      * - readpoint: automaticky z rychlosti (82/divisor)
-     * - pause_ms: 1000 (1 sekunda mezi hlavickou a telem)
      * - *_us100: vychozi z pulsesetu + rychlosti
      */
     typedef struct st_MZCMT_FASTIPL_CONFIG {
         en_MZCMT_FASTIPL_VERSION version;  /**< verze loaderu (V02/V07) */
         en_MZCMT_FASTIPL_PULSESET pulseset; /**< pulzni sada pro casovani */
         en_CMTSPEED speed;                  /**< rychlost datoveho tela (turbo) */
-        uint32_t lgap_length;               /**< LGAP pro body cast (0 = 22000) */
-        uint32_t sgap_length;               /**< SGAP pro header cast (0 = 11000) */
+        uint32_t lgap_length;               /**< body LGAP delka v pulzech (0 = 5500) */
         uint16_t long_high_us100;           /**< explicitni long HIGH (us*100, 0 = default) */
         uint16_t long_low_us100;            /**< explicitni long LOW (us*100, 0 = default) */
         uint16_t short_high_us100;          /**< explicitni short HIGH (us*100, 0 = default) */
         uint16_t short_low_us100;           /**< explicitni short LOW (us*100, 0 = default) */
         uint8_t blcount;                    /**< pocet opakovani bloku (0 = 1) */
         uint8_t readpoint;                  /**< readpoint prodleva (0 = auto z rychlosti) */
-        uint16_t pause_ms;                  /**< pauza mezi hlavickou a telem v ms (0 = 1000) */
     } st_MZCMT_FASTIPL_CONFIG;
 
 
@@ -239,18 +241,16 @@ extern "C" {
     /**
      * @brief Vytvori CMT vstream z MZF dat FASTIPL kodovanim.
      *
-     * Generuje dvoudilny signal:
+     * Generuje standardni dvou-blokovy MZF zaznam (shodne s Intercopy 10.2):
      *
-     * Cast 1 ($BB hlavicka pri 1:1 rychlosti):
-     *   LGAP + LTM + 2L + $BB_HDR + CHKH + 2L + SGAP + STM + 2L + CHKB + 2L
+     * Header blok (NORMAL 1:1 rychlost):
+     *   LGAP(11000) + LTM(40L+40S) + 2L + HDR(128B) + CRC + 2L
      *
-     * Pauza (konfigurovatelna, vychozi 1000 ms)
+     * Body blok (turbo rychlost, primo za header blokem bez pauzy):
+     *   LGAP(5500) + STM(20L+20S) + 2L + BODY(N B) + CRC + 2L
      *
-     * Cast 2 (datove telo pri turbo rychlosti):
-     *   LGAP + LTM + 2L + BODY + CHKB + 2L
-     *
-     * Pulzni casovani hlavickove casti je vzdy standardni (1:1 rychlost).
-     * Casovani datove casti je dle konfigurace (speed + pulseset nebo
+     * Pulzni casovani header bloku je vzdy standardni (1:1 rychlost).
+     * Casovani body bloku je dle konfigurace (speed + pulseset nebo
      * explicitni hodnoty).
      *
      * @param original  Originalni MZF hlavicka (fname, fsize, fstrt, fexec).
@@ -349,7 +349,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny mzcmt_fastipl. */
-#define MZCMT_FASTIPL_VERSION "1.0.0"
+#define MZCMT_FASTIPL_VERSION "1.2.0"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny mzcmt_fastipl.

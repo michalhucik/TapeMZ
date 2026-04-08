@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
+ * @version 1.4.0
  * @brief  Hlavní API knihovny wav_analyzer - orchestrace všech vrstev.
  *
  * Poskytuje vysokoúrovňové API pro analýzu WAV nahrávek magnetofonových
@@ -81,6 +81,9 @@ extern "C" {
         st_WAV_LEADER_INFO leader;          /**< informace o leader tónu */
         en_WAV_SPEED_CLASS speed_class;     /**< rychlostní třída */
         int copy2_used;                     /**< 1 = data pochází z Copy2 (druhé kopie) */
+        uint32_t header_leader_pulse;      /**< pozice header leaderu na pasce (start zaznamu).
+                                                Pro dvoudilne formaty (TURBO/FASTIPL) se lisi
+                                                od leader.start_index, ktery obsahuje datovy leader. */
         uint32_t consumed_until_pulse;     /**< pozice za posledním zpracovaným pulzem
                                                 (pro přeskočení leaderů spotřebovaných
                                                 dvoudílnými formáty jako TURBO/FASTIPL) */

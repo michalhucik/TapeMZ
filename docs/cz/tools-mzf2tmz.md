@@ -25,7 +25,7 @@ mzf2tmz <vstup.mzf|vstup.mzt> <vystup.tmz> [volby]
 | `--machine` | generic, mz700, mz800, mz1500, mz80b | mz800 | Cílový počítač |
 | `--pulseset` | 700, 800, 80b, auto | auto | Pulzní sada (auto = dle machine) |
 | `--format` | normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape | normal | Formát záznamu na kazetě |
-| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | 1:1 | Poměr rychlosti (neplatný pro FSK/SLOW) |
+| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14, nebo baudrate (napr. 2800) | 1:1 | Poměr rychlosti nebo baudrate v Bd (neplatný pro FSK/SLOW) |
 | `--fsk-speed` | 0-6 | 0 | Rychlostní úroveň FSK (0=nejpomalejší, 6=nejrychlejší; pouze s `--format fsk`) |
 | `--slow-speed` | 0-4 | 0 | Rychlostní úroveň SLOW (0=nejpomalejší, 4=nejrychlejší; pouze s `--format slow`) |
 | `--pause` | 0-65535 | 1000 | Pauza po bloku v milisekundách |
@@ -55,10 +55,12 @@ mzf2tmz <vstup.mzf|vstup.mzt> <vystup.tmz> [volby]
 - `utf8-eu` - překlad do UTF-8, evropská varianta znakové sady (zobrazí skutečné Sharp MZ glyfy)
 - `utf8-jp` - překlad do UTF-8, japonská varianta znakové sady (katakana místo malých písmen)
 
-**--speed** - poměr rychlosti oproti základním 1200 Bd (pro FM formáty: normal, turbo, fastipl, sinclair):
-- `1:1` = 1200 Bd, `2:1` = 2400 Bd, `3:1` = 3600 Bd atd.
+**--speed** - poměr rychlosti nebo baudrate (pro FM formáty: normal, turbo, fastipl, sinclair):
+- Formát poměru: `1:1` = 1200 Bd, `2:1` = 2400 Bd, `7:3` = 2800 Bd, `8:3` = 3200 Bd, `3:1` = 3600 Bd atd.
+- Formát baudrate: `1200`, `2400`, `2800`, `3200`, `3600` atd. (mapuje se na nejbližší poměr)
 - `2:1cpm` = 2400 Bd varianta pro CP/M
 - Neplatný pro FSK a SLOW formáty (použijte `--fsk-speed` / `--slow-speed`).
+- Pro FASTIPL se doporučuje formát baudrate (odpovídá konvenci Intercopy).
 
 **--fsk-speed** - rychlostní úroveň FSK kodéru (pouze s `--format fsk`):
 - Úroveň 0 (nejpomalejší): long=8, short=4 vzorků na cyklus

@@ -1,17 +1,23 @@
 /**
  * @file   mzcmt_fastipl.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.2.0
  * @brief  Implementace FASTIPL koderu pro Sharp MZ.
  *
- * FASTIPL generuje dvoudilny signal na pasce:
- * 1. $BB hlavicka pri standardni rychlosti 1:1 (loader v komentari)
- * 2. Datove telo pri turbo rychlosti (NORMAL FM s upravenym casovanim)
+ * FASTIPL generuje standardni dvou-blokovy MZF zaznam:
+ * 1. Header blok: $BB hlavicka pri NORMAL 1:1 rychlosti
+ *    LGAP(11000) + LTM(40+40) + 2L + HDR(128B) + CRC + 2L
+ * 2. Body blok: datove telo pri turbo rychlosti
+ *    LGAP(5500) + STM(20+20) + 2L + BODY(N B) + CRC + 2L
  *
- * Oba dily pouzivaji standardni NORMAL FM modulaci (1 bit = 1 pulz,
- * MSB first, stop bit za kazdym bajtem). Hlavickova cast je vzdy
- * pri rychlosti 1:1, aby ji standard ROM dokazal nacist a spustit
- * IPL mechanismem.
+ * Oba bloky pouzivaji standardni NORMAL FM modulaci (1 bit = 1 pulz,
+ * MSB first, stop bit za kazdym bajtem). Header blok je vzdy
+ * pri rychlosti 1:1, aby ho standard ROM dokazal nacist a spustit
+ * loader z komentarove oblasti IPL mechanismem.
+ *
+ * Struktura odvozena z analyzy Intercopy 10.2 write handleru (sub_19EE):
+ * header LGAP = $157C*2 = 11000 pulzu, body LGAP = $157C = 5500 pulzu,
+ * body tapemark = STM (20+20), ne LTM (40+40). Mezi bloky neni pauza.
  *
  * Kod loaderu (V02/V07) je prevzat z referencni implementace Intercopy.
  * Loader kopiruje ROM $0000-$0FFF do RAM, modifikuje readpoint na $0A4B
@@ -93,12 +99,19 @@ void mzcmt_fastipl_set_error_callback ( mzcmt_fastipl_error_cb cb ) {
  * ========================================================================= */
 
 /**
- * @brief Binarni kod loaderu InterCopy V02 (96 bajtu).
+ * @brief Binarni kod loaderu InterCopy V02 (110 bajtu).
  *
- * Prevzato z cmttool_fastipl.c. Loader se ulozi do komentarove oblasti
- * $BB hlavicky na offset 0x20 (32).
+ * Kompletni loader od offsetu $12 v MZF hlavicce ($2139-$21A6).
+ * Prvnich 6 bajtu ($12-$17) se interpretuje jako fsize=0, fstrt=$1200,
+ * fexec=$1110. Intercopy patchuje offsety $18-$1F parametry.
+ * Vstupni bod loaderu: offset $20 (= fexec $1110, kdyz header na $10F0).
  */
 static const uint8_t g_loader_v02[MZCMT_FASTIPL_LOADER_SIZE] = {
+    /* $12-$17: fsize=0, fstrt=$1200, fexec=$1110 (zaroven loader prologue) */
+    0x00, 0x00, 0x00, 0x12, 0x10, 0x11,
+    /* $18-$1F: patchovane parametry (vychozi: loader kod) */
+    0x42, 0x53, 0x4c, 0x4c, 0x42, 0x42, 0x53, 0x53,
+    /* $20-$7F: hlavni telo loaderu (96 bajtu) */
     0x3e, 0x08, 0xd3, 0xce, 0xcd, 0x3e, 0x07, 0x97,
     0x57, 0x5f, 0xcd, 0x08, 0x03, 0xcd, 0xbe, 0x02,
     0xd3, 0xe2, 0x1a, 0xd3, 0xe0, 0x12, 0x13, 0xcb,
@@ -115,13 +128,18 @@ static const uint8_t g_loader_v02[MZCMT_FASTIPL_LOADER_SIZE] = {
 
 
 /**
- * @brief Binarni kod loaderu InterCopy V07 (96 bajtu).
+ * @brief Binarni kod loaderu InterCopy V07 (110 bajtu).
  *
  * Pouzivaji verze InterCopy v7, v7.2, v8, v8.2, v10.1, v10.2.
- * Jediny rozdil oproti V02: instrukce LD (HL),$01 na zacatku
+ * Jediny rozdil oproti V02: instrukce LD (HL),$01 na offsetu $27
  * (nastaveni priznaku v pameti).
  */
 static const uint8_t g_loader_v07[MZCMT_FASTIPL_LOADER_SIZE] = {
+    /* $12-$17: fsize=0, fstrt=$1200, fexec=$1110 */
+    0x00, 0x00, 0x00, 0x12, 0x10, 0x11,
+    /* $18-$1F: patchovane parametry */
+    0x42, 0x53, 0x4c, 0x4c, 0x42, 0x42, 0x53, 0x53,
+    /* $20-$7F: hlavni telo loaderu */
     0x3e, 0x08, 0xd3, 0xce, 0xcd, 0x3e, 0x07, 0x36,
     0x01, 0x97, 0x57, 0x5f, 0xcd, 0x08, 0x03, 0xcd,
     0xbe, 0x02, 0xd3, 0xe2, 0x1a, 0xd3, 0xe0, 0x12,
@@ -162,16 +180,31 @@ typedef struct st_fastipl_pulses_length {
     st_fastipl_pulse_length short_pulse;
 } st_fastipl_pulses_length;
 
-/** @brief MZ-700 pulzy. */
+/**
+ * @brief MZ-700 pulzy.
+ *
+ * Symetricke hodnoty - ROM pouziva stejnou delay smycku
+ * pro obe poloviny pulzu. Shodne s mzcmt_turbo g_pulses_700.
+ */
 static const st_fastipl_pulses_length g_pulses_700 = {
-    { 0.000464, 0.000494 },
-    { 0.000240, 0.000264 },
+    { 0.000504, 0.000504 },   /* long: 504 us H + 504 us L */
+    { 0.000252, 0.000252 },   /* short: 252 us H + 252 us L */
 };
 
-/** @brief MZ-800 pulzy (Intercopy mereni). */
+/**
+ * @brief MZ-800 pulzy.
+ *
+ * Asymetricke hodnoty odvozene z referencni nahravky ic-loader-all.wav.
+ * Pri 44100 Hz: SHORT = 10+12=22 smp, LONG = 21+22=43 smp.
+ *
+ * Asymetricky pulseset je nutny pro spravne skalovani turbo rychlosti:
+ * pri 2:1 dava 5+6=11 smp (referencni), symetricke 249/249 dava 5+5=10.
+ * Readpoint hodnoty v lookup tabulce g_fastipl_readpoints jsou konzistentni
+ * s timto pulsesetem (odvozeno ze stejne referencni nahravky).
+ */
 static const st_fastipl_pulses_length g_pulses_800 = {
-    { 0.000470330, 0.000494308 },
-    { 0.000245802, 0.000278204 },
+    { 0.000476, 0.000499 },   /* long: 476 us H (21 smp) + 499 us L (22 smp) = 43 smp */
+    { 0.000227, 0.000272 },   /* short: 227 us H (10 smp) + 272 us L (12 smp) = 22 smp */
 };
 
 /** @brief MZ-80B pulzy. */
@@ -209,6 +242,9 @@ typedef struct st_fastipl_pulses_samples {
  *
  * Pokud jsou explicitni casovani nenulove, pouzije je.
  * Jinak pouzije vychozi z pulsesetu skalovane divisorem.
+ *
+ * Skalovani: HIGH a LOW se zaokrouhluji zvlast z vychozich
+ * pulsesetu skalovanim divisorem. Shodne s mzcmt_turbo.
  *
  * @param[out] pulses Vystupni skalovane pulzy.
  * @param pulseset Pulzni sada.
@@ -342,17 +378,38 @@ uint16_t mzcmt_fastipl_compute_checksum ( const uint8_t *data, uint16_t size ) {
 
 
 /**
+ * @brief Readpoint hodnoty pro jednotlive rychlosti.
+ *
+ * Odvozeno z referencni nahravky ic-loader-all.wav dekodovanim
+ * $BB hlavicky. Readpoint ridi ROM delay smycku na $0A4B -
+ * musi byt konzistentni s pulznimi sirkami body bloku.
+ *
+ * Intercopy readpoint NENI jednoduchy vzorec 82/divisor.
+ * Pocita se pres sub_201C -> sub_1E09 ze sloziteho timing modelu.
+ * Proto pouzivame lookup tabulku z referencniho mereni.
+ */
+static const uint8_t g_fastipl_readpoints[CMTSPEED_COUNT] = {
+    0,    /* CMTSPEED_NONE */
+    77,   /* CMTSPEED_1_1    - 1200 Bd */
+    32,   /* CMTSPEED_2_1    - 2400 Bd */
+    32,   /* CMTSPEED_2_1_CPM - 2400 Bd (shodne s 2:1) */
+    13,   /* CMTSPEED_3_1    - 3600 Bd (odhad: 52507/(3*577)-14) */
+    48,   /* CMTSPEED_3_2    - 1800 Bd (odhad: 52507/(1.5*577)-14) */
+    22,   /* CMTSPEED_7_3    - 2800 Bd */
+    17,   /* CMTSPEED_8_3    - 3200 Bd */
+    55,   /* CMTSPEED_9_7    - ~1543 Bd (odhad) */
+    40,   /* CMTSPEED_25_14  - ~2143 Bd (odhad) */
+};
+
+
+/**
  * @brief Vrati vychozi readpoint pro danou rychlost.
  *
- * Pouziva vzorec: round(82 / cmtspeed_divisor), minimum 1.
+ * Pouziva lookup tabulku odvozenou z referencni nahravky Intercopy 10.2.
  */
 uint8_t mzcmt_fastipl_default_readpoint ( en_CMTSPEED speed ) {
     if ( !cmtspeed_is_valid ( speed ) ) return MZCMT_FASTIPL_READPOINT_DEFAULT;
-    double divisor = cmtspeed_get_divisor ( speed );
-    uint32_t rp = ( uint32_t ) round ( MZCMT_FASTIPL_READPOINT_DEFAULT / divisor );
-    if ( rp < 1 ) rp = 1;
-    if ( rp > 255 ) rp = 255;
-    return ( uint8_t ) rp;
+    return g_fastipl_readpoints[speed];
 }
 
 
@@ -379,60 +436,58 @@ void mzcmt_fastipl_build_header (
     /* fname z originalu (17 bajtu, offset 1-17) */
     memcpy ( &out_header[1], &original->fname, sizeof ( original->fname ) );
 
-    /* fsize = 0 (LE) */
-    out_header[0x12] = 0x00;
-    out_header[0x13] = 0x00;
+    /*
+     * Loader binary od offsetu $12 (110 bajtu).
+     * Prvnich 6 bajtu ($12-$17) se zaroven interpretuje jako
+     * fsize=0, fstrt=$1200, fexec=$1110 pro ROM.
+     * Offsety $18-$1F obsahuji vychozi loader kod, ktery se
+     * nasledne patchuje parametry (shodne s Intercopy sub_2035).
+     */
+    en_MZCMT_FASTIPL_VERSION ver = config->version;
+    if ( ver >= MZCMT_FASTIPL_VERSION_COUNT ) ver = MZCMT_FASTIPL_VERSION_V07;
+    memcpy ( &out_header[MZCMT_FASTIPL_OFF_LOADER], g_loaders[ver], MZCMT_FASTIPL_LOADER_SIZE );
 
-    /* fstrt = $1200 (LE) */
-    out_header[0x14] = ( MZCMT_FASTIPL_FSTRT ) & 0xFF;
-    out_header[0x15] = ( MZCMT_FASTIPL_FSTRT >> 8 ) & 0xFF;
+    /* patchovani parametru uvnitr loaderu (shodne s Intercopy sub_2035) */
 
-    /* fexec = $1110 (LE) */
-    out_header[0x16] = ( MZCMT_FASTIPL_FEXEC ) & 0xFF;
-    out_header[0x17] = ( MZCMT_FASTIPL_FEXEC >> 8 ) & 0xFF;
-
-    /* komentarova oblast: blcount */
+    /* blcount na offsetu $18 */
     uint8_t blcount = config->blcount > 0 ? config->blcount : 1;
     out_header[MZCMT_FASTIPL_OFF_BLCOUNT] = blcount;
 
-    /* komentarova oblast: readpoint */
+    /* readpoint na offsetu $19 */
     uint8_t readpoint = config->readpoint > 0
         ? config->readpoint
         : mzcmt_fastipl_default_readpoint ( config->speed );
     out_header[MZCMT_FASTIPL_OFF_READPOINT] = readpoint;
 
-    /* komentarova oblast: skutecne fsize (LE) */
+    /* skutecne fsize na offsetu $1A (LE) */
     out_header[MZCMT_FASTIPL_OFF_FSIZE]     = ( original->fsize ) & 0xFF;
     out_header[MZCMT_FASTIPL_OFF_FSIZE + 1] = ( original->fsize >> 8 ) & 0xFF;
 
-    /* komentarova oblast: skutecne fstrt (LE) */
+    /* skutecne fstrt na offsetu $1C (LE) */
     out_header[MZCMT_FASTIPL_OFF_FSTRT]     = ( original->fstrt ) & 0xFF;
     out_header[MZCMT_FASTIPL_OFF_FSTRT + 1] = ( original->fstrt >> 8 ) & 0xFF;
 
-    /* komentarova oblast: skutecne fexec (LE) */
+    /* skutecne fexec na offsetu $1E (LE) */
     out_header[MZCMT_FASTIPL_OFF_FEXEC]     = ( original->fexec ) & 0xFF;
     out_header[MZCMT_FASTIPL_OFF_FEXEC + 1] = ( original->fexec >> 8 ) & 0xFF;
-
-    /* komentarova oblast: loader binary */
-    en_MZCMT_FASTIPL_VERSION ver = config->version;
-    if ( ver >= MZCMT_FASTIPL_VERSION_COUNT ) ver = MZCMT_FASTIPL_VERSION_V07;
-    memcpy ( &out_header[MZCMT_FASTIPL_OFF_LOADER], g_loaders[ver], MZCMT_FASTIPL_LOADER_SIZE );
 }
 
 
 /**
  * @brief Vytvori CMT vstream z MZF dat FASTIPL kodovanim.
  *
- * Generuje dvoudilny signal v jednom vstreamu:
+ * Generuje standardni dvou-blokovy MZF zaznam (shodne s Intercopy 10.2):
  *
- * Cast 1 ($BB hlavicka, 1:1 rychlost):
- *   LGAP(22000) + LTM(40L+40S) + 2L + HDR(128B) + CHKH + 2L
- *   + SGAP(11000) + STM(20L+20S) + 2L + CHKB(=0) + 2L
+ * Header blok (NORMAL 1:1 rychlost):
+ *   LGAP(11000) + LTM(40L+40S) + 2L + HDR(128B) + CRC + 2L
  *
- * Pauza (LOW signal, vychozi 1000 ms)
+ * Body blok (turbo rychlost, primo za header blokem bez pauzy):
+ *   LGAP(5500) + STM(20L+20S) + 2L + BODY(N B) + CRC + 2L
  *
- * Cast 2 (datove telo, turbo rychlost):
- *   LGAP + LTM(40L+40S) + 2L + BODY(N B) + CHKB + 2L
+ * Intercopy sub_19EE pise kazdy blok zvlast:
+ * - header: LGAP=$157C*2=11000 pulzu, LTM(40+40)
+ * - body: LGAP=$157C=5500 pulzu, STM(20+20)
+ * Mezi bloky neni zadna pauza ani SGAP.
  */
 st_CMT_VSTREAM* mzcmt_fastipl_create_vstream (
     const st_MZF_HEADER *original,
@@ -481,12 +536,12 @@ st_CMT_VSTREAM* mzcmt_fastipl_create_vstream (
     uint8_t bb_header[sizeof ( st_MZF_HEADER )];
     mzcmt_fastipl_build_header ( bb_header, original, config );
 
-    /* pulzy pro cast 1 (hlavicka, 1:1 rychlost) */
+    /* pulzy pro header blok (1:1 rychlost) */
     st_fastipl_pulses_samples hdr_pulses;
     fastipl_prepare_pulses ( &hdr_pulses, config->pulseset, CMTSPEED_1_1,
                              0, 0, 0, 0, rate );
 
-    /* pulzy pro cast 2 (body, turbo rychlost) */
+    /* pulzy pro body blok (turbo rychlost) */
     st_fastipl_pulses_samples body_pulses;
     fastipl_prepare_pulses ( &body_pulses, config->pulseset, config->speed,
                              config->long_high_us100, config->long_low_us100,
@@ -495,16 +550,12 @@ st_CMT_VSTREAM* mzcmt_fastipl_create_vstream (
 
     /* checksums */
     uint16_t chk_bb_header = mzcmt_fastipl_compute_checksum ( bb_header, sizeof ( st_MZF_HEADER ) );
-    uint16_t chk_empty_body = 0;
     uint16_t chk_body = mzcmt_fastipl_compute_checksum ( body, ( uint16_t ) body_size );
 
-    /* efektivni GAP delky pro body cast */
-    uint32_t lgap = config->lgap_length > 0 ? config->lgap_length : MZCMT_FASTIPL_LGAP_DEFAULT;
-    uint32_t sgap = config->sgap_length > 0 ? config->sgap_length : MZCMT_FASTIPL_SGAP_DEFAULT;
-
-    /* pauza mezi hlavickou a telem */
-    uint32_t pause_ms = config->pause_ms > 0 ? config->pause_ms : 1000;
-    uint32_t pause_samples = ( uint32_t ) round ( ( double ) pause_ms * rate / 1000.0 );
+    /* body LGAP delka */
+    uint32_t body_lgap = config->lgap_length > 0
+                         ? config->lgap_length
+                         : MZCMT_FASTIPL_BODY_LGAP_DEFAULT;
 
     /* signal zacina v HIGH stavu (shodne s mztape) */
     st_CMT_VSTREAM *vstream = cmt_vstream_new ( rate, CMT_VSTREAM_BYTELENGTH8, 1, CMT_STREAM_POLARITY_NORMAL );
@@ -514,52 +565,33 @@ st_CMT_VSTREAM* mzcmt_fastipl_create_vstream (
     }
 
     /* ===================================================================
-     *  Cast 1: $BB hlavicka pri standardni rychlosti 1:1
+     *  Header blok: $BB hlavicka pri NORMAL 1:1 rychlosti
      * =================================================================== */
 
-    /* LGAP (kratke pulzy) */
-    if ( EXIT_SUCCESS != fastipl_add_pulses ( vstream, &hdr_pulses.short_pulse, MZCMT_FASTIPL_LGAP_DEFAULT ) ) goto error;
+    /* LGAP (11000 SHORT pulzu) */
+    if ( EXIT_SUCCESS != fastipl_add_pulses ( vstream, &hdr_pulses.short_pulse, MZCMT_FASTIPL_HEADER_LGAP_DEFAULT ) ) goto error;
 
-    /* dlouhy tapemark (40 long + 40 short) */
+    /* LTM (40 LONG + 40 SHORT) */
     if ( EXIT_SUCCESS != fastipl_add_tapemark ( vstream, &hdr_pulses, MZCMT_FASTIPL_LTM_LONG, MZCMT_FASTIPL_LTM_SHORT ) ) goto error;
 
-    /* 2 long + hlavicka + checksum + 2 long */
+    /* 2L sync + hlavicka(128B) + CRC + 2L terminator */
     if ( EXIT_SUCCESS != fastipl_add_pulses ( vstream, &hdr_pulses.long_pulse, 2 ) ) goto error;
     if ( EXIT_SUCCESS != fastipl_encode_data ( vstream, &hdr_pulses, bb_header, sizeof ( st_MZF_HEADER ) ) ) goto error;
     if ( EXIT_SUCCESS != fastipl_encode_checksum ( vstream, &hdr_pulses, chk_bb_header ) ) goto error;
     if ( EXIT_SUCCESS != fastipl_add_pulses ( vstream, &hdr_pulses.long_pulse, 2 ) ) goto error;
 
-    /* SGAP (kratke pulzy) */
-    if ( EXIT_SUCCESS != fastipl_add_pulses ( vstream, &hdr_pulses.short_pulse, sgap ) ) goto error;
-
-    /* kratky tapemark (20 long + 20 short) */
-    if ( EXIT_SUCCESS != fastipl_add_tapemark ( vstream, &hdr_pulses, MZCMT_FASTIPL_STM_LONG, MZCMT_FASTIPL_STM_SHORT ) ) goto error;
-
-    /* 2 long + prazdny checksum (fsize=0) + 2 long */
-    if ( EXIT_SUCCESS != fastipl_add_pulses ( vstream, &hdr_pulses.long_pulse, 2 ) ) goto error;
-    if ( EXIT_SUCCESS != fastipl_encode_checksum ( vstream, &hdr_pulses, chk_empty_body ) ) goto error;
-    if ( EXIT_SUCCESS != fastipl_add_pulses ( vstream, &hdr_pulses.long_pulse, 2 ) ) goto error;
-
     /* ===================================================================
-     *  Pauza mezi hlavickou a telem
+     *  Body blok: datove telo pri turbo rychlosti
+     *  (primo za header blokem bez pauzy - shodne s Intercopy)
      * =================================================================== */
 
-    if ( pause_samples > 0 ) {
-        /* tichy usek - signal zustava v LOW stavu */
-        if ( EXIT_SUCCESS != cmt_vstream_add_value ( vstream, 0, pause_samples ) ) goto error;
-    }
+    /* LGAP (5500 SHORT pulzu pri turbo rychlosti) */
+    if ( EXIT_SUCCESS != fastipl_add_pulses ( vstream, &body_pulses.short_pulse, body_lgap ) ) goto error;
 
-    /* ===================================================================
-     *  Cast 2: Datove telo pri turbo rychlosti
-     * =================================================================== */
+    /* STM (20 LONG + 20 SHORT) - Intercopy pise STM pro body, ne LTM */
+    if ( EXIT_SUCCESS != fastipl_add_tapemark ( vstream, &body_pulses, MZCMT_FASTIPL_STM_LONG, MZCMT_FASTIPL_STM_SHORT ) ) goto error;
 
-    /* LGAP (kratke pulzy pri turbo rychlosti) */
-    if ( EXIT_SUCCESS != fastipl_add_pulses ( vstream, &body_pulses.short_pulse, lgap ) ) goto error;
-
-    /* dlouhy tapemark (40 long + 40 short) */
-    if ( EXIT_SUCCESS != fastipl_add_tapemark ( vstream, &body_pulses, MZCMT_FASTIPL_LTM_LONG, MZCMT_FASTIPL_LTM_SHORT ) ) goto error;
-
-    /* 2 long + body data + checksum + 2 long */
+    /* 2L sync + body data + CRC + 2L terminator */
     if ( EXIT_SUCCESS != fastipl_add_pulses ( vstream, &body_pulses.long_pulse, 2 ) ) goto error;
     if ( body_size > 0 ) {
         if ( EXIT_SUCCESS != fastipl_encode_data ( vstream, &body_pulses, body, ( uint16_t ) body_size ) ) goto error;

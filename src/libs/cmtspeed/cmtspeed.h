@@ -159,6 +159,35 @@ extern "C" {
         snprintf ( dsttxt, size, "%s - %d Bd", cmtspeed_get_ratiotxt ( cmtspeed ), cmtspeed_get_bdspeed ( cmtspeed, base_bdspeed ) );
     }
 
+    /**
+     * @brief Najde nejblizsi en_CMTSPEED pro zadanou baudovou rychlost.
+     *
+     * Porovna zadany baudrate se vsemi platnymi CMTSPEED hodnotami
+     * a vrati tu s nejmensi odchylkou. Pouziva base_bdspeed pro vypocet.
+     *
+     * @param bdspeed Baudova rychlost (napr. 2400, 2800, 3200).
+     * @param base_bdspeed Zakladni baudova rychlost (typicky 1200).
+     * @return Nejblizsi en_CMTSPEED hodnota, CMTSPEED_NONE pokud bdspeed <= 0.
+     */
+    static inline en_CMTSPEED cmtspeed_from_bdspeed ( uint16_t bdspeed, uint16_t base_bdspeed ) {
+        if ( bdspeed == 0 || base_bdspeed == 0 ) return CMTSPEED_NONE;
+
+        en_CMTSPEED best = CMTSPEED_1_1;
+        double best_diff = 1e9;
+
+        for ( int s = CMTSPEED_1_1; s < CMTSPEED_COUNT; s++ ) {
+            uint16_t candidate = cmtspeed_get_bdspeed ( ( en_CMTSPEED ) s, base_bdspeed );
+            double diff = fabs ( ( double ) bdspeed - ( double ) candidate );
+            if ( diff < best_diff ) {
+                best_diff = diff;
+                best = ( en_CMTSPEED ) s;
+            }
+        }
+
+        return best;
+    }
+
+
     /** @brief Verze knihovny cmtspeed. */
 #define CMTSPEED_VERSION "2.0.0"
 

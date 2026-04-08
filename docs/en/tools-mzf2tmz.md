@@ -25,7 +25,7 @@ mzf2tmz <input.mzf|input.mzt> <output.tmz> [options]
 | `--machine` | generic, mz700, mz800, mz1500, mz80b | mz800 | Target computer |
 | `--pulseset` | 700, 800, 80b, auto | auto | Pulse set (auto = based on machine) |
 | `--format` | normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape | normal | Tape recording format |
-| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | 1:1 | Speed ratio (not valid for FSK/SLOW) |
+| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14, or baudrate (e.g. 2800) | 1:1 | Speed ratio or baudrate in Bd (not valid for FSK/SLOW) |
 | `--fsk-speed` | 0-6 | 0 | FSK speed level (0=slowest, 6=fastest; only with `--format fsk`) |
 | `--slow-speed` | 0-4 | 0 | SLOW speed level (0=slowest, 4=fastest; only with `--format slow`) |
 | `--pause` | 0-65535 | 1000 | Pause after block in milliseconds |
@@ -55,10 +55,12 @@ mzf2tmz <input.mzf|input.mzt> <output.tmz> [options]
 - `utf8-eu` - translation to UTF-8, European character set variant (displays actual Sharp MZ glyphs)
 - `utf8-jp` - translation to UTF-8, Japanese character set variant (katakana instead of lowercase letters)
 
-**--speed** - speed ratio relative to the base 1200 Bd (for FM formats: normal, turbo, fastipl, sinclair):
-- `1:1` = 1200 Bd, `2:1` = 2400 Bd, `3:1` = 3600 Bd etc.
+**--speed** - speed ratio or baudrate (for FM formats: normal, turbo, fastipl, sinclair):
+- Ratio format: `1:1` = 1200 Bd, `2:1` = 2400 Bd, `7:3` = 2800 Bd, `8:3` = 3200 Bd, `3:1` = 3600 Bd etc.
+- Baudrate format: `1200`, `2400`, `2800`, `3200`, `3600` etc. (mapped to nearest ratio)
 - `2:1cpm` = 2400 Bd variant for CP/M
 - Not valid for FSK and SLOW formats (use `--fsk-speed` / `--slow-speed` instead).
+- For FASTIPL, baudrate format is recommended (matches Intercopy convention).
 
 **--fsk-speed** - FSK encoder speed level (only with `--format fsk`):
 - Level 0 (slowest): long=8, short=4 samples per cycle

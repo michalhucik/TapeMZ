@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_fastipl.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Vrstva 4c analyzeru - FASTIPL dekoder ($BB prefix, Intercopy).
  *
  * Dekoduje FASTIPL format z WAV signalu. FASTIPL signal se sklada ze dvou casti:
@@ -69,26 +69,28 @@ extern "C" {
     /**
      * @brief Dekoduje kompletni MZF soubor z FASTIPL signalu.
      *
-     * Predpoklada, ze FM dekoder jiz dekodoval $BB hlavicku
-     * (Cast 1, ftype=$BB, fsize=0). Tato funkce:
+     * Predpoklada, ze FM dekoder jiz dekodoval $BB hlavicku.
+     * Tato funkce:
      * 1. Extrahuje realne parametry z $BB hlavicky
-     * 2. Najde leader Cast 2 (po pauze)
-     * 3. Dekoduje telo z Cast 2 (LTM + data + CRC)
+     * 2. Najde body LGAP leader za header CRC
+     * 3. Dekoduje telo z body bloku (STM + data + CRC)
      * 4. Sestavi MZF z realnych parametru a dekodovaneho tela
      *
      * @param seq Sekvence pulzu. Nesmi byt NULL.
      * @param bb_header_raw 128B surova $BB hlavicka (pred endianity korekci).
      *        Nesmi byt NULL.
-     * @param search_from_pulse Pozice od ktere hledat Cast 2
+     * @param search_from_pulse Pozice od ktere hledat body LGAP
      *        (typicky hdr_res.pulse_end z FM dekoderu).
      * @param[out] out_mzf Vystupni MZF struktura (volajici uvolni pres mzf_free).
      *             Nesmi byt NULL.
      * @param[out] out_body_result Vysledek dekodovani tela. Muze byt NULL.
      * @param[out] out_consumed_until Pozice za poslednim zpracovanym pulzem.
      *             Muze byt NULL.
+     * @param[out] out_data_leader Informace o body LGAP leaderu (rychlost, pozice).
+     *             Muze byt NULL.
      * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
      *
-     * @pre FM dekoder jiz dekodoval Cast 1 a klasifikator urcil
+     * @pre FM dekoder jiz dekodoval $BB hlavicku a klasifikator urcil
      *      format jako WAV_TAPE_FORMAT_FASTIPL.
      * @post Pri uspechu *out_mzf obsahuje rekonstruovany MZF soubor
      *       s realnym fsize/fstrt/fexec a dekodovanym telem.
@@ -99,7 +101,8 @@ extern "C" {
         uint32_t search_from_pulse,
         st_MZF **out_mzf,
         st_WAV_DECODE_RESULT *out_body_result,
-        uint32_t *out_consumed_until
+        uint32_t *out_consumed_until,
+        st_WAV_LEADER_INFO *out_data_leader
     );
 
 

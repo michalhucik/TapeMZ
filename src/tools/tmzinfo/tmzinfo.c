@@ -1,7 +1,7 @@
 /**
  * @file   tmzinfo.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.2.0
  * @brief  Utility pro zobrazeni obsahu TMZ/TZX souboru.
  *
  * Nacte TMZ nebo TZX soubor a vypise informace o hlavicce,
@@ -48,7 +48,7 @@
 #include "libs/cmtspeed/cmtspeed.h"
 
 /** @brief Verze programu tmzinfo (z @version v hlavicce souboru). */
-#define TMZINFO_VERSION  "1.0.0"
+#define TMZINFO_VERSION  "1.1.0"
 
 
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
@@ -124,12 +124,20 @@ static void print_speed ( uint8_t format, uint8_t speed ) {
     switch ( format ) {
         case 0: /* NORMAL */
         case 1: /* TURBO */
-        case 2: /* FASTIPL */
         case 3: /* SINCLAIR */
         {
             char speedtxt[64];
             cmtspeed_get_ratiospeedtxt ( speedtxt, sizeof ( speedtxt ),
                                          ( en_CMTSPEED ) speed, 1200 );
+            printf ( "      Speed   : %s\n", speedtxt );
+            break;
+        }
+        case 2: /* FASTIPL */
+        {
+            /* Intercopy uvadi rychlost v Bd, ne v pomerech */
+            char speedtxt[64];
+            cmtspeed_get_speedtxt ( speedtxt, sizeof ( speedtxt ),
+                                    ( en_CMTSPEED ) speed, 1200 );
             printf ( "      Speed   : %s\n", speedtxt );
             break;
         }
@@ -313,6 +321,8 @@ static void print_block_tzx_standard ( const st_TZX_BLOCK *block ) {
     if ( block->length < 4 ) return;
     uint16_t pause_ms = block->data[0] | ( block->data[1] << 8 );
     uint16_t data_len = block->data[2] | ( block->data[3] << 8 );
+    /* ZX standard: zero=855 T, one=1710 T -> Bd = 3500000/(855+1710) */
+    printf ( "      Speed   : %u Bd\n", 3500000 / ( 855 + 1710 ) );
     printf ( "      Pause   : %u ms\n", pause_ms );
     printf ( "      Data    : %u bytes\n", data_len );
     if ( data_len > 0 ) {
@@ -371,6 +381,9 @@ static void print_block_tzx_turbo ( const st_TZX_BLOCK *block ) {
     uint16_t pause_ms = block->data[13] | ( block->data[14] << 8 );
     uint32_t data_len = block->data[15] | ( block->data[16] << 8 ) | ( block->data[17] << 16 );
 
+    /* Bd = 3500000 / (zero + one) - prumerna rychlost pri 50% 0/1 */
+    uint32_t bd = ( zero + one > 0 ) ? 3500000 / ( zero + one ) : 0;
+    printf ( "      Speed   : %u Bd\n", bd );
     printf ( "      Pilot   : %u T x %u pulses\n", pilot, pilot_count );
     printf ( "      Sync    : %u / %u T\n", sync1, sync2 );
     printf ( "      Bits    : zero=%u T, one=%u T\n", zero, one );

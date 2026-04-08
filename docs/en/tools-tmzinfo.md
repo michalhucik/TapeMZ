@@ -52,8 +52,8 @@ All information is printed to standard output.
 
 ### TZX Blocks
 
-- **0x10 Standard Speed Data** - pause, data length, flag (header/data)
-- **0x11 Turbo Speed Data** - pilot, sync, bit timing, byte count
+- **0x10 Standard Speed Data** - speed in Bd, pause, data length, flag (header/data)
+- **0x11 Turbo Speed Data** - speed in Bd, pilot, sync, bit timing, byte count
 - **0x12 Pure Tone** - pulse length in T-states, pulse count
 - **0x13 Pulse Sequence** - individual pulses in T-states
 - **0x14 Pure Data** - bit timing, pause, data

@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_turbo.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Implementace TURBO koderu pro Sharp MZ.
  *
  * TURBO je standardni NORMAL FM modulace s konfigurovatelnym pulznim
@@ -677,7 +677,11 @@ static const uint8_t g_tc_signature[7] = {
  *   8:3 -> delay 30 ($1E), 82/2.667 = 30.75
  *   3:1 -> delay 27 ($1B), 82/3.0 = 27.3
  *
- * Vzorec: delay = round(82 / speed_ratio)
+ * Vzorec: delay = floor(82 / speed_ratio)
+ * TurboCopy na Z80 pouziva celociselne deleni (truncation),
+ * ekvivalentne: delay = (82 * denominator) / numerator.
+ * Rounding (+ 0.5) zpusoboval chybu u 8:3 (31 misto 30),
+ * coz vedlo k ~2.5% odchylce v namerenene rychlosti.
  */
 #define TC_ROM_DELAY_REF    82.0
 
@@ -688,13 +692,16 @@ static const uint8_t g_tc_signature[7] = {
  * Delay urcuje prodlevu v ROM cteci smycce - nizsi delay = rychlejsi
  * cteni = vyssi rychlostni pomer.
  *
+ * Pouziva truncation (floor) misto rounding, protoze TurboCopy
+ * na Z80 pocita delay celociselnym delenim.
+ *
  * @param speed en_CMTSPEED hodnota.
  * @return Hodnota delay pro patchovani loaderu (1-82).
  */
 static uint8_t turbo_tape_get_rom_delay ( en_CMTSPEED speed ) {
     double divisor = cmtspeed_get_divisor ( speed );
     if ( divisor <= 0.0 ) divisor = 1.0;
-    int delay = ( int ) ( TC_ROM_DELAY_REF / divisor + 0.5 );
+    int delay = ( int ) ( TC_ROM_DELAY_REF / divisor );
     if ( delay < 1 ) delay = 1;
     if ( delay > 255 ) delay = 255;
     return ( uint8_t ) delay;

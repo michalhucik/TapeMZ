@@ -1,7 +1,7 @@
 /**
  * @file   mzf2tmz.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.0
+ * @version 1.2.0
  * @brief  Konverzni utility MZF -> TMZ.
  *
  * Nacte MZF soubor (nebo MZT soubor s vice MZF) a vytvori z nej
@@ -67,7 +67,7 @@
 #include "libs/endianity/endianity.h"
 
 /** @brief Verze programu mzf2tmz (z @version v hlavicce souboru). */
-#define MZF2TMZ_VERSION  "1.1.0"
+#define MZF2TMZ_VERSION  "1.2.0"
 
 
 /**
@@ -226,13 +226,16 @@ static const char* format_name ( en_TMZ_FORMAT format ) {
 /**
  * @brief Naparsuje retezec na hodnotu en_CMTSPEED.
  *
- * Rozpoznava: "1:1", "2:1", "2:1cpm", "3:1", "3:2", "7:3", "8:3", "9:7", "25:14".
+ * Rozpoznava pomery: "1:1", "2:1", "2:1cpm", "3:1", "3:2", "7:3", "8:3", "9:7", "25:14".
+ * Rozpoznava take baudrate: "1200", "2400", "2800", "3200", "3600" atd.
+ * Baudrate se mapuje na nejblizsi en_CMTSPEED s bazi 1200 Bd.
  *
  * @param str Vstupni retezec.
  * @param[out] speed Vystupni hodnota.
  * @return 0 pri uspechu, -1 pokud retezec neodpovida zadne rychlosti.
  */
 static int parse_speed ( const char *str, en_CMTSPEED *speed ) {
+    /* pomery */
     if ( strcmp ( str, "1:1" ) == 0 )    { *speed = CMTSPEED_1_1;    return 0; }
     if ( strcmp ( str, "2:1" ) == 0 )    { *speed = CMTSPEED_2_1;    return 0; }
     if ( strcasecmp ( str, "2:1cpm" ) == 0 ) { *speed = CMTSPEED_2_1_CPM; return 0; }
@@ -242,6 +245,15 @@ static int parse_speed ( const char *str, en_CMTSPEED *speed ) {
     if ( strcmp ( str, "8:3" ) == 0 )    { *speed = CMTSPEED_8_3;    return 0; }
     if ( strcmp ( str, "9:7" ) == 0 )    { *speed = CMTSPEED_9_7;    return 0; }
     if ( strcmp ( str, "25:14" ) == 0 )  { *speed = CMTSPEED_25_14;  return 0; }
+
+    /* baudrate (ciselna hodnota > 100) */
+    char *endptr;
+    long val = strtol ( str, &endptr, 10 );
+    if ( *endptr == '\0' && val > 100 && val <= 10000 ) {
+        *speed = cmtspeed_from_bdspeed ( ( uint16_t ) val, 1200 );
+        return 0;
+    }
+
     return -1;
 }
 
@@ -791,6 +803,9 @@ int main ( int argc, char *argv[] ) {
                 printf ( "  -> 0x41 %s level %d\n", format_name ( format ), speed_byte );
             } else if ( format == TMZ_FORMAT_SLOW ) {
                 printf ( "  -> 0x41 %s level %d\n", format_name ( format ), speed_byte );
+            } else if ( format == TMZ_FORMAT_FASTIPL ) {
+                printf ( "  -> 0x41 %s %u Bd\n", format_name ( format ),
+                         cmtspeed_get_bdspeed ( speed, 1200 ) );
             } else {
                 printf ( "  -> 0x41 %s %s\n", format_name ( format ), g_cmtspeed_ratio[speed] );
             }
@@ -806,6 +821,10 @@ int main ( int argc, char *argv[] ) {
         printf ( "  Speed    : FSK level %d (0=slowest, 6=fastest)\n", speed_byte );
     } else if ( format == TMZ_FORMAT_SLOW ) {
         printf ( "  Speed    : SLOW level %d (0=slowest, 4=fastest)\n", speed_byte );
+    } else if ( format == TMZ_FORMAT_FASTIPL ) {
+        char speedtxt[64];
+        cmtspeed_get_speedtxt ( speedtxt, sizeof ( speedtxt ), speed, 1200 );
+        printf ( "  Speed    : %s\n", speedtxt );
     } else {
         printf ( "  Speed    : %s\n", g_cmtspeed_ratio[speed] );
     }

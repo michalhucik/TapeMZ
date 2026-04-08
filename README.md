@@ -81,10 +81,16 @@ This category also includes **CP/M CMT** (cmt.com under CP/M, 2400 Bd) and **MZ-
 
 #### Category 3: Loader in Header (Comment Field)
 
-The recording appears as category 1, but a short program (loader) was inserted into the comment field of the MZF header. SIZE=0, EXEC points into the comment area. ROM loads only the header (no body) and launches the loader.
+The recording appears as category 1, but a short program (loader) was inserted into the comment field of the MZF header. Standard header fields are set so that ROM loads only the header and launches the loader: SIZE=0 (ROM skips body reading), EXEC points into the comment area.
+
+On tape there is a standard two-block MZF recording:
+- Header block at NORMAL 1:1 speed (header with embedded loader)
+- Body block at configurable speed (actual program data)
+
+ROM reads only the header block, skips body (SIZE=0) and launches the loader. The loader then reads the body block from tape at the target speed.
 
 Formats in this category:
-- **FASTIPL** - $BB prefix in header block, V02/V07 loader (Intercopy, Marek Šmihla - NIPSOFT)
+- **FASTIPL** - $BB prefix, V02/V07 loader (Intercopy, Marek Smihla - NIPSOFT). Real parameters (fsize, fstrt, fexec) stored at offsets $1A-$1F in the header. Body block speed: 1200-3200 Bd.
 
 #### Category 4: Loader as a Separate Program
 
@@ -117,18 +123,47 @@ CP/M Tape (Pezik/MarVan, ZTAPE/TAPE.COM) uses a completely different protocol - 
 | CP/M Tape | (outside) | Manchester   | 1200-3200   | CP/M    | 0x41      |
 | SINCLAIR  | -         | custom       | 1400 Bd     | -       | TZX 0x10  |
 
-### 3.3 Pulse Sets
+### 3.3 Special Cases
 
-Pulse lengths differ by computer model:
+#### Copy Protection Formats
 
-| Parameter    | MZ-700/80K/80A | MZ-800/1500 | MZ-80B   |
-|--------------|----------------|-------------|----------|
-| Long high    | ~464 us        | ~470 us     | ~333 us  |
-| Long low     | ~494 us        | ~494 us     | ~334 us  |
-| Short high   | ~240 us        | ~240 us     | ~167 us  |
-| Short low    | ~264 us        | ~278 us     | ~166 us  |
+In the 1990s, some Sharp MZ-800 programs used obscure tape formats for code obfuscation or copy protection. These formats typically exploited the Z80 CPU refresh register or the i8253 CTC timer (with fixed predetermined settings), or a combination of both, as a source of entropy. This entropy was then used to dynamically change the pulse set during recording/playback, or to simply XOR the contents of the data block.
 
-### 3.4 Checksum
+Since these protection schemes were generally treated as a challenge by the Sharp community, they were usually cracked relatively quickly, and the protected programs spread widely in standard format. For this reason, TapeMZ does not cover these formats in detail. However, nothing prevents them from being stored in TMZ format as an unidentified audio block (TZX block 0x15 - Direct Recording).
+
+#### ZX Spectrum Conversions
+
+A fairly common combination was created by games that arrived on the MZ-800 as conversions from the ZX Spectrum platform. These typically had a NORMAL FM loader on tape, followed by a loading screen in SINCLAIR format, and then a NORMAL FM block containing the converted game itself.
+
+Due to various modifications for simplified launching from floppy disks or plain MZF files, often only the second part (the game) has survived. However, if you find these programs in their complete form, TMZ is ready to preserve them as they were originally used - with all three blocks in their original order.
+
+#### Intercopy Audio Labels
+
+The Intercopy program generates special audio blocks on tape before each recording header. Using the i8255 PPI gate, it synthesizes a voice label announcing the name of the program that follows. These audio data can be stored in TMZ as an unidentified audio block (TZX block 0x15 - Direct Recording).
+
+### 3.4 Pulse Sets
+
+Pulse lengths differ by computer model. The ROM uses the same delay loop for both halves of a pulse, so the theoretical timing is symmetric (HIGH = LOW). Real tape recordings exhibit asymmetric duty cycle due to analog artifacts (tape recorder, amplifier, head alignment).
+
+Theoretical ROM values (symmetric):
+
+| Parameter     | MZ-700/80K/80A | MZ-800/1500 | MZ-80B   |
+|---------------|----------------|-------------|----------|
+| Long (H + L)  | ~504 + 504 us  | ~498 + 498 us | ~333 + 334 us |
+| Short (H + L) | ~252 + 252 us  | ~249 + 249 us | ~167 + 166 us |
+
+Typical values measured from real recordings (Intercopy 10.2 on MZ-800):
+
+| Parameter    | MZ-800/1500 measured |
+|--------------|----------------------|
+| Long high    | ~476 us              |
+| Long low     | ~499 us              |
+| Short high   | ~227 us              |
+| Short low    | ~272 us              |
+
+Note: The asymmetric values from real recordings are important for FASTIPL encoding, where the readpoint (ROM delay parameter) must be consistent with the pulse set. For NORMAL and TURBO formats, symmetric values work correctly because the ROM auto-calibrates from the leader tone.
+
+### 3.5 Checksum
 
 All Sharp MZ formats use a 16-bit checksum based on population count - the sum of one-bits across all bytes of the block. The mechanism is simple but sufficient for detecting most errors when reading from tape.
 

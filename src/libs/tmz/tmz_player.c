@@ -430,7 +430,6 @@ static st_CMT_STREAM* play_turbo_fmt_fastipl ( const st_TMZ_MZ_TURBO_DATA *td,
     fcfg.speed = (en_CMTSPEED) td->speed;
     if ( !cmtspeed_is_valid ( fcfg.speed ) ) fcfg.speed = config->default_speed;
     fcfg.lgap_length = td->lgap_length;
-    fcfg.sgap_length = td->sgap_length;
     fcfg.long_high_us100 = td->long_high;
     fcfg.long_low_us100 = td->long_low;
     fcfg.short_high_us100 = td->short_high;

@@ -23,7 +23,7 @@ tmzedit <command> [options] <file> [arguments...]
 | `add-text` | Add a text description (block 0x30) |
 | `add-message` | Add a display message (block 0x31) |
 | `archive-info` | Add or replace metadata (block 0x32) |
-| `set` | Change format/speed on an MZ block (0x40/0x41/0x45) |
+| `set` | Change format/speed on an MZ block (0x40/0x41) or timing on block 0x11 |
 | `validate` | Check file integrity |
 
 ## Common Options
@@ -251,12 +251,14 @@ tmzedit archive-info tape.tmz --comment "Dumped from original tape" -o tape.tmz
 
 ## set - Changing MZ Block Format/Speed
 
-Changes the format and/or speed of a recording on an MZ block (0x40, 0x41, or 0x45).
+Changes the format and/or speed of a recording on an MZ block (0x40 or 0x41),
+or the timing on block 0x11 (Turbo Speed Data / SINCLAIR).
 
 Conversion rules:
 - Block 0x40 with non-standard format/speed is converted to block 0x41
 - Block 0x41 with format NORMAL and speed 1:1 is converted back to block 0x40
 - Block 0x40 with NORMAL 1:1 remains unchanged
+- Block 0x11 only supports `--sinclair-speed`
 
 ```
 tmzedit set <file> <index> [--format <fmt>] [--speed <spd>] [-o <output>]
@@ -265,9 +267,10 @@ tmzedit set <file> <index> [--format <fmt>] [--speed <spd>] [-o <output>]
 | Option | Values | Description |
 |--------|--------|-------------|
 | `--format` | normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape | Recording format |
-| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 | Speed ratio (not valid for FSK/SLOW) |
+| `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14, or baudrate (e.g. 2800) | Speed ratio or baudrate in Bd (not valid for FSK/SLOW/SINCLAIR) |
 | `--fsk-speed` | 0-6 | FSK speed level (only with FSK format) |
 | `--slow-speed` | 0-4 | SLOW speed level (only with SLOW format) |
+| `--sinclair-speed` | 1381, 1772, 2074, 2487 | SINCLAIR speed in Bd (only for block 0x11) |
 
 ### Examples
 
@@ -293,6 +296,12 @@ Converting a block to SLOW format at speed level 2:
 
 ```
 tmzedit set tape.tmz 0 --format slow --slow-speed 2 -o tape_slow.tmz
+```
+
+Changing SINCLAIR block (0x11) speed to 2074 Bd:
+
+```
+tmzedit set tape.tmz 3 --sinclair-speed 2074 -o tape_sinclair.tmz
 ```
 
 Converting block 0x41 back to 0x40 (by setting NORMAL 1:1):
