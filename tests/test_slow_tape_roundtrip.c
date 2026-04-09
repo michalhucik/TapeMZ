@@ -109,7 +109,7 @@ int main ( int argc, char *argv[] ) {
         return 1;
     }
 
-    wav_analyzer_print_summary ( &analyzer_result, stdout );
+    wav_analyzer_print_summary ( &analyzer_result, stdout, 0 );
 
     if ( analyzer_result.file_count < 1 ) {
         printf ( "FAIL: No files decoded\n" );

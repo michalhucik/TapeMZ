@@ -131,7 +131,7 @@ int main ( int argc, char *argv[] ) {
         return 1;
     }
 
-    wav_analyzer_print_summary ( &analyzer_result, stdout );
+    wav_analyzer_print_summary ( &analyzer_result, stdout, 0 );
 
     /* === 5. Verifikace === */
 

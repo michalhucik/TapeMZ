@@ -1,7 +1,7 @@
 /**
  * @file   tmzinfo.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
+ * @version 1.3.0
  * @brief  Utility pro zobrazeni obsahu TMZ/TZX souboru.
  *
  * Nacte TMZ nebo TZX soubor a vypise informace o hlavicce,
@@ -48,7 +48,7 @@
 #include "libs/cmtspeed/cmtspeed.h"
 
 /** @brief Verze programu tmzinfo (z @version v hlavicce souboru). */
-#define TMZINFO_VERSION  "1.1.0"
+#define TMZINFO_VERSION  "1.3.0"
 
 
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
@@ -245,16 +245,29 @@ static void print_block_mz_turbo ( const st_TZX_BLOCK *block ) {
     st_TMZ_MZ_TURBO_DATA *d = tmz_block_parse_mz_turbo ( &copy, &body, &err );
     if ( d ) {
         printf ( "      Machine : %s\n", machine_name ( d->machine ) );
-        printf ( "      Pulseset: %s\n", pulseset_name ( d->pulseset ) );
+        int has_custom_pulses = ( d->long_high || d->long_low || d->short_high || d->short_low );
+        if ( has_custom_pulses ) {
+            /* custom pulse rezim - pulseset a speed se nepoužívají */
+            printf ( "      Pulseset: custom\n" );
+            printf ( "        Long  : %.1f/%.1f us\n",
+                     d->long_high / 10.0, d->long_low / 10.0 );
+            printf ( "        Short : %.1f/%.1f us\n",
+                     d->short_high / 10.0, d->short_low / 10.0 );
+            uint32_t sum = d->long_high + d->long_low + d->short_high + d->short_low;
+            if ( sum > 0 ) {
+                double avg_bit_us = ( sum / 10.0 ) / 2.0;
+                printf ( "        ~%.0f Bd\n", 1000000.0 / avg_bit_us );
+            }
+        } else {
+            printf ( "      Pulseset: %s\n", pulseset_name ( d->pulseset ) );
+        }
         printf ( "      Format  : %s\n", format_name ( d->format ) );
-        print_speed ( d->format, d->speed );
+        if ( !has_custom_pulses ) {
+            print_speed ( d->format, d->speed );
+        }
         printf ( "      LGAP    : %u\n", d->lgap_length );
         printf ( "      SGAP    : %u\n", d->sgap_length );
         printf ( "      Pause   : %u ms\n", d->pause_ms );
-        if ( d->long_high || d->long_low || d->short_high || d->short_low ) {
-            printf ( "      Pulses  : long=%u/%u short=%u/%u (us*100)\n",
-                     d->long_high, d->long_low, d->short_high, d->short_low );
-        }
         printf ( "      Flags   : 0x%02X\n", d->flags );
         printf ( "      Body    : %u bytes\n", d->body_size );
         print_mzf_header ( &d->mzf_header, 6 );

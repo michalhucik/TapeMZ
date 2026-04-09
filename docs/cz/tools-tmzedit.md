@@ -23,7 +23,7 @@ tmzedit <prikaz> [volby] <soubor> [argumenty...]
 | `add-text` | Přidá textový popis (blok 0x30) |
 | `add-message` | Přidá zobrazovanou zprávu (blok 0x31) |
 | `archive-info` | Přidá nebo nahradí metadata (blok 0x32) |
-| `set` | Změní formát/rychlost na MZ bloku (0x40/0x41) nebo časování na bloku 0x11 |
+| `set` | Změní formát/rychlost/pulzy na MZ bloku (0x40/0x41) nebo časování na bloku 0x11 |
 | `validate` | Zkontroluje integritu souboru |
 
 ## Společné volby
@@ -249,19 +249,21 @@ tmzedit archive-info tape.tmz --comment "Dumped from original tape" -o tape.tmz
 
 ---
 
-## set - Změna formátu/rychlosti MZ bloků
+## set - Změna formátu/rychlosti/pulzů MZ bloků
 
-Změní formát a/nebo rychlost záznamu na MZ bloku (0x40 nebo 0x41),
+Změní formát, rychlost a/nebo délky pulzů záznamu na MZ bloku (0x40 nebo 0x41),
 nebo časování na bloku 0x11 (Turbo Speed Data / SINCLAIR).
 
 Pravidla konverze:
-- Blok 0x40 s nestandardním formátem/rychlostí se překonvertuje na blok 0x41
-- Blok 0x41 s formátem NORMAL a rychlostí 1:1 se překonvertuje zpět na blok 0x40
+- Blok 0x40 s nestandardním formátem/rychlostí/pulzy se překonvertuje na blok 0x41
+- Blok 0x41 s formátem NORMAL a rychlostí 1:1 (bez custom pulzů) se překonvertuje zpět na blok 0x40
 - Blok 0x40 s NORMAL 1:1 zůstává beze změny
 - Blok 0x11 podporuje pouze `--sinclair-speed`
+- `--pulse` nastaví custom režim (speed=0, pulse pole vyplněna)
+- `--speed` vynuluje pulse pole (zpět do tabulkového režimu)
 
 ```
-tmzedit set <soubor> <index> [--format <fmt>] [--speed <spd>] [-o <vystup>]
+tmzedit set <soubor> <index> [--format <fmt>] [--speed <spd>] [--pulse <hodnoty>] [-o <vystup>]
 ```
 
 | Volba | Hodnoty | Popis |
@@ -271,6 +273,7 @@ tmzedit set <soubor> <index> [--format <fmt>] [--speed <spd>] [-o <vystup>]
 | `--fsk-speed` | 0-6 | Rychlostní úroveň FSK (pouze pro FSK formát) |
 | `--slow-speed` | 0-4 | Rychlostní úroveň SLOW (pouze pro SLOW formát) |
 | `--sinclair-speed` | 1381, 1772, 2074, 2487 | SINCLAIR rychlost v Bd (pouze pro blok 0x11) |
+| `--pulse` | long_h/long_l,short_h/short_l | Vlastní délky pulzů v us*100 jednotkách |
 
 ### Příklady
 
@@ -302,6 +305,18 @@ Změna rychlosti SINCLAIR bloku (0x11) na 2074 Bd:
 
 ```
 tmzedit set tape.tmz 3 --sinclair-speed 2074 -o tape_sinclair.tmz
+```
+
+Nastavení vlastních délek pulzů na bloku (konvertuje 0x40 na 0x41):
+
+```
+tmzedit set tape.tmz 0 --pulse 4980/4980,2490/2490 -o tape_custom.tmz
+```
+
+Přepnutí bloku s custom pulzy zpět do tabulkového režimu:
+
+```
+tmzedit set tape.tmz 0 --speed 2:1 -o tape_table.tmz
 ```
 
 Konverze bloku 0x41 zpět na 0x40 (nastavením NORMAL 1:1):

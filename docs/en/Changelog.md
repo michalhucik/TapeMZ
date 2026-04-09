@@ -1,5 +1,79 @@
 # Changelog
 
+## 2026-04-09
+
+### tmz2mzf v1.1.0
+- New option `--overwrite` to allow overwriting existing output files.
+  By default, the program now refuses to overwrite an existing file
+  and suggests `--overwrite` or `--append`.
+- New option `--append` to append extracted MZF blocks to an existing
+  file, creating a multi-MZF (MZT-style) file with concatenated
+  header+body records. If the file does not exist, a new file is created.
+  When extracting multiple blocks, all blocks go into a single output file.
+
+### tmz2wav v1.1.0
+- New option `--blocks <spec>` for selecting specific blocks to export.
+  Format: numbers and ranges separated by commas (e.g. "0", "0,2", "0-2,5").
+  Control blocks (loops, jumps, calls) are always processed.
+- New option `--append` for appending new audio signal to the end of an
+  existing WAV file. Validation: sample rate must match, file must be
+  mono PCM. Reports an error if the file does not exist.
+
+### wav_analyzer v1.6.0
+- New fields `start_time_sec` and `duration_sec` in file results - absolute
+  block start time and duration in the WAV file. Computed from pulse indices
+  before the pulse sequence is released.
+- Function `wav_analyzer_print_summary()` has a new `verbose` parameter.
+  In verbose mode, prints real speed (Bd), approximate speed (nearest
+  CMTSPEED), and pulse set (MZ-800/MZ-80B) for each block.
+- New dependency on cmtspeed library (for approximate speed calculation).
+
+### wav2tmz v2.6.0
+- Default mode is analysis-only (no saving). Saving is activated by
+  `-o` or `--output-format` options.
+- Summary output always includes absolute block start times and durations.
+- New option `--append-tmz` - append blocks to an existing TMZ file.
+  Without this option, an existing TMZ file causes an error.
+- New option `--overwrite-mzf` - overwrite existing MZF files.
+  Without this option, an existing MZF file causes an error.
+- In verbose mode (--verbose), displays: real speed (Bd), approximate
+  speed, pulse set, and measured pulse widths.
+
+### wav_analyzer v1.5.0
+- New fields `short_pulse_us` and `long_pulse_us` in file results - measured
+  pulse widths from histogram peaks (FM signals with 2+ peaks).
+  Enables exact pulse width preservation in TMZ blocks.
+
+### mztape v2.1.0
+- New function `mztape_create_stream_from_mztapemzf_ex()` - extended version
+  with optional custom pulse widths (us*100 fields). Non-zero values override
+  the default pulseset+speed calculation. Same conversion convention as
+  mzcmt_turbo (seconds = value / 1e7).
+
+### tmz_player v1.1.0
+- NORMAL format playback (block 0x41) now uses `_ex` variant to pass
+  custom pulse fields (`long_high/low`, `short_high/low`) from the block.
+  Previously these fields were ignored for NORMAL format.
+
+### wav2tmz v2.5.0
+- New option `--pulse-mode <approximate|exact>` (default: approximate).
+  In `exact` mode, NORMAL/MZ-80B files always use block 0x41 with custom
+  pulse fields from histogram analysis (speed=0, pulse fields != 0).
+  In `approximate` mode, behavior is unchanged (CMTSPEED quantization).
+
+### tmzinfo v1.3.0
+- Custom pulseset display for block 0x41: when pulse fields are non-zero,
+  shows "Pulseset: custom" with Long/Short values in microseconds and
+  estimated baudrate instead of the standard pulseset name and speed ratio.
+
+### tmzedit v1.4.0
+- New option `--pulse <long_h/long_l,short_h/short_l>` for the `set` command.
+  Sets custom pulse mode (speed=0, pulse fields filled) on block 0x41.
+  Values are in us*100 units (e.g. `--pulse 4980/4980,2490/2490` for ~1339 Bd).
+- `--speed` on a block with custom pulses now clears pulse fields
+  (switches back to table mode).
+- Conversion 0x41 -> 0x40 is blocked when custom pulse fields are present.
+
 ## 2026-04-08
 
 ### tmzinfo v1.2.0

@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.4.0
+ * @version 1.6.0
  * @brief  Implementace hlavního API knihovny wav_analyzer.
  *
  * Orchestruje všechny vrstvy analyzéru:
@@ -35,6 +35,7 @@
 #include "libs/wav/wav.h"
 #include "libs/mzf/mzf.h"
 #include "libs/endianity/endianity.h"
+#include "libs/cmtspeed/cmtspeed.h"
 #include "wav_analyzer.h"
 
 
@@ -47,6 +48,39 @@
  * Pokud je datový úsek za leaderem kratší, přeskočíme histogram.
  */
 #define HISTOGRAM_MIN_PULSES    100
+
+/** @brief Referenční SHORT půl-perioda NORMAL FM při 1200 Bd (us).
+ *
+ * Odvozeno z měření reálných nahrávek: leader avg ~249 us
+ * při 44100 Hz odpovídající standardní rychlosti 1:1.
+ * Používá se pro výpočet reálné rychlosti v Bd z naměřené
+ * průměrné půl-periody leaderu.
+ */
+#define NORMAL_1200BD_SHORT_US  249.0
+
+
+/**
+ * @brief Vypočítá absolutní čas odpovídající danému indexu pulzu v sekvenci.
+ *
+ * Sečte délky všech pulzů od začátku sekvence po daný index
+ * a vrátí výsledek v sekundách. Pro index 0 vrací 0.0.
+ * Pro index >= seq->count vrací celkový čas všech pulzů.
+ *
+ * @param seq Sekvence pulzů. Nesmí být NULL.
+ * @param index Index pulzu (0-based, exclusive - čas "před" tímto pulzem).
+ * @return Absolutní čas v sekundách od začátku sekvence.
+ *
+ * @note Složitost O(index) - pro opakované volání s rostoucími indexy
+ *       je efektivnější kumulativní přístup.
+ */
+static double pulse_index_to_sec ( const st_WAV_PULSE_SEQUENCE *seq, uint32_t index ) {
+    double time = 0.0;
+    uint32_t limit = ( index < seq->count ) ? index : seq->count;
+    for ( uint32_t p = 0; p < limit; p++ ) {
+        time += seq->pulses[p].duration_us;
+    }
+    return time / 1000000.0;
+}
 
 
 /**
@@ -695,6 +729,14 @@ static en_WAV_ANALYZER_ERROR process_leader (
                     file_result.leader = ( turbo_data_leader.pulse_count > 0 )
                                          ? turbo_data_leader : *leader;
                     file_result.speed_class = speed;
+
+                    /* naměřené délky pulzů z histogramu (FM: nejmenší peak = SHORT, největší = LONG) */
+                    if ( have_hist &&
+                         hist.modulation == WAV_MODULATION_FM &&
+                         hist.peak_count >= 2 ) {
+                        file_result.short_pulse_us = hist.peaks[0].center_us;
+                        file_result.long_pulse_us = hist.peaks[hist.peak_count - 1].center_us;
+                    }
 
                     file_result.copy2_used = hdr_res.copy2_used || body_res.copy2_used;
                     file_result.header_leader_pulse = leader->start_index;
@@ -1391,6 +1433,20 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
         err = WAV_ANALYZER_OK;
     }
 
+    /* === 8. Výpočet absolutních časů pro dekódované soubory === */
+    for ( uint32_t i = 0; i < out_result->file_count; i++ ) {
+        st_WAV_ANALYZER_FILE_RESULT *f = &out_result->files[i];
+        uint32_t start_idx = f->header_leader_pulse;
+        uint32_t end_idx = f->consumed_until_pulse;
+        f->start_time_sec = pulse_index_to_sec ( &pulse_seq, start_idx );
+        if ( end_idx > start_idx ) {
+            double end_time = pulse_index_to_sec ( &pulse_seq, end_idx );
+            f->duration_sec = end_time - f->start_time_sec;
+        } else {
+            f->duration_sec = 0.0;
+        }
+    }
+
     wav_pulse_sequence_destroy ( &pulse_seq );
     return WAV_ANALYZER_OK;
 }
@@ -1424,7 +1480,8 @@ void wav_analyzer_result_destroy ( st_WAV_ANALYZER_RESULT *result ) {
 
 void wav_analyzer_print_summary (
     const st_WAV_ANALYZER_RESULT *result,
-    FILE *stream
+    FILE *stream,
+    int verbose
 ) {
     if ( !result || !stream ) return;
 
@@ -1450,9 +1507,54 @@ void wav_analyzer_print_summary (
 
         fprintf ( stream, "\n--- File #%u ---\n", i + 1 );
         fprintf ( stream, "Format: %s\n", wav_tape_format_name ( f->format ) );
+        fprintf ( stream, "Start: %.3f sec, Duration: %.3f sec\n",
+                  f->start_time_sec, f->duration_sec );
         fprintf ( stream, "Speed class: %s\n", wav_speed_class_name ( f->speed_class ) );
         fprintf ( stream, "Leader: %u pulses, avg %.1f us, stddev %.1f us\n",
                   f->leader.pulse_count, f->leader.avg_period_us, f->leader.stddev_us );
+
+        /* verbose: reálná rychlost, přibližná rychlost, pulzní sada */
+        if ( verbose ) {
+            /* pulzní sada dle formátu */
+            const char *pulseset_name;
+            uint16_t base_bd;
+            switch ( f->format ) {
+                case WAV_TAPE_FORMAT_MZ80B:
+                    pulseset_name = "MZ-80B";
+                    base_bd = 1800;
+                    break;
+                default:
+                    pulseset_name = "MZ-800";
+                    base_bd = 1200;
+                    break;
+            }
+            fprintf ( stream, "Pulse set: %s\n", pulseset_name );
+
+            /* reálná a přibližná rychlost pro FM formáty */
+            if ( f->leader.avg_period_us > 0.0 &&
+                 f->format != WAV_TAPE_FORMAT_ZX_SPECTRUM ) {
+                double real_bd = ( double ) base_bd * NORMAL_1200BD_SHORT_US
+                                 / f->leader.avg_period_us;
+                fprintf ( stream, "Real speed: %.0f Bd (leader avg %.1f us)\n",
+                          real_bd, f->leader.avg_period_us );
+
+                /* nejbližší standardní rychlost */
+                en_CMTSPEED approx = cmtspeed_from_bdspeed (
+                    ( uint16_t ) round ( real_bd ), base_bd );
+                if ( cmtspeed_is_valid ( approx ) ) {
+                    char speed_txt[64];
+                    cmtspeed_get_ratiospeedtxt ( speed_txt, sizeof ( speed_txt ),
+                                                 approx, base_bd );
+                    fprintf ( stream, "Approx speed: %s\n", speed_txt );
+                }
+            }
+
+            /* naměřené délky pulzů (pokud jsou k dispozici) */
+            if ( f->short_pulse_us > 0.0 || f->long_pulse_us > 0.0 ) {
+                fprintf ( stream, "Measured pulses: short=%.1f us, long=%.1f us\n",
+                          f->short_pulse_us, f->long_pulse_us );
+            }
+        }
 
         if ( f->tap_data && f->tap_data_size > 0 ) {
             /* ZX Spectrum blok */

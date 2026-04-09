@@ -1,7 +1,7 @@
 /**
  * @file   tmzedit.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.3.0
+ * @version 1.4.0
  * @brief  Editor a spravce TZX/TMZ tape souboru.
  *
  * Nastroj pro manipulaci s bloky v TZX/TMZ souborech:
@@ -19,7 +19,7 @@
  *   tmzedit add-text <file> --text "..." -o <output>
  *   tmzedit add-message <file> --text "..." [--time N] -o <output>
  *   tmzedit archive-info <file> [--title X] [--author X] [--year X] [--publisher X] [--comment X] -o <output>
- *   tmzedit set      <file> <index> [--format <fmt>] [--speed <spd>] -o <output>
+ *   tmzedit set      <file> <index> [--format <fmt>] [--speed <spd>] [--pulse <l_h/l_l,s_h/s_l>] -o <output>
  *   tmzedit validate <file>
  * @endcode
  *
@@ -34,7 +34,7 @@
  * - add-text                 : pridat Text Description blok (0x30)
  * - add-message              : pridat Message blok (0x31)
  * - archive-info             : pridat/nahradit Archive Info blok (0x32)
- * - set                      : nastavit format/rychlost na MZ blocich (0x40/0x41/0x45)
+ * - set                      : nastavit format/rychlost/pulzy na MZ blocich (0x40/0x41/0x45)
  * - validate                 : zkontrolovat integritu souboru
  *
  * Spolecne volby:
@@ -98,7 +98,7 @@
 
 
 /** @brief Verze programu tmzedit. */
-#define TMZEDIT_VERSION "1.2.0"
+#define TMZEDIT_VERSION "1.4.0"
 
 
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
@@ -1344,7 +1344,9 @@ static const char* format_name ( en_TMZ_FORMAT format ) {
  */
 static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
                              int format, int speed,
-                             int fsk_speed, int slow_speed ) {
+                             int fsk_speed, int slow_speed,
+                             int has_pulse, uint16_t p_lh, uint16_t p_ll,
+                             uint16_t p_sh, uint16_t p_sl ) {
     st_TZX_BLOCK *b = &file->blocks[index];
 
     /* parsovani bloku do pracovni kopie */
@@ -1379,7 +1381,7 @@ static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
         speed_byte = ( speed >= 0 ) ? ( uint8_t ) speed : ( uint8_t ) CMTSPEED_1_1;
     }
 
-    if ( new_format == TMZ_FORMAT_NORMAL && speed_byte == ( uint8_t ) CMTSPEED_1_1 ) {
+    if ( !has_pulse && new_format == TMZ_FORMAT_NORMAL && speed_byte == ( uint8_t ) CMTSPEED_1_1 ) {
         /* neni co menit - blok 0x40 uz odpovida */
         printf ( "Block [%u]: already NORMAL 1:1 (0x40), no change needed\n", index );
         free ( copy );
@@ -1392,11 +1394,20 @@ static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
     params.machine = std->machine;
     params.pulseset = std->pulseset;
     params.format = ( uint8_t ) new_format;
-    params.speed = speed_byte;
     params.pause_ms = std->pause_ms;
     params.flags = 0;
     memcpy ( &params.mzf_header, &std->mzf_header, sizeof ( st_MZF_HEADER ) );
     params.body_size = std->body_size;
+
+    if ( has_pulse ) {
+        params.speed = ( uint8_t ) CMTSPEED_NONE;
+        params.long_high = p_lh;
+        params.long_low = p_ll;
+        params.short_high = p_sh;
+        params.short_low = p_sl;
+    } else {
+        params.speed = speed_byte;
+    }
 
     st_TZX_BLOCK *new_block = tmz_block_create_mz_turbo (
         &params, body_data, std->body_size );
@@ -1412,7 +1423,12 @@ static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
     *b = *new_block;
     free ( new_block );
 
-    if ( new_format == TMZ_FORMAT_FSK ) {
+    if ( has_pulse ) {
+        uint32_t sum = p_lh + p_ll + p_sh + p_sl;
+        double bd = ( sum > 0 ) ? 2e7 / ( double ) sum : 0;
+        printf ( "Block [%u]: converted 0x40 -> 0x41 (custom pulses, ~%.0f Bd)\n",
+                 index, bd );
+    } else if ( new_format == TMZ_FORMAT_FSK ) {
         printf ( "Block [%u]: converted 0x40 -> 0x41 (format=%s, speed=level %u)\n",
                  index, format_name ( new_format ), speed_byte );
     } else if ( new_format == TMZ_FORMAT_SLOW ) {
@@ -1436,8 +1452,10 @@ static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
  * @brief Zmeni format a/nebo rychlost na bloku 0x41 (MZ Turbo Data).
  *
  * Modifikuje format a speed primo v binarnim obsahu bloku.
- * Pokud cilovy format je NORMAL a rychlost 1:1, blok se
- * prekonvertuje na 0x40 (MZ Standard Data).
+ * Pokud cilovy format je NORMAL a rychlost 1:1 (bez custom pulzu),
+ * blok se prekonvertuje na 0x40 (MZ Standard Data).
+ * Pokud has_pulse == 1, nastavi custom pulse rezim (speed=0, pulse fields vyplneny).
+ * Pokud speed >= 0, vynuluje pulse fields (tabulkovy rezim).
  *
  * @param file TZX soubor.
  * @param index Index bloku v souboru.
@@ -1445,11 +1463,18 @@ static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
  * @param speed Nova rychlost jako en_CMTSPEED (nebo -1 pro ponechani).
  * @param fsk_speed FSK rychlostni uroven 0-6 (nebo -1 pokud nerelevantni).
  * @param slow_speed SLOW rychlostni uroven 0-4 (nebo -1 pokud nerelevantni).
+ * @param has_pulse 1 pokud byly zadany custom pulse hodnoty.
+ * @param p_lh Long pulse HIGH (us*100, ignorovano pokud has_pulse == 0).
+ * @param p_ll Long pulse LOW (us*100, ignorovano pokud has_pulse == 0).
+ * @param p_sh Short pulse HIGH (us*100, ignorovano pokud has_pulse == 0).
+ * @param p_sl Short pulse LOW (us*100, ignorovano pokud has_pulse == 0).
  * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
  */
 static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
                              int format, int speed,
-                             int fsk_speed, int slow_speed ) {
+                             int fsk_speed, int slow_speed,
+                             int has_pulse, uint16_t p_lh, uint16_t p_ll,
+                             uint16_t p_sh, uint16_t p_sl ) {
     st_TZX_BLOCK *b = &file->blocks[index];
 
     /* parsovani bloku do pracovni kopie */
@@ -1508,7 +1533,17 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
         new_speed_byte = ( speed >= 0 ) ? ( uint8_t ) speed : old_speed_byte;
     }
 
-    if ( new_format == TMZ_FORMAT_NORMAL && new_speed_byte == ( uint8_t ) CMTSPEED_1_1 ) {
+    /*
+     * Konverze na 0x40 pouze pokud NORMAL 1:1 a vysledny blok nebude mit custom pulzy.
+     * Custom pulzy v novem bloku budou pokud:
+     * - has_pulse (uzivatel je explicitne zadal)
+     * - speed < 0 (nezmenil rychlost) a original mel custom pulzy
+     */
+    int existing_custom_pulses = ( turbo->long_high || turbo->long_low ||
+                                   turbo->short_high || turbo->short_low );
+    int final_has_custom = has_pulse || ( speed < 0 && existing_custom_pulses );
+    if ( !final_has_custom &&
+         new_format == TMZ_FORMAT_NORMAL && new_speed_byte == ( uint8_t ) CMTSPEED_1_1 ) {
         /* konverze zpet na blok 0x40 */
         st_MZF mzf;
         memcpy ( &mzf.header, &turbo->mzf_header, sizeof ( st_MZF_HEADER ) );
@@ -1539,17 +1574,35 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
     params.machine = turbo->machine;
     params.pulseset = turbo->pulseset;
     params.format = ( uint8_t ) new_format;
-    params.speed = new_speed_byte;
     params.lgap_length = turbo->lgap_length;
     params.sgap_length = turbo->sgap_length;
     params.pause_ms = turbo->pause_ms;
-    params.long_high = turbo->long_high;
-    params.long_low = turbo->long_low;
-    params.short_high = turbo->short_high;
-    params.short_low = turbo->short_low;
     params.flags = turbo->flags;
     memcpy ( &params.mzf_header, &turbo->mzf_header, sizeof ( st_MZF_HEADER ) );
     params.body_size = turbo->body_size;
+
+    if ( has_pulse ) {
+        /* --pulse: custom pulse rezim (speed=0, pulse fields vyplneny) */
+        params.speed = ( uint8_t ) CMTSPEED_NONE;
+        params.long_high = p_lh;
+        params.long_low = p_ll;
+        params.short_high = p_sh;
+        params.short_low = p_sl;
+    } else if ( speed >= 0 ) {
+        /* --speed: tabulkovy rezim (vynulovat pulse fields) */
+        params.speed = new_speed_byte;
+        params.long_high = 0;
+        params.long_low = 0;
+        params.short_high = 0;
+        params.short_low = 0;
+    } else {
+        /* zadna zmena rychlosti - zachovat stavajici hodnoty */
+        params.speed = new_speed_byte;
+        params.long_high = turbo->long_high;
+        params.long_low = turbo->long_low;
+        params.short_high = turbo->short_high;
+        params.short_low = turbo->short_low;
+    }
 
     st_TZX_BLOCK *new_block = tmz_block_create_mz_turbo (
         &params, body_data, turbo->body_size );
@@ -1565,13 +1618,19 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
     free ( new_block );
 
     /* vypis o zmene */
-    if ( new_format == TMZ_FORMAT_FSK || new_format == TMZ_FORMAT_SLOW ) {
+    if ( has_pulse ) {
+        uint32_t sum = p_lh + p_ll + p_sh + p_sl;
+        double bd = ( sum > 0 ) ? 2e7 / ( double ) sum : 0;
+        printf ( "Block [%u]: 0x41 set custom pulses long=%.1f/%.1f short=%.1f/%.1f us (~%.0f Bd)\n",
+                 index, p_lh / 10.0, p_ll / 10.0, p_sh / 10.0, p_sl / 10.0, bd );
+    } else if ( new_format == TMZ_FORMAT_FSK || new_format == TMZ_FORMAT_SLOW ) {
         printf ( "Block [%u]: 0x41 set format=%s speed=level %u",
                  index, format_name ( new_format ), new_speed_byte );
         if ( new_format != old_format )
             printf ( " (format: %s -> %s)", format_name ( old_format ), format_name ( new_format ) );
         if ( new_speed_byte != old_speed_byte )
             printf ( " (speed: %u -> %u)", old_speed_byte, new_speed_byte );
+        printf ( "\n" );
     } else if ( new_format == TMZ_FORMAT_FASTIPL ) {
         printf ( "Block [%u]: 0x41 set format=%s speed=%u Bd",
                  index, format_name ( new_format ),
@@ -1582,6 +1641,7 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
             printf ( " (speed: %u -> %u Bd)",
                      cmtspeed_get_bdspeed ( ( en_CMTSPEED ) old_speed_byte, 1200 ),
                      cmtspeed_get_bdspeed ( ( en_CMTSPEED ) new_speed_byte, 1200 ) );
+        printf ( "\n" );
     } else {
         printf ( "Block [%u]: 0x41 set format=%s speed=%s",
                  index, format_name ( new_format ),
@@ -1592,8 +1652,8 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
             printf ( " (speed: %s -> %s)",
                      g_cmtspeed_ratio[( en_CMTSPEED ) old_speed_byte],
                      g_cmtspeed_ratio[( en_CMTSPEED ) new_speed_byte] );
+        printf ( "\n" );
     }
-    printf ( "\n" );
 
     return EXIT_SUCCESS;
 }
@@ -1605,12 +1665,14 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
  * Podporovane bloky:
  * - 0x40 (MZ Standard Data): --format a --speed/--fsk-speed/--slow-speed.
  *   Pokud se nastavi nestandardni hodnoty, blok se konvertuje na 0x41.
- * - 0x41 (MZ Turbo Data): --format a --speed/--fsk-speed/--slow-speed.
- *   Pokud se nastavi NORMAL 1:1, blok se konvertuje na 0x40.
+ * - 0x41 (MZ Turbo Data): --format a --speed/--fsk-speed/--slow-speed/--pulse.
+ *   Pokud se nastavi NORMAL 1:1 (bez custom pulzu), blok se konvertuje na 0x40.
  *   Pro FSK format se pouziva --fsk-speed (0-6), pro SLOW --slow-speed (0-4),
  *   pro ostatni formaty --speed (pomer, napr. 2:1).
+ *   --pulse nastavi custom pulse rezim (speed=0, pulse fields vyplneny).
+ *   --speed vynuluje pulse fields (tabulkovy rezim).
  *   Kombinace --speed s FSK/SLOW je chyba, stejne jako --fsk-speed/--slow-speed
- *   s jinym formatem.
+ *   s jinym formatem. --pulse nelze kombinovat s --speed/--fsk-speed/--slow-speed.
  * - 0x45 (MZ BASIC Data): rychlost neni podporovana.
  *
  * @param argc Pocet argumentu (za subcommand).
@@ -1627,6 +1689,9 @@ static int cmd_set ( int argc, char *argv[] ) {
     int fsk_speed = -1;       /* -1 = nezadano; platne hodnoty 0-6 */
     int slow_speed = -1;      /* -1 = nezadano; platne hodnoty 0-4 */
     int sinclair_speed = -1;  /* -1 = nezadano; platne hodnoty: 1381, 1772, 2074, 2487 */
+    int has_pulse = 0;        /* 1 = --pulse bylo zadano */
+    uint16_t pulse_long_h = 0, pulse_long_l = 0;
+    uint16_t pulse_short_h = 0, pulse_short_l = 0;
 
     for ( int i = 0; i < argc; i++ ) {
         if ( strcmp ( argv[i], "-o" ) == 0 && i + 1 < argc ) {
@@ -1661,6 +1726,22 @@ static int cmd_set ( int argc, char *argv[] ) {
                 return EXIT_FAILURE;
             }
             slow_speed = ( int ) val;
+        } else if ( strcmp ( argv[i], "--pulse" ) == 0 && i + 1 < argc ) {
+            /* format: long_h/long_l,short_h/short_l (hodnoty v us*100) */
+            unsigned lh, ll, sh, sl;
+            if ( sscanf ( argv[++i], "%u/%u,%u/%u", &lh, &ll, &sh, &sl ) != 4 ) {
+                fprintf ( stderr, "Error: --pulse format: <long_h/long_l,short_h/short_l> (us*100 values)\n" );
+                return EXIT_FAILURE;
+            }
+            if ( lh > 65535 || ll > 65535 || sh > 65535 || sl > 65535 ) {
+                fprintf ( stderr, "Error: --pulse values must be 0-65535\n" );
+                return EXIT_FAILURE;
+            }
+            has_pulse = 1;
+            pulse_long_h = ( uint16_t ) lh;
+            pulse_long_l = ( uint16_t ) ll;
+            pulse_short_h = ( uint16_t ) sh;
+            pulse_short_l = ( uint16_t ) sl;
         } else if ( strcmp ( argv[i], "--sinclair-speed" ) == 0 && i + 1 < argc ) {
             char *endptr;
             long val = strtol ( argv[++i], &endptr, 10 );
@@ -1677,7 +1758,7 @@ static int cmd_set ( int argc, char *argv[] ) {
         }
     }
 
-    if ( !input || !idx_str || ( format < 0 && speed < 0 && fsk_speed < 0 && slow_speed < 0 && sinclair_speed < 0 ) ) {
+    if ( !input || !idx_str || ( format < 0 && speed < 0 && fsk_speed < 0 && slow_speed < 0 && sinclair_speed < 0 && !has_pulse ) ) {
         fprintf ( stderr, "Usage: tmzedit set <file> <index> [options] [-o <output>]\n\n" );
         fprintf ( stderr, "Options:\n" );
         fprintf ( stderr, "  --format <fmt>       Recording format: normal, turbo, fastipl, sinclair,\n" );
@@ -1687,11 +1768,19 @@ static int cmd_set ( int argc, char *argv[] ) {
         fprintf ( stderr, "  --fsk-speed <level>  FSK speed level: 0-6 (only with --format fsk)\n" );
         fprintf ( stderr, "  --slow-speed <level> SLOW speed level: 0-4 (only with --format slow)\n" );
         fprintf ( stderr, "  --sinclair-speed <Bd> SINCLAIR speed: 1381, 1772, 2074, 2487\n" );
-        fprintf ( stderr, "                       (only for block 0x11 Turbo Speed Data)\n\n" );
+        fprintf ( stderr, "                       (only for block 0x11 Turbo Speed Data)\n" );
+        fprintf ( stderr, "  --pulse <l_h/l_l,s_h/s_l>  Custom pulse widths (us*100 values)\n" );
+        fprintf ( stderr, "                       Sets speed=0 and custom pulse mode on block 0x41\n\n" );
         fprintf ( stderr, "Block 0x40: --format and --speed (converts to 0x41 if non-standard)\n" );
-        fprintf ( stderr, "Block 0x41: --format and --speed/--fsk-speed/--slow-speed\n" );
+        fprintf ( stderr, "Block 0x41: --format and --speed/--fsk-speed/--slow-speed/--pulse\n" );
         fprintf ( stderr, "Block 0x11: --sinclair-speed (modifies timing parameters)\n" );
         fprintf ( stderr, "Block 0x45: speed not supported\n" );
+        return EXIT_FAILURE;
+    }
+
+    /* cross-validace --pulse vs. ostatni rychlostni parametry */
+    if ( has_pulse && ( speed >= 0 || fsk_speed >= 0 || slow_speed >= 0 || sinclair_speed >= 0 ) ) {
+        fprintf ( stderr, "Error: --pulse cannot be combined with --speed, --fsk-speed, --slow-speed or --sinclair-speed\n" );
         return EXIT_FAILURE;
     }
 
@@ -1782,11 +1871,13 @@ static int cmd_set ( int argc, char *argv[] ) {
     switch ( block_id ) {
 
         case TMZ_BLOCK_ID_MZ_STANDARD_DATA:
-            ret = set_block_0x40 ( file, index, format, speed, fsk_speed, slow_speed );
+            ret = set_block_0x40 ( file, index, format, speed, fsk_speed, slow_speed,
+                                   has_pulse, pulse_long_h, pulse_long_l, pulse_short_h, pulse_short_l );
             break;
 
         case TMZ_BLOCK_ID_MZ_TURBO_DATA:
-            ret = set_block_0x41 ( file, index, format, speed, fsk_speed, slow_speed );
+            ret = set_block_0x41 ( file, index, format, speed, fsk_speed, slow_speed,
+                                   has_pulse, pulse_long_h, pulse_long_l, pulse_short_h, pulse_short_l );
             break;
 
         case TZX_BLOCK_ID_TURBO_SPEED:
@@ -1917,7 +2008,7 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "  add-text      Add a Text Description block (0x30)\n" );
     fprintf ( stderr, "  add-message   Add a Message block (0x31)\n" );
     fprintf ( stderr, "  archive-info  Add/replace Archive Info block (0x32)\n" );
-    fprintf ( stderr, "  set           Set format/speed on MZ data blocks (0x40/0x41/0x45)\n" );
+    fprintf ( stderr, "  set           Set format/speed/pulse on MZ data blocks (0x40/0x41/0x45)\n" );
     fprintf ( stderr, "  validate      Validate file integrity\n" );
     fprintf ( stderr, "\nOptions:\n" );
     fprintf ( stderr, "  -o <output>   Output file (default: overwrite input)\n" );

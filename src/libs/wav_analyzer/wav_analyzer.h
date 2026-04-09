@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.4.0
+ * @version 1.6.0
  * @brief  Hlavní API knihovny wav_analyzer - orchestrace všech vrstev.
  *
  * Poskytuje vysokoúrovňové API pro analýzu WAV nahrávek magnetofonových
@@ -90,6 +90,10 @@ extern "C" {
         uint32_t recovery_status;          /**< bitové OR z en_WAV_RECOVERY_STATUS (0 = kompletní) */
         uint32_t recovered_bytes;          /**< skutečně dekódovaných bajtů při recovery (0 = kompletní) */
         uint32_t expected_bytes;           /**< očekávaných bajtů (0 = neznáme, např. BSD) */
+        double short_pulse_us;             /**< naměřená délka krátkého pulzu (us), 0 = neznámo */
+        double long_pulse_us;              /**< naměřená délka dlouhého pulzu (us), 0 = neznámo */
+        double start_time_sec;             /**< absolutní čas začátku bloku ve WAV (sekundy od začátku souboru) */
+        double duration_sec;               /**< délka bloku v sekundách (od header leaderu po consumed_until) */
     } st_WAV_ANALYZER_FILE_RESULT;
 
 
@@ -162,15 +166,18 @@ extern "C" {
      *
      * @param result Výsledek analýzy. Nesmí být NULL.
      * @param stream Výstupní proud (typicky stdout nebo stderr).
+     * @param verbose 1 = podrobný výpis (reálná rychlost Bd, přibližná
+     *                rychlost, pulzní sada), 0 = stručný.
      */
     extern void wav_analyzer_print_summary (
         const st_WAV_ANALYZER_RESULT *result,
-        FILE *stream
+        FILE *stream,
+        int verbose
     );
 
 
     /** @brief Verze knihovny wav_analyzer. */
-#define WAV_ANALYZER_VERSION "1.2.0"
+#define WAV_ANALYZER_VERSION "1.6.0"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny wav_analyzer.

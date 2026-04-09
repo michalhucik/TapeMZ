@@ -1,14 +1,13 @@
 # wav2tmz - Analyzátor a dekodér WAV nahrávek
 
 Analyzuje WAV soubor obsahující nahrávku magnetofonové kazety
-počítačů Sharp MZ (nebo ZX Spectrum) a extrahuje z něj MZF soubory
-nebo TMZ archiv.
+počítačů Sharp MZ (nebo ZX Spectrum).
+
+Implicitně provádí pouze analýzu a výpis nalezených bloků (bez ukládání).
+S volbou `-o` nebo `--output-format` extrahuje MZF soubory nebo TMZ archiv.
 
 Automaticky detekuje formát záznamu: NORMAL, TURBO, FASTIPL, BSD,
 CPM-CMT, CPM-TAPE, MZ-80B, FSK, SLOW, DIRECT, ZX Spectrum.
-
-Pokud je výstupní formát TMZ a výstupní soubor již existuje,
-nové bloky se přidají na konec existujícího archivu.
 
 ## Použití
 
@@ -20,19 +19,22 @@ wav2tmz vstup.wav [-o vystup] [volby]
 
 | Volba | Hodnota | Výchozí | Popis |
 |-------|---------|---------|-------|
-| `-o` | `<soubor>` | odvozeno ze vstupu | Výstupní soubor |
-| `--output-format` | mzf, tmz | mzf | Formát výstupu |
+| `-o` | `<soubor>` | odvozeno ze vstupu | Výstupní soubor (aktivuje ukládání) |
+| `--output-format` | mzf, tmz | mzf | Formát výstupu (aktivuje ukládání) |
+| `--append-tmz` | - | vypnuto | Připojit bloky do existujícího TMZ (bez toho je existující TMZ chyba) |
+| `--overwrite-mzf` | - | vypnuto | Přepsat existující MZF soubory (bez toho je existující MZF chyba) |
 | `--schmitt` | - | vypnuto | Použít Schmitt trigger místo zero-crossing |
 | `--tolerance` | 0.02-0.35 | 0.10 | Tolerance detekce leader tónu |
 | `--preprocess` | - | zapnuto | Zapnout preprocessing signálu |
 | `--no-preprocess` | - | - | Vypnout preprocessing (DC offset, HP filtr, normalizace) |
 | `--histogram` | - | vypnuto | Vypsat histogram délek pulzů |
-| `--verbose`, `-v` | - | vypnuto | Podrobný výstup analýzy |
+| `--verbose`, `-v` | - | vypnuto | Podrobný výstup (reálná rychlost Bd, přibližná rychlost, pulzní sada) |
 | `--channel` | L, R | L | Výběr kanálu ze sterea |
 | `--invert` | - | vypnuto | Invertovat polaritu signálu |
 | `--keep-unknown` | - | vypnuto | Uložit neidentifikované úseky jako Direct Recording |
 | `--raw-format` | direct | direct | Formát pro neidentifikované bloky |
 | `--pass` | `<N>` | 1 | Počet průchodů (zatím nepoužito) |
+| `--pulse-mode` | approximate, exact | approximate | Režim ukládání délek pulzů pro TMZ výstup |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
 | `--recover` | - | vypnuto | Zapnout všechny recovery módy |
 | `--recover-bsd` | - | vypnuto | Obnovit nekompletní BSD soubory (chybějící terminátor) |
@@ -44,10 +46,19 @@ wav2tmz vstup.wav [-o vystup] [volby]
 
 ### Podrobnosti k volbám
 
-**--output-format** - určuje, jak budou dekódovaná data uložena:
+**-o, --output-format** - aktivuje ukládání výstupu. Bez těchto voleb
+se provádí pouze analýza a výpis nalezených bloků.
 - `mzf` - každý dekódovaný soubor se uloží jako samostatný MZF soubor
   (pojmenování: vstup_1.mzf, vstup_2.mzf, ...)
 - `tmz` - všechny bloky se uloží do jednoho TMZ archivu
+
+**--append-tmz** - pokud výstupní TMZ soubor již existuje, přidá nové
+bloky na konec existujícího archivu. Bez této volby je existence TMZ
+souboru chyba. Pokud je volba zadána, ale soubor neexistuje, vytvoří
+se nový soubor s varováním.
+
+**--overwrite-mzf** - povolí přepsání existujících MZF souborů.
+Bez této volby je existence výstupního MZF souboru chyba.
 
 **--schmitt** - použije Schmitt trigger pro detekci pulzů místo
 standardního zero-crossing. Vhodné pro zašuměné nahrávky.
@@ -76,6 +87,15 @@ blok vložen Text Description (0x30) s varováním.
 **--recover** - zapne všechny recovery módy najednou (--recover-bsd
 a budoucí --recover-body, --recover-header).
 
+**--pulse-mode** - řídí způsob ukládání délek pulzů do TMZ bloků:
+- `approximate` (výchozí) - kvantizuje rychlost na nejbližší CMTSPEED poměr
+  (1:1, 2:1, 7:3, ...). Standardní 1200 Bd používá blok 0x40, jiné rychlosti 0x41.
+- `exact` - ukládá naměřené délky pulzů z histogramové analýzy přímo
+  do polí bloku 0x41 (long_high/low, short_high/low). Rychlost se nastaví na 0
+  (custom režim). Zachovává přesné časování originální nahrávky,
+  včetně sub-standardních rychlostí (< 1200 Bd), které by se jinak
+  zaokrouhlily na 1:1. Ovlivňuje pouze formáty NORMAL a MZ-80B.
+
 **--keep-unknown** - úseky nahrávky, které nebyly identifikovány
 jako žádný známý formát, se uloží jako TZX blok 0x15 (Direct Recording).
 Použitelné pro zachování celého obsahu kazety.
@@ -101,10 +121,22 @@ Soubor začíná blokem 0x30 (Text Description) s metadaty o zdrojovém WAV.
 
 ## Příklady
 
-Základní dekódování do MZF souborů:
+Analýza WAV souboru (bez ukládání):
 
 ```
 wav2tmz recording.wav
+```
+
+Podrobná analýza s rychlostmi a pulzními sadami:
+
+```
+wav2tmz recording.wav --verbose
+```
+
+Dekódování do MZF souborů:
+
+```
+wav2tmz recording.wav -o recording.mzf
 ```
 
 Dekódování do TMZ archivu:
@@ -122,7 +154,7 @@ wav2tmz recording.wav -o game.mzf
 Dekódování se Schmitt triggerem (zašuměná nahrávka):
 
 ```
-wav2tmz noisy_tape.wav --schmitt --tolerance 0.15
+wav2tmz noisy_tape.wav --schmitt --tolerance 0.15 -o output.mzf
 ```
 
 Podrobná analýza s histogramem:
@@ -167,9 +199,21 @@ Obnova všech částečných dat do TMZ archivu:
 wav2tmz damaged_tape.wav --recover --output-format tmz -o rescued.tmz
 ```
 
+Dekódování s přesnými délkami pulzů do TMZ:
+
+```
+wav2tmz recording.wav --output-format tmz --pulse-mode exact -o precise.tmz
+```
+
 Přidání dalších nahrávek do existujícího TMZ:
 
 ```
 wav2tmz side_a.wav -o tape.tmz --output-format tmz
-wav2tmz side_b.wav -o tape.tmz --output-format tmz
+wav2tmz side_b.wav -o tape.tmz --output-format tmz --append-tmz
+```
+
+Přepsání existujících MZF souborů:
+
+```
+wav2tmz recording.wav -o game.mzf --overwrite-mzf
 ```

@@ -1,11 +1,12 @@
 /**
  * @file   wav2tmz.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.4.0
+ * @version 2.6.0
  * @brief  Konverzni utilita WAV -> MZF/TMZ - dekodovani Sharp MZ kazetovych nahravek.
  *
  * Analyzuje WAV soubor obsahujici nahravku magnetofonove kazety
- * pocitacu Sharp MZ a extrahuje z nej MZF soubory nebo TMZ archiv.
+ * pocitacu Sharp MZ. Implicitne provadi pouze analyzu a vypis vysledku.
+ * S volbou -o nebo --output-format extrahuje MZF soubory nebo TMZ archiv.
  *
  * Podporovane formaty: NORMAL, CPM-CMT, CPM-TAPE, MZ-80B, TURBO,
  * FASTIPL, BSD, FSK, SLOW, DIRECT.
@@ -16,8 +17,10 @@
  * @endcode
  *
  * @par Volby:
- * - -o <soubor>                : vystupni soubor (vychozi: input_N.mzf nebo input.tmz)
- * - --output-format <mzf|tmz> : format vystupu (vychozi: mzf)
+ * - -o <soubor>                : vystupni soubor (aktivuje ukladani, vychozi: input_N.mzf nebo input.tmz)
+ * - --output-format <mzf|tmz> : format vystupu (aktivuje ukladani, vychozi: mzf)
+ * - --append-tmz               : pridat bloky do existujiciho TMZ souboru
+ * - --overwrite-mzf                : prepsat existujici vystupni soubory
  * - --schmitt                  : pouzit Schmitt trigger misto zero-crossing
  * - --tolerance <N>            : tolerance detekce leaderu (0.02-0.35, vychozi 0.10)
  * - --preprocess               : zapnout preprocessing (zpetna kompatibilita)
@@ -29,6 +32,7 @@
  * - --keep-unknown             : ulozit neidentifikovane bloky jako Direct Recording
  * - --raw-format <direct>      : format pro neidentifikovane bloky (vychozi: direct)
  * - --pass <N>                 : pocet pruchodu (vychozi: 1, zatim nepouzit)
+ * - --pulse-mode <mode>        : rezim ukladani delek pulzu: approximate, exact (vychozi: approximate)
  * - --name-encoding <enc>      : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
  * - --recover                  : zapnout vsechny recovery mody
  * - --recover-bsd              : obnovit nekompletni BSD soubory (chybejici terminator)
@@ -75,7 +79,7 @@
 
 
 /** @brief Verze programu wav2tmz. */
-#define WAV2TMZ_VERSION "2.3.0"
+#define WAV2TMZ_VERSION "2.6.0"
 
 
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
@@ -88,6 +92,15 @@ typedef enum en_OUTPUT_FORMAT {
     OUTPUT_FORMAT_TMZ,      /**< jeden TMZ archiv se vsemi bloky */
 } en_OUTPUT_FORMAT;
 
+
+/** @brief Rezim ukladani delek pulzu do TMZ bloku 0x41. */
+typedef enum en_PULSE_MODE {
+    PULSE_MODE_APPROXIMATE = 0, /**< tabulkovy rezim - kvantizace na en_CMTSPEED (vychozi) */
+    PULSE_MODE_EXACT,           /**< custom rezim - presne delky pulzu z histogramu */
+} en_PULSE_MODE;
+
+/** @brief Aktualni rezim ukladani delek pulzu (nastaveno z --pulse-mode). */
+static en_PULSE_MODE pulse_mode = PULSE_MODE_APPROXIMATE;
 
 /** @brief Vychozi pauza po bloku v milisekundach (1 s). */
 #define DEFAULT_PAUSE_MS    1000
@@ -124,22 +137,28 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr,
               "Usage: %s input.wav [-o output] [options]\n"
               "\n"
-              "Analyze WAV file and extract MZF files or TMZ archive from Sharp MZ tape recordings.\n"
+              "Analyze WAV file with Sharp MZ tape recordings.\n"
+              "Without -o or --output-format, only analysis is performed (no files saved).\n"
               "\n"
-              "Options:\n"
-              "  -o <file>                 Output file (default: input_N.mzf or input.tmz)\n"
-              "  --output-format <mzf|tmz> Output format (default: mzf)\n"
+              "Output options:\n"
+              "  -o <file>                 Output file (enables saving, default: input_N.mzf or input.tmz)\n"
+              "  --output-format <mzf|tmz> Output format (enables saving, default: mzf)\n"
+              "  --append-tmz              Append blocks to existing TMZ file (without this, existing TMZ is error)\n"
+              "  --overwrite-mzf               Overwrite existing output files (without this, existing MZF is error)\n"
+              "\n"
+              "Analysis options:\n"
               "  --schmitt                 Use Schmitt trigger instead of zero-crossing\n"
               "  --tolerance <N>           Leader detection tolerance (0.02-0.35, default 0.10)\n"
               "  --no-preprocess           Disable preprocessing (DC offset + HP filter + normalize)\n"
               "  --preprocess              Enable preprocessing (default, for backward compatibility)\n"
               "  --histogram               Print pulse histogram\n"
-              "  --verbose                 Verbose output\n"
+              "  --verbose                 Verbose output (real speed, approx speed, pulse set)\n"
               "  --channel <L|R>           Select stereo channel (default: L)\n"
               "  --invert                  Invert signal polarity\n"
               "  --keep-unknown            Save unidentified blocks as Direct Recording\n"
               "  --raw-format <direct>     Format for unidentified blocks (default: direct)\n"
               "  --pass <N>               Number of passes (default: 1, not yet used)\n"
+              "  --pulse-mode <mode>      Pulse width mode: approximate, exact (default: approximate)\n"
               "  --name-encoding <enc>     Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n"
               "\n"
               "Recovery options:\n"
@@ -424,7 +443,26 @@ static st_TZX_BLOCK* create_block_turbo ( const st_WAV_ANALYZER_FILE_RESULT *fil
     }
 
     params.pause_ms = DEFAULT_PAUSE_MS;
-    /* lgap_length, sgap_length, long_high/low, short_high/low = 0 (vychozi) */
+
+    /*
+     * Exact pulse mode: ulozit namerene delky pulzu z histogramu.
+     * Pro FM formaty (NORMAL, MZ-80B) s dostupnymi histogramovymi daty
+     * pouzijeme custom pulse rezim (speed=0, pulse fields != 0).
+     */
+    if ( pulse_mode == PULSE_MODE_EXACT &&
+         file_result->short_pulse_us > 0.0 && file_result->long_pulse_us > 0.0 &&
+         ( file_result->format == WAV_TAPE_FORMAT_NORMAL ||
+           file_result->format == WAV_TAPE_FORMAT_MZ80B ) ) {
+        params.speed = ( uint8_t ) CMTSPEED_NONE;
+        /* us*100 konvence: seconds = value / 1e7, tj. value = us * 10 */
+        uint16_t short_val = ( uint16_t ) round ( file_result->short_pulse_us * 10.0 );
+        uint16_t long_val = ( uint16_t ) round ( file_result->long_pulse_us * 10.0 );
+        params.long_high = long_val;
+        params.long_low = long_val;
+        params.short_high = short_val;
+        params.short_low = short_val;
+    }
+
     params.flags = 0;
     memcpy ( &params.mzf_header, &mzf->header, sizeof ( st_MZF_HEADER ) );
     params.body_size = ( uint16_t ) mzf->body_size;
@@ -678,6 +716,13 @@ static st_TZX_BLOCK* create_tmz_block_from_result ( const st_WAV_ANALYZER_FILE_R
         case WAV_TAPE_FORMAT_NORMAL:
         case WAV_TAPE_FORMAT_MZ80B:
         {
+            /* v exact rezimu vzdy pouzijeme blok 0x41 s custom pulse fields */
+            if ( pulse_mode == PULSE_MODE_EXACT &&
+                 file_result->short_pulse_us > 0.0 &&
+                 file_result->long_pulse_us > 0.0 ) {
+                return create_block_turbo ( file_result );
+            }
+
             en_CMTSPEED speed = estimate_speed_from_leader (
                                     file_result->leader.avg_period_us );
             if ( speed == CMTSPEED_1_1 ) {
@@ -742,22 +787,28 @@ static void format_description_text ( const char *input_path,
 /**
  * @brief Ulozi vsechny dekodovane soubory jako TMZ archiv.
  *
- * Pokud vystupni TMZ soubor jiz existuje, nacte ho a prida nove
- * bloky na konec existujici pasky. Pokud neexistuje, vytvori novy
- * TMZ soubor se signaturou "TapeMZ!" obsahujici:
+ * Chovani podle append_tmz:
+ *   - append_tmz=0: pokud soubor existuje -> ERROR.
+ *     Pokud neexistuje, vytvori novy TMZ.
+ *   - append_tmz=1: pokud soubor existuje, nacte ho a prida bloky.
+ *     Pokud neexistuje, vytvori novy TMZ s warningem.
+ *
+ * TMZ soubor obsahuje:
  * 1. Text Description (blok 0x30) s metadaty o zdrojovem WAV souboru
  * 2. Pro kazdy dekodovany soubor odpovidajici datovy blok (0x40/0x41/0x45)
  *
  * @param result Vysledek analyzy WAV souboru. Nesmi byt NULL.
  * @param input_path Cesta k vstupnimu WAV souboru (pro metadata).
  * @param output_path Cesta k vystupnimu TMZ souboru.
+ * @param append_tmz 1 = pripojit k existujicimu souboru, 0 = chyba pokud existuje.
  * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
  */
 static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
                       const char *input_path,
-                      const char *output_path ) {
+                      const char *output_path,
+                      int append_tmz ) {
 
-    /* nacteni existujiciho TMZ souboru nebo vytvoreni noveho */
+    /* kontrola existence a nacteni existujiciho TMZ souboru */
     st_TZX_FILE *tmz_file = NULL;
     uint32_t old_block_count = 0;
 
@@ -768,6 +819,14 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
         st_HANDLER *h_exist = generic_driver_open_file ( &exist_handler, &exist_driver,
                                                           ( char* ) output_path, FILE_DRIVER_OPMODE_RO );
         if ( h_exist ) {
+            if ( !append_tmz ) {
+                /* soubor existuje a append neni povoleny -> chyba */
+                generic_driver_close ( h_exist );
+                fprintf ( stderr, "Error: output file '%s' already exists (use --append-tmz to append)\n",
+                          output_path );
+                return EXIT_FAILURE;
+            }
+
             en_TZX_ERROR load_err;
             tmz_file = tzx_load ( h_exist, &load_err );
             generic_driver_close ( h_exist );
@@ -778,6 +837,10 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
                 return EXIT_FAILURE;
             }
             old_block_count = tmz_file->block_count;
+        } else if ( append_tmz ) {
+            /* append pozadovan, ale soubor neexistuje - warning a vytvorime novy */
+            fprintf ( stderr, "Warning: --append-tmz specified but '%s' does not exist, creating new file\n",
+                      output_path );
         }
     }
 
@@ -994,6 +1057,9 @@ int main ( int argc, char *argv[] ) {
     const char *input_path = NULL;
     const char *output_path = NULL;
     int show_histogram = 0;
+    int output_requested = 0;   /**< 1 = ukladani pozadovano (-o nebo --output-format) */
+    int append_tmz = 0;         /**< 1 = pripojit k existujicimu TMZ (--append-tmz) */
+    int overwrite = 0;          /**< 1 = prepsat existujici vystupni soubory (--overwrite-mzf) */
     en_OUTPUT_FORMAT output_format = OUTPUT_FORMAT_MZF;
 
     st_WAV_ANALYZER_CONFIG config;
@@ -1016,6 +1082,7 @@ int main ( int argc, char *argv[] ) {
                 return EXIT_FAILURE;
             }
             output_path = argv[++i];
+            output_requested = 1;
         } else if ( strcmp ( argv[i], "--output-format" ) == 0 ) {
             if ( i + 1 >= argc ) {
                 fprintf ( stderr, "Error: --output-format requires mzf or tmz\n" );
@@ -1024,8 +1091,10 @@ int main ( int argc, char *argv[] ) {
             i++;
             if ( strcmp ( argv[i], "tmz" ) == 0 || strcmp ( argv[i], "TMZ" ) == 0 ) {
                 output_format = OUTPUT_FORMAT_TMZ;
+                output_requested = 1;
             } else if ( strcmp ( argv[i], "mzf" ) == 0 || strcmp ( argv[i], "MZF" ) == 0 ) {
                 output_format = OUTPUT_FORMAT_MZF;
+                output_requested = 1;
             } else {
                 fprintf ( stderr, "Error: unknown output format '%s' (use mzf or tmz)\n", argv[i] );
                 return EXIT_FAILURE;
@@ -1091,6 +1160,20 @@ int main ( int argc, char *argv[] ) {
             }
             config.pass_count = atoi ( argv[++i] );
             if ( config.pass_count < 1 ) config.pass_count = 1;
+        } else if ( strcmp ( argv[i], "--pulse-mode" ) == 0 ) {
+            if ( i + 1 >= argc ) {
+                fprintf ( stderr, "Error: --pulse-mode requires approximate or exact\n" );
+                return EXIT_FAILURE;
+            }
+            i++;
+            if ( strcmp ( argv[i], "approximate" ) == 0 ) {
+                pulse_mode = PULSE_MODE_APPROXIMATE;
+            } else if ( strcmp ( argv[i], "exact" ) == 0 ) {
+                pulse_mode = PULSE_MODE_EXACT;
+            } else {
+                fprintf ( stderr, "Error: unknown pulse mode '%s' (use: approximate, exact)\n", argv[i] );
+                return EXIT_FAILURE;
+            }
         } else if ( strcmp ( argv[i], "--recover" ) == 0 ) {
             config.recover_bsd = 1;
             config.recover_body = 1;
@@ -1101,6 +1184,10 @@ int main ( int argc, char *argv[] ) {
             config.recover_body = 1;
         } else if ( strcmp ( argv[i], "--recover-header" ) == 0 ) {
             config.recover_header = 1;
+        } else if ( strcmp ( argv[i], "--append-tmz" ) == 0 ) {
+            append_tmz = 1;
+        } else if ( strcmp ( argv[i], "--overwrite-mzf" ) == 0 ) {
+            overwrite = 1;
         } else if ( strcmp ( argv[i], "--name-encoding" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --name-encoding requires a value\n" );
@@ -1160,12 +1247,19 @@ int main ( int argc, char *argv[] ) {
     }
 
     /* vypiseme shrnuti */
-    wav_analyzer_print_summary ( &result, stdout );
+    wav_analyzer_print_summary ( &result, stdout, config.verbose );
 
     /* volitelny histogram */
     if ( show_histogram ) {
         fprintf ( stdout, "(Histogram is printed in verbose mode during analysis.)\n" );
         fprintf ( stdout, "Use --verbose to see pulse histograms.\n" );
+    }
+
+    /* bez -o / --output-format: pouze analyza, nic neukladame */
+    if ( !output_requested ) {
+        int has_files = ( result.file_count > 0 );
+        wav_analyzer_result_destroy ( &result );
+        return has_files ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
     /* overime, ze byly dekodovany nejake soubory */
@@ -1187,7 +1281,7 @@ int main ( int argc, char *argv[] ) {
             generate_tmz_output_name ( input_path, out_name, sizeof ( out_name ) );
         }
 
-        exit_code = save_tmz ( &result, input_path, out_name );
+        exit_code = save_tmz ( &result, input_path, out_name, append_tmz );
     } else {
         /* MZF vystup: kazdy soubor zvlast */
         exit_code = EXIT_SUCCESS;
@@ -1206,6 +1300,18 @@ int main ( int argc, char *argv[] ) {
             if ( result.files[i].format == WAV_TAPE_FORMAT_ZX_SPECTRUM ) {
                 fprintf ( stderr, "Warning: skipping ZX Spectrum block #%u (not MZF format, use --output-format tmz)\n", i + 1 );
             } else if ( result.files[i].mzf ) {
+                /* kontrola existence MZF souboru */
+                FILE *test_fp = fopen ( out_name, "rb" );
+                if ( test_fp ) {
+                    fclose ( test_fp );
+                    if ( !overwrite ) {
+                        fprintf ( stderr, "Error: output file '%s' already exists (use --overwrite-mzf)\n", out_name );
+                        exit_code = EXIT_FAILURE;
+                        continue;
+                    }
+                    fprintf ( stderr, "Warning: overwriting existing file '%s'\n", out_name );
+                }
+
                 if ( save_mzf ( result.files[i].mzf, out_name ) == EXIT_SUCCESS ) {
                     fprintf ( stdout, "Saved: %s (%s, %u bytes%s)\n",
                               out_name,

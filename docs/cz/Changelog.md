@@ -1,5 +1,79 @@
 # Changelog
 
+## 2026-04-09
+
+### tmz2mzf v1.1.0
+- Nova volba `--overwrite` pro povoleni prepisu existujicich vystupnich souboru.
+  Ve vychozim rezimu program nyne odmitne prepsat existujici soubor
+  a navrhi pouziti `--overwrite` nebo `--append`.
+- Nova volba `--append` pro pripojeni extrahovanych MZF bloku na konec
+  existujiciho souboru. Vytvori multi-MZF (MZT-style) soubor se zretezenymi
+  header+body zaznamy. Pokud soubor neexistuje, vytvori novy.
+  Pri extrakci vice bloku jdou vsechny bloky do jednoho vystupniho souboru.
+
+### tmz2wav v1.1.0
+- Nova volba `--blocks <spec>` pro vyber konkretnich bloku k exportu.
+  Format: cisla a rozsahy oddelene carkou (napr. "0", "0,2", "0-2,5").
+  Ridici bloky (smycky, skoky, volani) se zpracovavaji vzdy.
+- Nova volba `--append` pro pripojeni noveho audio signalu na konec
+  existujiciho WAV souboru. Validace: sample rate musi odpovidat,
+  soubor musi byt mono PCM. Pokud soubor neexistuje, ohlasi chybu.
+
+### wav_analyzer v1.6.0
+- Nova pole `start_time_sec` a `duration_sec` ve vysledcich - absolutni
+  casy zacatku a delky bloku ve WAV souboru. Vypocteny z indexu pulzu
+  pred uvolnenim pulse sekvence.
+- Funkce `wav_analyzer_print_summary()` ma novy parametr `verbose`.
+  Ve verbose rezimu vypisuje realnou rychlost (Bd), pribliznou rychlost
+  (nejblizsi CMTSPEED) a pulzni sadu (MZ-800/MZ-80B) pro kazdy blok.
+- Nova zavislost na knihovne cmtspeed (pro vypocet priblizne rychlosti).
+
+### wav2tmz v2.6.0
+- Implicitne se provadi pouze analyza (bez ukladani). Ukladani se
+  aktivuje volbou `-o` nebo `--output-format`.
+- Summary vypis vzdy obsahuje absolutni casy zacatku a delky bloku.
+- Nova volba `--append-tmz` - pripojit bloky do existujiciho TMZ souboru.
+  Bez teto volby je existence TMZ souboru chyba.
+- Nova volba `--overwrite-mzf` - prepsat existujici MZF soubory.
+  Bez teto volby je existence MZF souboru chyba.
+- Ve verbose rezimu (--verbose) se vypisuji: realna rychlost (Bd),
+  priblizna rychlost, pulzni sada a namerene delky pulzu.
+
+### wav_analyzer v1.5.0
+- Nova pole `short_pulse_us` a `long_pulse_us` ve vysledcich - namerene
+  delky pulzu z histogramovych peaku (FM signaly se 2+ peaky).
+  Umoznuje presne zachovani delek pulzu v TMZ blocich.
+
+### mztape v2.1.0
+- Nova funkce `mztape_create_stream_from_mztapemzf_ex()` - rozsirena verze
+  s volitelnymi custom delkami pulzu (us*100 pole). Nenulove hodnoty prepisi
+  vychozi vypocet z pulseset+speed. Shodna konverze s mzcmt_turbo
+  (seconds = value / 1e7).
+
+### tmz_player v1.1.0
+- Prehravani NORMAL formatu (blok 0x41) nyni pouziva `_ex` variantu
+  pro predani custom pulse poli (`long_high/low`, `short_high/low`) z bloku.
+  Drive se tato pole pro NORMAL format ignorovala.
+
+### wav2tmz v2.5.0
+- Nova volba `--pulse-mode <approximate|exact>` (vychozi: approximate).
+  V `exact` rezimu NORMAL/MZ-80B soubory vzdy pouziji blok 0x41 s custom
+  pulse fields z histogramove analyzy (speed=0, pulse fields != 0).
+  V `approximate` rezimu je chovani nezmeneno (kvantizace na CMTSPEED).
+
+### tmzinfo v1.3.0
+- Zobrazeni custom pulsesetu pro blok 0x41: kdyz jsou pulse pole nenulova,
+  zobrazuje "Pulseset: custom" s Long/Short hodnotami v mikrosekundach
+  a odhadovanou baudovou rychlosti misto standardniho nazvu pulsesetu a pomeru.
+
+### tmzedit v1.4.0
+- Nova volba `--pulse <long_h/long_l,short_h/short_l>` pro prikaz `set`.
+  Nastavi custom pulse rezim (speed=0, pulse pole vyplnena) na bloku 0x41.
+  Hodnoty jsou v us*100 jednotkach (napr. `--pulse 4980/4980,2490/2490` pro ~1339 Bd).
+- `--speed` na bloku s custom pulzy nyni vynuluje pulse pole
+  (prepnuti zpet na tabulkovy rezim).
+- Konverze 0x41 -> 0x40 se zablokuje pri pritomnosti custom pulse poli.
+
 ## 2026-04-08
 
 ### tmzinfo v1.2.0

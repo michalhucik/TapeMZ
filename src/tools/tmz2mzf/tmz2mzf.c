@@ -1,13 +1,17 @@
 /**
  * @file   tmz2mzf.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Konverzni utility TMZ/TZX -> MZF.
  *
  * Nacte TMZ nebo TZX soubor, najde bloky obsahujici MZF data
  * (0x40 MZ Standard Data, 0x41 MZ Turbo Data) a extrahuje
  * z nich MZF soubory. Podporuje extrakci vsech bloku najednou
  * nebo vyber konkretniho bloku podle indexu.
+ *
+ * Ve vychozim rezimu odmitne prepsat existujici vystupni soubor.
+ * Pro prepis je nutne pouzit --overwrite, pro pripojeni na konec
+ * existujiciho souboru (multi-MZF/MZT) --append.
  *
  * @par Pouziti:
  * @code
@@ -18,6 +22,8 @@
  * - --output <soubor>      : vystupni soubor (vychozi: odvozeno ze vstupu)
  * - --index <N>            : extrahovat jen blok na indexu N (0-based)
  * - --list                 : vypsat extrahovatelne bloky bez extrakce
+ * - --overwrite            : povolit prepis existujiciho souboru
+ * - --append               : pripojit na konec existujiciho souboru (multi-MZF)
  * - --name-encoding <enc>  : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
  * - --version              : zobrazit verzi programu
  * - --lib-versions         : zobrazit verze knihoven
@@ -43,6 +49,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 
 #include "libs/tmz/tmz.h"
@@ -52,13 +59,25 @@
 #include "libs/mzf/mzf_tools.h"
 
 /** @brief Verze programu tmz2mzf (z @version v hlavicce souboru). */
-#define TMZ2MZF_VERSION  "1.0.0"
+#define TMZ2MZF_VERSION  "1.1.0"
 
 
 /**
  * @brief Maximalni delka cesty k vystupnimu souboru.
  */
 #define MAX_PATH_LENGTH  1024
+
+
+/**
+ * @brief Rezim zapisu vystupniho souboru.
+ *
+ * Urcuje chovani pri kolizi s existujicim souborem.
+ */
+typedef enum en_WRITE_MODE {
+    WRITE_MODE_DEFAULT,     /**< odmitne prepsat existujici soubor */
+    WRITE_MODE_OVERWRITE,   /**< prepise existujici soubor */
+    WRITE_MODE_APPEND,      /**< pripoji na konec existujiciho souboru (multi-MZF) */
+} en_WRITE_MODE;
 
 
 /** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
@@ -130,6 +149,46 @@ static void extract_basename ( const char *path, char *buf, size_t buf_size ) {
 
 
 /**
+ * @brief Zjisti, zda soubor na dane ceste existuje.
+ *
+ * Pouziva fopen("rb") pro platformne nezavisly test.
+ *
+ * @param path Cesta k souboru.
+ * @return true pokud soubor existuje, false pokud ne.
+ *
+ * @pre path != NULL.
+ */
+static bool file_exists ( const char *path ) {
+    FILE *f = fopen ( path, "rb" );
+    if ( f ) {
+        fclose ( f );
+        return true;
+    }
+    return false;
+}
+
+
+/**
+ * @brief Zjisti velikost existujiciho souboru v bajtech.
+ *
+ * Pouziva fseek/ftell pro zjisteni velikosti.
+ *
+ * @param path Cesta k souboru.
+ * @return Velikost souboru v bajtech, nebo 0 pokud soubor neexistuje ci doslo k chybe.
+ *
+ * @pre path != NULL.
+ */
+static uint32_t get_file_size ( const char *path ) {
+    FILE *f = fopen ( path, "rb" );
+    if ( !f ) return 0;
+    fseek ( f, 0, SEEK_END );
+    long size = ftell ( f );
+    fclose ( f );
+    return ( size > 0 ) ? (uint32_t) size : 0;
+}
+
+
+/**
  * @brief Vytvori kopii TMZ bloku pro bezpecne parsovani.
  *
  * Parse funkce (tmz_block_parse_mz_standard, tmz_block_parse_mz_turbo)
@@ -160,15 +219,32 @@ static bool copy_block ( const st_TZX_BLOCK *block, st_TZX_BLOCK *copy, uint8_t 
  * Vytvori kopii bloku (kvuli destruktivnimu parsovani), extrahuje MZF
  * pres tmz_block_to_mzf() a zapise vysledek do vystupniho souboru.
  *
+ * V rezimu WRITE_MODE_APPEND pripoji data na konec existujiciho souboru
+ * (vytvori multi-MZF/MZT). Pokud soubor neexistuje, vytvori novy.
+ *
+ * V rezimu WRITE_MODE_DEFAULT odmitne prepsat existujici soubor.
+ * V rezimu WRITE_MODE_OVERWRITE existujici soubor prepise.
+ *
  * @param block Zdrojovy TMZ blok (0x40 nebo 0x41).
  * @param block_index Index bloku v TMZ souboru (pro diagnosticke zpravy).
  * @param output_path Cesta k vystupnimu MZF souboru.
+ * @param write_mode Rezim zapisu (default/overwrite/append).
  * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
  *
  * @pre block != NULL, output_path != NULL.
  * @pre block->id musi byt 0x40 nebo 0x41.
  */
-static int extract_and_save ( const st_TZX_BLOCK *block, uint32_t block_index, const char *output_path ) {
+static int extract_and_save ( const st_TZX_BLOCK *block, uint32_t block_index,
+                              const char *output_path, en_WRITE_MODE write_mode ) {
+
+    /* kontrola existence vystupniho souboru */
+    bool exists = file_exists ( output_path );
+
+    if ( exists && write_mode == WRITE_MODE_DEFAULT ) {
+        fprintf ( stderr, "Error: output file '%s' already exists (use --overwrite or --append)\n",
+                  output_path );
+        return EXIT_FAILURE;
+    }
 
     /* kopie bloku pro bezpecne parsovani */
     st_TZX_BLOCK copy;
@@ -189,20 +265,40 @@ static int extract_and_save ( const st_TZX_BLOCK *block, uint32_t block_index, c
         return EXIT_FAILURE;
     }
 
+    /* urceni offsetu a rezimu otevreni souboru */
+    uint32_t write_offset = 0;
+    en_FILE_DRIVER_OPEN_MODE open_mode = FILE_DRIVER_OPMODE_W;
+
+    if ( write_mode == WRITE_MODE_APPEND && exists ) {
+        write_offset = get_file_size ( output_path );
+        open_mode = FILE_DRIVER_OPMODE_RW;
+    }
+
     /* otevreni vystupniho souboru a zapis MZF */
     st_HANDLER out_handler;
     st_DRIVER out_driver;
     generic_driver_file_init ( &out_driver );
 
     st_HANDLER *h_out = generic_driver_open_file ( &out_handler, &out_driver,
-                                                    (char*) output_path, FILE_DRIVER_OPMODE_W );
+                                                    (char*) output_path, open_mode );
     if ( !h_out ) {
-        fprintf ( stderr, "Error: cannot create output file '%s'\n", output_path );
+        fprintf ( stderr, "Error: cannot open output file '%s'\n", output_path );
         mzf_free ( mzf );
         return EXIT_FAILURE;
     }
 
-    en_MZF_ERROR mzf_err = mzf_save ( h_out, mzf );
+    /* zapis hlavicky a tela na urceny offset */
+    en_MZF_ERROR mzf_err = MZF_OK;
+
+    if ( mzf_write_header_on_offset ( h_out, write_offset, &mzf->header ) != EXIT_SUCCESS ) {
+        mzf_err = MZF_ERROR_IO;
+    } else if ( mzf->body != NULL && mzf->header.fsize > 0 ) {
+        if ( mzf_write_body_on_offset ( h_out, write_offset + MZF_HEADER_SIZE,
+                                         mzf->body, mzf->header.fsize ) != EXIT_SUCCESS ) {
+            mzf_err = MZF_ERROR_IO;
+        }
+    }
+
     generic_driver_close ( h_out );
 
     if ( mzf_err != MZF_OK ) {
@@ -216,13 +312,15 @@ static int extract_and_save ( const st_TZX_BLOCK *block, uint32_t block_index, c
     char fname[MZF_FNAME_UTF8_BUF_SIZE];
     mzf_tools_get_fname_ex ( &mzf->header, fname, sizeof ( fname ), name_encoding );
 
-    printf ( "  Block [%u] -> %s\n", block_index, output_path );
+    printf ( "  Block [%u] -> %s%s\n", block_index, output_path,
+             ( write_mode == WRITE_MODE_APPEND && write_offset > 0 ) ? " (append)" : "" );
     printf ( "    Filename : \"%s\"\n", fname );
     printf ( "    Type     : 0x%02X (%s)\n", mzf->header.ftype, mzf_ftype_name ( mzf->header.ftype ) );
     printf ( "    Size     : %u bytes\n", mzf->header.fsize );
     printf ( "    Load addr: 0x%04X\n", mzf->header.fstrt );
     printf ( "    Exec addr: 0x%04X\n", mzf->header.fexec );
-    printf ( "    MZF file : %u bytes\n", (unsigned) ( MZF_HEADER_SIZE + mzf->header.fsize ) );
+    printf ( "    MZF file : %u bytes (offset 0x%04X)\n",
+             (unsigned) ( MZF_HEADER_SIZE + mzf->header.fsize ), write_offset );
 
     mzf_free ( mzf );
     return EXIT_SUCCESS;
@@ -248,9 +346,11 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "Usage: %s <input.tmz|input.tzx> [options]\n\n", prog_name );
     fprintf ( stderr, "Extracts MZF files from TMZ/TZX tape archives.\n\n" );
     fprintf ( stderr, "Options:\n" );
-    fprintf ( stderr, "  --output <file>   Output filename (default: derived from input)\n" );
-    fprintf ( stderr, "  --index <N>       Extract only block at index N (0-based)\n" );
-    fprintf ( stderr, "  --list            List extractable blocks without extracting\n" );
+    fprintf ( stderr, "  --output <file>       Output filename (default: derived from input)\n" );
+    fprintf ( stderr, "  --index <N>           Extract only block at index N (0-based)\n" );
+    fprintf ( stderr, "  --list                List extractable blocks without extracting\n" );
+    fprintf ( stderr, "  --overwrite           Overwrite existing output file(s)\n" );
+    fprintf ( stderr, "  --append              Append to existing output file (multi-MZF)\n" );
     fprintf ( stderr, "  --name-encoding <enc> Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n" );
     fprintf ( stderr, "  --version             Show program version\n" );
     fprintf ( stderr, "  --lib-versions        Show library versions\n" );
@@ -266,11 +366,18 @@ static void print_usage ( const char *prog_name ) {
  * Rezim --list pouze vypise prehled extrahovatelnych bloku.
  * Rezim --index extrahuje konkretni blok. Bez --index extrahuje vsechny.
  *
+ * Ve vychozim rezimu odmitne prepsat existujici soubor.
+ * --overwrite povoli prepis, --append pripoji na konec existujiciho souboru.
+ *
+ * V rezimu --append se vsechny bloky zapisuji do jednoho souboru
+ * (multi-MZF/MZT format - zretezene MZF zaznamy).
+ *
  * Vystupy se pojmenovavaji takto:
  * - Jeden blok s --output: pouzije se presny nazev.
  * - Jeden blok bez --output: odvozeno ze vstupu (input.tmz -> input.mzf).
  * - Vice bloku s --output: output_001.mzf, output_002.mzf, ...
  * - Vice bloku bez --output: input_001.mzf, input_002.mzf, ...
+ * - --append: vsechny bloky do jednoho souboru (--output nebo odvozeno).
  *
  * @param argc Pocet argumentu.
  * @param argv Pole argumentu.
@@ -288,6 +395,7 @@ int main ( int argc, char *argv[] ) {
     const char *output_file = NULL;
     int selected_index = -1;   /* -1 = vsechny */
     bool list_only = false;
+    en_WRITE_MODE write_mode = WRITE_MODE_DEFAULT;
 
     /* parsovani argumentu */
     int positional = 0;
@@ -318,6 +426,10 @@ int main ( int argc, char *argv[] ) {
             selected_index = (int) val;
         } else if ( strcmp ( argv[i], "--list" ) == 0 ) {
             list_only = true;
+        } else if ( strcmp ( argv[i], "--overwrite" ) == 0 ) {
+            write_mode = WRITE_MODE_OVERWRITE;
+        } else if ( strcmp ( argv[i], "--append" ) == 0 ) {
+            write_mode = WRITE_MODE_APPEND;
         } else if ( strcmp ( argv[i], "--name-encoding" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --name-encoding requires a value\n" );
@@ -471,12 +583,25 @@ int main ( int argc, char *argv[] ) {
         extract_basename ( input_file, basename, sizeof ( basename ) - 16 );
     }
 
-    printf ( "Extracting from: %s\n\n", input_file );
+    printf ( "Extracting from: %s\n", input_file );
+    if ( write_mode == WRITE_MODE_APPEND ) {
+        printf ( "Mode: append (multi-MZF)\n" );
+    } else if ( write_mode == WRITE_MODE_OVERWRITE ) {
+        printf ( "Mode: overwrite\n" );
+    }
+    printf ( "\n" );
 
     int result = EXIT_SUCCESS;
 
     /* pocet bloku k extrakci (pro rozhodnuti o cislovani) */
     uint32_t target_count = ( selected_index >= 0 ) ? 1 : extractable_count;
+
+    /*
+     * V append rezimu vsechny bloky jdou do jednoho souboru.
+     * V ostatnich rezimech kazdy blok do samostatneho souboru (s cisly pri vice blocich).
+     */
+    bool single_output = ( write_mode == WRITE_MODE_APPEND ) ||
+                          ( target_count == 1 );
 
     /* extrahovat vybrany blok nebo vsechny */
     uint32_t extracted = 0;
@@ -492,8 +617,8 @@ int main ( int argc, char *argv[] ) {
 
         /* sestavit vystupni cestu */
         char output_path[MAX_PATH_LENGTH];
-        if ( target_count == 1 ) {
-            /* jediny blok - pouzit presny nazev nebo odvozit ze vstupu */
+        if ( single_output ) {
+            /* jediny soubor - pouzit presny nazev nebo odvozit ze vstupu */
             if ( output_file ) {
                 strncpy ( output_path, output_file, sizeof ( output_path ) - 1 );
                 output_path[sizeof ( output_path ) - 1] = '\0';
@@ -501,12 +626,25 @@ int main ( int argc, char *argv[] ) {
                 snprintf ( output_path, sizeof ( output_path ), "%s.mzf", basename );
             }
         } else {
-            /* vice bloku - pridavat cisla */
+            /* vice bloku do samostatnych souboru - pridavat cisla */
             snprintf ( output_path, sizeof ( output_path ), "%s_%03u.mzf",
                        basename, extracted + 1 );
         }
 
-        if ( extract_and_save ( &file->blocks[i], i, output_path ) != EXIT_SUCCESS ) {
+        /*
+         * V append rezimu: prvni blok pouziva APPEND (pripoji na konec),
+         * dalsi bloky taky APPEND (kazdy se pripoji za predchozi).
+         *
+         * V overwrite rezimu: prvni blok pouziva OVERWRITE,
+         * pri vice souborech kazdy ma svuj soubor.
+         *
+         * V append rezimu s vice bloky do jednoho souboru:
+         * prvni blok muze prepsat (pokud soubor neexistuje, vytvori novy),
+         * dalsi se pripoji.
+         */
+        en_WRITE_MODE block_write_mode = write_mode;
+
+        if ( extract_and_save ( &file->blocks[i], i, output_path, block_write_mode ) != EXIT_SUCCESS ) {
             result = EXIT_FAILURE;
         }
 

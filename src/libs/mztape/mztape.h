@@ -1,7 +1,7 @@
 /**
  * @file   mztape.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.1
+ * @version 2.1.0
  * @brief  Veřejné API knihovny mztape — konverze MZF souborů na CMT audio streamy.
  *
  * Definuje typy, enumy, struktury a funkce pro práci s kazetovým záznamem
@@ -197,6 +197,28 @@ extern "C" {
     extern st_CMT_STREAM* mztape_create_stream_from_mztapemzf ( st_MZTAPE_MZF *mztmzf, en_CMTSPEED cmtspeed, en_CMT_STREAM_TYPE type, en_MZTAPE_FORMATSET mztape_fset, uint32_t rate );
 
     /**
+     * @brief Rozšířená verze s volitelným přepisem délek pulzů.
+     *
+     * Pokud jsou hodnoty long_high_us100 .. short_low_us100 nenulové,
+     * přepíší se výchozí délky pulzů (jinak se použije standardní
+     * výpočet z pulseset + speed). Hodnoty jsou v us*100 (mikrosekundy * 100).
+     *
+     * @param mztmzf MZF data.
+     * @param cmtspeed Rychlost záznamu (ignorována pokud pulse fields != 0).
+     * @param type Typ výstupního streamu (bitstream/vstream).
+     * @param mztape_fset Formátová varianta záznamu.
+     * @param rate Vzorkovací frekvence (Hz).
+     * @param long_high_us100  Délka HIGH části dlouhého pulzu (us*100, 0 = výchozí).
+     * @param long_low_us100   Délka LOW části dlouhého pulzu (us*100, 0 = výchozí).
+     * @param short_high_us100 Délka HIGH části krátkého pulzu (us*100, 0 = výchozí).
+     * @param short_low_us100  Délka LOW části krátkého pulzu (us*100, 0 = výchozí).
+     * @return Ukazatel na nový stream, nebo NULL při chybě.
+     */
+    extern st_CMT_STREAM* mztape_create_stream_from_mztapemzf_ex ( st_MZTAPE_MZF *mztmzf, en_CMTSPEED cmtspeed, en_CMT_STREAM_TYPE type, en_MZTAPE_FORMATSET mztape_fset, uint32_t rate,
+                                                                     uint16_t long_high_us100, uint16_t long_low_us100,
+                                                                     uint16_t short_high_us100, uint16_t short_low_us100 );
+
+    /**
      * @brief Spočítá celkový počet long a short pulzů pro daný MZF a formát.
      * @param mztmzf MZF data.
      * @param mztape_format Formátová varianta záznamu.
@@ -233,7 +255,7 @@ extern "C" {
     extern void mztape_set_error_callback ( mztape_error_cb cb );
 
     /** @brief Verze knihovny mztape. */
-#define MZTAPE_VERSION "2.0.0"
+#define MZTAPE_VERSION "2.1.0"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny mztape.

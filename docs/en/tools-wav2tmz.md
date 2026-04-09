@@ -1,14 +1,13 @@
 # wav2tmz - WAV Recording Analyzer and Decoder
 
 Analyzes a WAV file containing a cassette tape recording from
-Sharp MZ (or ZX Spectrum) computers and extracts MZF files
-or a TMZ archive from it.
+Sharp MZ (or ZX Spectrum) computers.
+
+By default, performs analysis only and prints discovered blocks (no files saved).
+With `-o` or `--output-format`, extracts MZF files or a TMZ archive.
 
 Automatically detects the recording format: NORMAL, TURBO, FASTIPL, BSD,
 CPM-CMT, CPM-TAPE, MZ-80B, FSK, SLOW, DIRECT, ZX Spectrum.
-
-If the output format is TMZ and the output file already exists,
-new blocks are appended to the end of the existing archive.
 
 ## Usage
 
@@ -20,19 +19,22 @@ wav2tmz input.wav [-o output] [options]
 
 | Option | Value | Default | Description |
 |--------|-------|---------|-------------|
-| `-o` | `<file>` | derived from input | Output file |
-| `--output-format` | mzf, tmz | mzf | Output format |
+| `-o` | `<file>` | derived from input | Output file (enables saving) |
+| `--output-format` | mzf, tmz | mzf | Output format (enables saving) |
+| `--append-tmz` | - | off | Append blocks to existing TMZ (without this, existing TMZ is an error) |
+| `--overwrite-mzf` | - | off | Overwrite existing MZF files (without this, existing MZF is an error) |
 | `--schmitt` | - | off | Use Schmitt trigger instead of zero-crossing |
 | `--tolerance` | 0.02-0.35 | 0.10 | Leader tone detection tolerance |
 | `--preprocess` | - | on | Enable signal preprocessing |
 | `--no-preprocess` | - | - | Disable preprocessing (DC offset, HP filter, normalization) |
 | `--histogram` | - | off | Print pulse length histogram |
-| `--verbose`, `-v` | - | off | Verbose analysis output |
+| `--verbose`, `-v` | - | off | Verbose output (real speed Bd, approx speed, pulse set) |
 | `--channel` | L, R | L | Channel selection from stereo |
 | `--invert` | - | off | Invert signal polarity |
 | `--keep-unknown` | - | off | Save unidentified segments as Direct Recording |
 | `--raw-format` | direct | direct | Format for unidentified blocks |
 | `--pass` | `<N>` | 1 | Number of passes (not yet used) |
+| `--pulse-mode` | approximate, exact | approximate | Pulse width storage mode for TMZ output |
 | `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
 | `--recover` | - | off | Enable all recovery modes |
 | `--recover-bsd` | - | off | Recover incomplete BSD files (missing terminator) |
@@ -44,10 +46,19 @@ wav2tmz input.wav [-o output] [options]
 
 ### Option Details
 
-**--output-format** - determines how decoded data is saved:
+**-o, --output-format** - enables saving output. Without these options,
+only analysis and block listing is performed.
 - `mzf` - each decoded file is saved as a separate MZF file
   (naming: input_1.mzf, input_2.mzf, ...)
 - `tmz` - all blocks are saved into a single TMZ archive
+
+**--append-tmz** - if the output TMZ file already exists, appends new
+blocks to the end of the existing archive. Without this option, an existing
+TMZ file is an error. If the option is specified but the file does not exist,
+a new file is created with a warning.
+
+**--overwrite-mzf** - allows overwriting existing MZF files.
+Without this option, an existing output MZF file is an error.
 
 **--schmitt** - uses Schmitt trigger for pulse detection instead of
 standard zero-crossing. Suitable for noisy recordings.
@@ -76,6 +87,15 @@ block (0x30) with a warning is inserted before the recovered block.
 **--recover** - enables all recovery modes at once (--recover-bsd
 and future --recover-body, --recover-header).
 
+**--pulse-mode** - controls how pulse widths are stored in TMZ blocks:
+- `approximate` (default) - quantizes speed to the nearest CMTSPEED ratio
+  (1:1, 2:1, 7:3, ...). Standard 1200 Bd uses block 0x40, other speeds use 0x41.
+- `exact` - stores measured pulse widths from histogram analysis directly
+  in block 0x41 fields (long_high/low, short_high/low). Speed is set to 0
+  (custom mode). Preserves the exact timing of the original recording,
+  including sub-standard speeds (< 1200 Bd) that would otherwise be
+  rounded to 1:1. Only affects NORMAL and MZ-80B formats.
+
 **--keep-unknown** - recording segments that were not identified
 as any known format are saved as TZX block 0x15 (Direct Recording).
 Useful for preserving the entire tape contents.
@@ -101,10 +121,22 @@ The file begins with block 0x30 (Text Description) containing source WAV metadat
 
 ## Examples
 
-Basic decoding to MZF files:
+Analyze WAV file (no saving):
 
 ```
 wav2tmz recording.wav
+```
+
+Verbose analysis with speeds and pulse sets:
+
+```
+wav2tmz recording.wav --verbose
+```
+
+Decoding to MZF files:
+
+```
+wav2tmz recording.wav -o recording.mzf
 ```
 
 Decoding to a TMZ archive:
@@ -122,7 +154,7 @@ wav2tmz recording.wav -o game.mzf
 Decoding with Schmitt trigger (noisy recording):
 
 ```
-wav2tmz noisy_tape.wav --schmitt --tolerance 0.15
+wav2tmz noisy_tape.wav --schmitt --tolerance 0.15 -o output.mzf
 ```
 
 Detailed analysis with histogram:
@@ -167,9 +199,21 @@ Recovering all partial data into a TMZ archive:
 wav2tmz damaged_tape.wav --recover --output-format tmz -o rescued.tmz
 ```
 
+Decoding with exact pulse widths into TMZ:
+
+```
+wav2tmz recording.wav --output-format tmz --pulse-mode exact -o precise.tmz
+```
+
 Appending additional recordings to an existing TMZ:
 
 ```
 wav2tmz side_a.wav -o tape.tmz --output-format tmz
-wav2tmz side_b.wav -o tape.tmz --output-format tmz
+wav2tmz side_b.wav -o tape.tmz --output-format tmz --append-tmz
+```
+
+Overwriting existing MZF files:
+
+```
+wav2tmz recording.wav -o game.mzf --overwrite-mzf
 ```

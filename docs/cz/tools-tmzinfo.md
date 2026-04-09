@@ -44,7 +44,7 @@ Všechny informace se vypisují na standardní výstup.
 ### MZ bloky (0x40-0x45)
 
 - **0x40 MZ Standard Data** - cílový stroj, pulzní sada, pauza, MZF hlavička (název, typ, velikost, adresy)
-- **0x41 MZ Turbo Data** - formát (NORMAL/TURBO/FASTIPL/FSK/SLOW/DIRECT/CPM-TAPE), rychlost, časování pulzů, MZF hlavička
+- **0x41 MZ Turbo Data** - formát (NORMAL/TURBO/FASTIPL/FSK/SLOW/DIRECT/CPM-TAPE), rychlost nebo custom pulseset (s délkami pulzů v us a odhadovanou Bd), MZF hlavička
 - **0x42 MZ Extra Body** - formát, rychlost, pauza, velikost těla
 - **0x43 MZ Machine Info** - stroj, CPU takt, verze ROM
 - **0x44 MZ Loader** - typ loaderu (TURBO/FASTIPL/FSK/SLOW/DIRECT), rychlost, velikost, MZF hlavička

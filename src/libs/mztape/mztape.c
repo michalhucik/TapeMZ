@@ -1,7 +1,7 @@
 /**
  * @file   mztape.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.1
+ * @version 2.1.0
  * @brief  Implementace knihovny mztape — generování CMT audio streamů z MZF souborů.
  *
  * Obsahuje logiku konverze MZF dat na CMT bitstream/vstream, výpočet pulzů,
@@ -179,32 +179,26 @@ en_MZTAPE_BLOCK g_mztape_format_sharp[] = {
                                            MZTAPE_BLOCK_STOP
 };
 
-/** @brief Pulzní konstanty pro MZ-700, MZ-80K, MZ-80A. */
+/**
+ * @brief Symetricke pulzni konstanty pro MZ-700, MZ-80K, MZ-80A.
+ *
+ * MZ-700 ROM pouziva stejnou delay smycku pro HIGH i LOW cast pulzu.
+ * Zakladni casovani: SHORT = 252 us, LONG = 504 us (pomer 1:2).
+ * Shodne s mzcmt_turbo a mzcmt_bsd g_pulses_700.
+ */
 const st_MZTAPE_PULSES_LENGTH g_mztape_pulses_700 = {
-    { 0.000464, 0.000494, 0.000958 }, // LONG PULSE
-    { 0.000240, 0.000264, 0.000504 }, // SHORT PULSE
-};
-
-/** @brief Pulzní konstanty pro MZ-800, MZ-1500 (bitstream path). */
-const st_MZTAPE_PULSES_LENGTH g_mztape_pulses_800 = {
-    { 0.000470, 0.000494, 0.000964 }, // LONG PULSE
-    { 0.000240, 0.000278, 0.000518 }, // SHORT PULSE
+    { 0.000504, 0.000504, 0.001008 }, /* LONG: 504 us H + 504 us L */
+    { 0.000252, 0.000252, 0.000504 }, /* SHORT: 252 us H + 252 us L */
 };
 
 /**
- * @brief Symetricke pulzni konstanty pro MZ-800 (vstream path).
+ * @brief Symetricke pulzni konstanty pro MZ-800, MZ-1500.
  *
- * MZ-800 ROM pouziva stejnou delay smycku pro HIGH i LOW cast pulzu,
- * takze obe poloviny maji shodnou delku. Puvodni asym. hodnoty
- * z mereni Intercopy 10.2 (GDG ticky {8335,8760}, {4356,4930})
- * zpusobovaly spatne zaokrouhlovani na 44100 Hz - short pulz
- * se zaokrouhlil na 11+12=23 vzorku misto 11+11=22, coz vedlo
- * k odchylce ~4.5% v namerenene rychlosti (1099 Bd misto 1150 Bd).
- *
- * Symetricke hodnoty (498/498/249/249 us) jsou shodne s mzcmt_turbo
- * g_pulses_800 a odpovidaji skutecnemu ROM chovani.
+ * MZ-800 ROM pouziva stejnou delay smycku pro HIGH i LOW cast pulzu.
+ * Zakladni casovani: SHORT = 249 us, LONG = 498 us (pomer 1:2).
+ * Shodne s mzcmt_turbo a mzcmt_bsd g_pulses_800.
  */
-static const st_MZTAPE_PULSES_LENGTH g_mztape_pulses_800_intercopy = {
+const st_MZTAPE_PULSES_LENGTH g_mztape_pulses_800 = {
     { 0.000498, 0.000498, 0.000996 }, /* LONG: 498 us H + 498 us L */
     { 0.000249, 0.000249, 0.000498 }, /* SHORT: 249 us H + 249 us L */
 };
@@ -813,7 +807,7 @@ st_CMT_VSTREAM* mztape_create_cmt_vstream_from_mztmzf ( st_MZTAPE_MZF *mztmzf, e
     switch ( g_formats[mztape_format]->pulseset ) {
         case MZTAPE_PULSESET_800:
             srcpulses = ( mztape_speed == CMTSPEED_2_1_CPM )
-                ? &g_mztape_pulses_800_cmtcom : &g_mztape_pulses_800_intercopy;
+                ? &g_mztape_pulses_800_cmtcom : &g_mztape_pulses_800;
             break;
         case MZTAPE_PULSESET_700:
             srcpulses = &g_mztape_pulses_700;
@@ -822,7 +816,7 @@ st_CMT_VSTREAM* mztape_create_cmt_vstream_from_mztmzf ( st_MZTAPE_MZF *mztmzf, e
             srcpulses = &g_mztape_pulses_80B;
             break;
         default:
-            srcpulses = &g_mztape_pulses_800_intercopy;
+            srcpulses = &g_mztape_pulses_800;
             break;
     }
 
@@ -917,6 +911,7 @@ st_CMT_VSTREAM* mztape_create_cmt_vstream_from_mztmzf ( st_MZTAPE_MZF *mztmzf, e
  * @brief Jednotné API pro vytvoření CMT streamu (bitstream nebo vstream).
  *
  * Pro bitstream interně vytváří vstream a konvertuje (přesnější výsledek).
+ * Deleguje na _ex variantu s nulovými pulse parametry.
  *
  * @param mztmzf MZF data.
  * @param cmtspeed Rychlost záznamu.
@@ -937,23 +932,23 @@ st_CMT_STREAM* mztape_create_stream_from_mztapemzf ( st_MZTAPE_MZF *mztmzf, en_C
         {
 #if 0
             /*
-             * Přímý bitstream path — ponechán jako kompilační alternativa k budoucímu prověření.
+             * Přímý bitstream path - ponechán jako kompilační alternativa k budoucímu prověření.
              *
              * Princip bitstream:
              * Při daném sample rate se každý pulz kvantizuje na celý počet vzorků.
              * Zaokrouhlovací chyba se akumuluje pulz po pulzu. Při vyšších rychlostech
-             * (3600 Bd = divisor 3.0) se pulzy zkracují → relativní chyba roste → časování
+             * (3600 Bd = divisor 3.0) se pulzy zkracují -> relativní chyba roste -> časování
              * se rozjede natolik, že ROM rutina přestane pulzy rozpoznávat.
              *
              * Princip vstream:
              * Ukládá přesný počet vzorků pro každý pulz samostatně (RLE kódování).
-             * Zaokrouhlení probíhá nezávisle pro každý pulz → chyba se neakumuluje.
-             * Konverze vstream → bitstream pak produkuje přesnější výsledek, protože
+             * Zaokrouhlení probíhá nezávisle pro každý pulz -> chyba se neakumuluje.
+             * Konverze vstream -> bitstream pak produkuje přesnější výsledek, protože
              * každý pulz má korektně zaokrouhlený počet vzorků.
              *
              * Pozorovaný problém:
-             * Interkarate screen při 3600 Bd — přímý bitstream se nenačetl,
-             * vstream → bitstream konverze funguje spolehlivě.
+             * Interkarate screen při 3600 Bd - přímý bitstream se nenačetl,
+             * vstream -> bitstream konverze funguje spolehlivě.
              *
              * Závěr: přímý bitstream path ponechán jako kompilační alternativa
              * (#if 0/#if 1) k budoucímu prověření a případné opravě
@@ -1000,6 +995,163 @@ st_CMT_STREAM* mztape_create_stream_from_mztapemzf ( st_MZTAPE_MZF *mztmzf, en_C
 
         default:
             g_mztape_error_cb ( __func__, __LINE__, "Unknown stream type '%d'\n", stream->stream_type );
+            cmt_stream_destroy ( stream );
+            return NULL;
+    };
+
+    return stream;
+}
+
+
+/**
+ * @brief Rozšířená verze s volitelným přepisem délek pulzů.
+ *
+ * Pokud jsou hodnoty long_high_us100 .. short_low_us100 nenulové,
+ * přepíší se výchozí délky pulzů (jinak se použije standardní
+ * výpočet z pulseset + speed). Hodnoty jsou v us*100 jednotkách
+ * (seconds = value / 1e7), shodná konvence s mzcmt_turbo.
+ *
+ * @param mztmzf MZF data.
+ * @param cmtspeed Rychlost záznamu (ignorována pokud pulse fields != 0).
+ * @param type Typ výstupního streamu (bitstream/vstream).
+ * @param mztape_fset Formátová varianta záznamu.
+ * @param rate Vzorkovací frekvence (Hz).
+ * @param long_high_us100  Délka HIGH části dlouhého pulzu (us*100, 0 = výchozí).
+ * @param long_low_us100   Délka LOW části dlouhého pulzu (us*100, 0 = výchozí).
+ * @param short_high_us100 Délka HIGH části krátkého pulzu (us*100, 0 = výchozí).
+ * @param short_low_us100  Délka LOW části krátkého pulzu (us*100, 0 = výchozí).
+ * @return Ukazatel na nový stream, nebo NULL při chybě.
+ */
+st_CMT_STREAM* mztape_create_stream_from_mztapemzf_ex ( st_MZTAPE_MZF *mztmzf, en_CMTSPEED cmtspeed, en_CMT_STREAM_TYPE type, en_MZTAPE_FORMATSET mztape_fset, uint32_t rate,
+                                                          uint16_t long_high_us100, uint16_t long_low_us100,
+                                                          uint16_t short_high_us100, uint16_t short_low_us100 ) {
+
+    /* pokud jsou vsechny custom pulse hodnoty nulove, delegujeme na zakladni verzi */
+    if ( long_high_us100 == 0 && long_low_us100 == 0 &&
+         short_high_us100 == 0 && short_low_us100 == 0 ) {
+        return mztape_create_stream_from_mztapemzf (
+            mztmzf, cmtspeed, type, mztape_fset, rate );
+    }
+
+    /* custom pulse rezim - vytvorime vstream s explicitnimi delkami pulzu */
+
+    st_CMT_VSTREAM* vstream = cmt_vstream_new ( rate, CMT_VSTREAM_BYTELENGTH8, 1, CMT_STREAM_POLARITY_NORMAL );
+    if ( !vstream ) {
+        g_mztape_error_cb ( __func__, __LINE__, "Could not create cmt vstream\n" );
+        return NULL;
+    };
+
+    /* konverze us*100 -> pocet vzorku (seconds = value / 1e7) */
+    st_MZTAPE_PULSES_SAMPLES gpulses;
+    gpulses.long_pulse.high = ( uint32_t ) round ( ( double ) long_high_us100 / 10000000.0 * rate );
+    gpulses.long_pulse.low = ( uint32_t ) round ( ( double ) long_low_us100 / 10000000.0 * rate );
+    gpulses.short_pulse.high = ( uint32_t ) round ( ( double ) short_high_us100 / 10000000.0 * rate );
+    gpulses.short_pulse.low = ( uint32_t ) round ( ( double ) short_low_us100 / 10000000.0 * rate );
+
+    const en_MZTAPE_BLOCK *format = g_formats[mztape_fset]->blocks;
+
+    int i = 0;
+    int ret;
+    while ( format[i] != MZTAPE_BLOCK_STOP ) {
+
+        switch ( format[i] ) {
+            case MZTAPE_BLOCK_LGAP:
+                ret = mztape_add_cmt_vstream_onestate_block ( vstream, &gpulses.short_pulse, g_formats[mztape_fset]->lgap );
+                break;
+
+            case MZTAPE_BLOCK_SGAP:
+                ret = mztape_add_cmt_vstream_onestate_block ( vstream, &gpulses.short_pulse, g_formats[mztape_fset]->sgap );
+                break;
+
+            case MZTAPE_BLOCK_LTM:
+                ret = mztape_add_cmt_vstream_onestate_block ( vstream, &gpulses.long_pulse, MZTAPE_LTM_LLENGTH );
+                if ( ret != EXIT_FAILURE ) {
+                    ret = mztape_add_cmt_vstream_onestate_block ( vstream, &gpulses.short_pulse, MZTAPE_LTM_SLENGTH );
+                };
+                break;
+
+            case MZTAPE_BLOCK_STM:
+                ret = mztape_add_cmt_vstream_onestate_block ( vstream, &gpulses.long_pulse, MZTAPE_STM_LLENGTH );
+                if ( ret != EXIT_FAILURE ) {
+                    ret = mztape_add_cmt_vstream_onestate_block ( vstream, &gpulses.short_pulse, MZTAPE_STM_SLENGTH );
+                };
+                break;
+
+            case MZTAPE_BLOCK_2L:
+                ret = mztape_add_cmt_vstream_onestate_block ( vstream, &gpulses.long_pulse, 2 );
+                break;
+
+            case MZTAPE_BLOCK_256S:
+                ret = mztape_add_cmt_vstream_onestate_block ( vstream, &gpulses.short_pulse, 256 );
+                break;
+
+            case MZTAPE_BLOCK_HDR:
+            case MZTAPE_BLOCK_HDRC:
+                ret = mztape_add_cmt_vstream_data_block ( vstream, &gpulses, mztmzf->header, sizeof ( st_MZF_HEADER ) );
+                break;
+
+            case MZTAPE_BLOCK_FILE:
+            case MZTAPE_BLOCK_FILEC:
+                ret = mztape_add_cmt_vstream_data_block ( vstream, &gpulses, mztmzf->body, mztmzf->size );
+                break;
+
+            case MZTAPE_BLOCK_CHKH:
+            {
+                uint16_t chk = endianity_bswap16_BE ( mztmzf->chkh );
+                ret = mztape_add_cmt_vstream_data_block ( vstream, &gpulses, ( uint8_t* ) & chk, 2 );
+                break;
+            }
+
+            case MZTAPE_BLOCK_CHKF:
+            {
+                uint16_t chk = endianity_bswap16_BE ( mztmzf->chkb );
+                ret = mztape_add_cmt_vstream_data_block ( vstream, &gpulses, ( uint8_t* ) & chk, 2 );
+                break;
+            }
+
+            default:
+                g_mztape_error_cb ( __func__, __LINE__, "Error: unknown block id=%d\n", format[i] );
+                ret = EXIT_FAILURE;
+        };
+
+        if ( ret == EXIT_FAILURE ) {
+            g_mztape_error_cb ( __func__, __LINE__, "Error: can't create cmt vstream\n" );
+            cmt_vstream_destroy ( vstream );
+            return NULL;
+        };
+
+        i++;
+    };
+
+    /* zabaleni vstreamu do CMT streamu */
+    st_CMT_STREAM *stream = cmt_stream_new ( type );
+    if ( !stream ) {
+        cmt_vstream_destroy ( vstream );
+        return NULL;
+    };
+
+    switch ( stream->stream_type ) {
+        case CMT_STREAM_TYPE_BITSTREAM:
+        {
+            st_CMT_BITSTREAM *bitstream = cmt_bitstream_new_from_vstream ( vstream, rate );
+            cmt_vstream_destroy ( vstream );
+
+            if ( !bitstream ) {
+                g_mztape_error_cb ( __func__, __LINE__, "Can't create bitstream\n" );
+                cmt_stream_destroy ( stream );
+                return NULL;
+            };
+            stream->str.bitstream = bitstream;
+            break;
+        }
+
+        case CMT_STREAM_TYPE_VSTREAM:
+            stream->str.vstream = vstream;
+            break;
+
+        default:
+            g_mztape_error_cb ( __func__, __LINE__, "Unknown stream type '%d'\n", stream->stream_type );
+            cmt_vstream_destroy ( vstream );
             cmt_stream_destroy ( stream );
             return NULL;
     };

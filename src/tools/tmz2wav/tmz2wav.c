@@ -1,12 +1,13 @@
 /**
  * @file   tmz2wav.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Konverzni utility TMZ/TZX -> WAV.
  *
- * Nacte TMZ nebo TZX soubor, prehaje vsechny audio bloky
+ * Nacte TMZ nebo TZX soubor, prehaje vybrane (nebo vsechny) audio bloky
  * pomoci TMZ playeru a vysledny CMT audio signal ulozi
- * jako WAV soubor (mono, 8-bit PCM).
+ * jako WAV soubor (mono, 8-bit PCM). Podporuje vyber bloku
+ * a pripojeni k existujicimu WAV souboru.
  *
  * Podporuje vsechny bloky, ktere TMZ player umi prehrat:
  * - MZ bloky 0x40 (Standard Data) a 0x41 (Turbo Data) pres mztape
@@ -22,6 +23,8 @@
  * @par Volby:
  * - --rate <Hz>        : vzorkovaci frekvence (vychozi: 44100)
  * - --pulseset <sada>  : vychozi pulzni sada: 700, 800, 80b (vychozi: 800)
+ * - --blocks <spec>    : vyber bloku (napr. "0", "0,2", "0-2,5")
+ * - --append           : pripojit k existujicimu WAV souboru
  * - --version          : zobrazit verzi programu
  * - --lib-versions     : zobrazit verze knihoven
  *
@@ -46,6 +49,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 
 #include "libs/tmz/tmz.h"
@@ -53,11 +57,12 @@
 #include "libs/tmz/tmz_blocks.h"
 #include "libs/tmz/tmz_player.h"
 #include "libs/cmt_stream/cmt_stream.h"
+#include "libs/wav/wav.h"
 #include "libs/generic_driver/generic_driver.h"
 #include "libs/generic_driver/memory_driver.h"
 
 /** @brief Verze programu tmz2wav (z @version v hlavicce souboru). */
-#define TMZ2WAV_VERSION  "1.0.0"
+#define TMZ2WAV_VERSION  "1.1.0"
 
 
 /**
@@ -121,6 +126,68 @@ static const char* pulseset_name ( en_MZTAPE_PULSESET pulseset ) {
 
 
 /**
+ * @brief Naparsuje retezec vyberu bloku do bool pole.
+ *
+ * Podporovane formaty:
+ * - "0"         - jeden blok
+ * - "0,2"       - vice bloku oddelenych carkou
+ * - "0-2"       - rozsah (vcetne obou koncu)
+ * - "0-2,5,7-9" - kombinace
+ *
+ * @param spec Vstupni retezec specifikace.
+ * @param block_count Celkovy pocet bloku v souboru.
+ * @return Dynamicky alokovane bool pole o velikosti block_count,
+ *         kde true = blok je vybrany. NULL pri chybe (nevalidni format,
+ *         index mimo rozsah, selhani alokace).
+ *
+ * @post Volajici musi uvolnit vracene pole pres free().
+ */
+static bool* parse_block_spec ( const char *spec, uint32_t block_count ) {
+    bool *selected = calloc ( block_count, sizeof ( bool ) );
+    if ( !selected ) return NULL;
+
+    const char *p = spec;
+    while ( *p ) {
+        /* preskocit mezery */
+        while ( *p == ' ' ) p++;
+        if ( !*p ) break;
+
+        /* naparsovat cislo */
+        char *endptr;
+        long start = strtol ( p, &endptr, 10 );
+        if ( endptr == p || start < 0 ) { free ( selected ); return NULL; }
+        long end = start;
+        p = endptr;
+
+        /* kontrola rozsahu "N-M" */
+        if ( *p == '-' ) {
+            p++;
+            end = strtol ( p, &endptr, 10 );
+            if ( endptr == p || end < 0 ) { free ( selected ); return NULL; }
+            p = endptr;
+        }
+
+        /* validace indexu */
+        if ( start >= (long) block_count || end >= (long) block_count || start > end ) {
+            free ( selected );
+            return NULL;
+        }
+
+        /* oznacit vybrane bloky */
+        for ( long i = start; i <= end; i++ ) {
+            selected[i] = true;
+        }
+
+        /* preskocit carku */
+        if ( *p == ',' ) p++;
+        else if ( *p != '\0' ) { free ( selected ); return NULL; }
+    }
+
+    return selected;
+}
+
+
+/**
  * @brief Vypise verze vsech pouzitych knihoven na stdout.
  */
 static void print_lib_versions ( void ) {
@@ -142,6 +209,8 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "Options:\n" );
     fprintf ( stderr, "  --rate <Hz>          Sample rate (default: 44100)\n" );
     fprintf ( stderr, "  --pulseset <set>     Default pulse set: 700, 800, 80b (default: 800)\n" );
+    fprintf ( stderr, "  --blocks <spec>      Select blocks to export (e.g. \"0\", \"0,2\", \"0-2,5\")\n" );
+    fprintf ( stderr, "  --append             Append to existing WAV file\n" );
     fprintf ( stderr, "  --version            Show program version\n" );
     fprintf ( stderr, "  --lib-versions       Show library versions\n" );
 }
@@ -151,8 +220,11 @@ static void print_usage ( const char *prog_name ) {
  * @brief Hlavni funkce - konverze TMZ/TZX -> WAV.
  *
  * Zpracuje argumenty prikazove radky, nacte TMZ/TZX soubor,
- * prehaje vsechny audio bloky pomoci TMZ playeru do jednoho
- * spojeneho vstreamu a ulozi vysledek jako WAV soubor.
+ * prehaje vybrane (nebo vsechny) audio bloky pomoci TMZ playeru
+ * do jednoho spojeneho vstreamu a ulozi vysledek jako WAV soubor.
+ *
+ * Podporuje vyber konkretnich bloku (--blocks) a pripojeni
+ * k existujicimu WAV souboru (--append).
  *
  * @param argc Pocet argumentu.
  * @param argv Pole argumentu.
@@ -173,6 +245,8 @@ int main ( int argc, char *argv[] ) {
     const char *output_file = NULL;
     uint32_t sample_rate = CMTSTREAM_DEFAULT_RATE;
     en_MZTAPE_PULSESET pulseset = MZTAPE_PULSESET_800;
+    const char *blocks_spec = NULL;
+    bool append_mode = false;
 
     /* parsovani argumentu */
     int positional = 0;
@@ -204,6 +278,14 @@ int main ( int argc, char *argv[] ) {
                 fprintf ( stderr, "Error: unknown pulseset '%s'\n", argv[i] );
                 return EXIT_FAILURE;
             }
+        } else if ( strcmp ( argv[i], "--blocks" ) == 0 ) {
+            if ( ++i >= argc ) {
+                fprintf ( stderr, "Error: --blocks requires a value\n" );
+                return EXIT_FAILURE;
+            }
+            blocks_spec = argv[i];
+        } else if ( strcmp ( argv[i], "--append" ) == 0 ) {
+            append_mode = true;
         } else if ( argv[i][0] == '-' ) {
             fprintf ( stderr, "Error: unknown option '%s'\n", argv[i] );
             return EXIT_FAILURE;
@@ -249,9 +331,24 @@ int main ( int argc, char *argv[] ) {
              file->is_tmz ? "TMZ" : "TZX",
              file->header.ver_major, file->header.ver_minor,
              file->block_count );
-    printf ( "Output : %s\n", output_file );
+    printf ( "Output : %s%s\n", output_file, append_mode ? " (append)" : "" );
     printf ( "Rate   : %u Hz\n", sample_rate );
-    printf ( "Pulseset: %s\n\n", pulseset_name ( pulseset ) );
+    printf ( "Pulseset: %s\n", pulseset_name ( pulseset ) );
+
+    /* parsovani vyberu bloku */
+    bool *block_selection = NULL;
+    if ( blocks_spec ) {
+        block_selection = parse_block_spec ( blocks_spec, file->block_count );
+        if ( !block_selection ) {
+            fprintf ( stderr, "Error: invalid block specification '%s' (valid range: 0-%u)\n",
+                      blocks_spec, file->block_count - 1 );
+            tzx_free ( file );
+            return EXIT_FAILURE;
+        }
+        printf ( "Blocks : %s\n", blocks_spec );
+    }
+
+    printf ( "\n" );
 
     /* konfigurace playeru */
     st_TMZ_PLAYER_CONFIG config;
@@ -260,17 +357,84 @@ int main ( int argc, char *argv[] ) {
     config.stream_type = CMT_STREAM_TYPE_VSTREAM;
     config.default_pulseset = pulseset;
 
-    /* vytvorit master vstream pro spojeni vsech bloku */
-    st_CMT_VSTREAM *master = cmt_vstream_new ( sample_rate, CMT_VSTREAM_BYTELENGTH8, 0,
-                                                CMT_STREAM_POLARITY_NORMAL );
-    if ( !master ) {
-        fprintf ( stderr, "Error: failed to create master vstream\n" );
-        tzx_free ( file );
-        return EXIT_FAILURE;
+    /* vytvorit nebo nacist master vstream */
+    st_CMT_VSTREAM *master = NULL;
+
+    if ( append_mode ) {
+        /* append mod - nacist existujici WAV */
+        st_HANDLER append_handler;
+        st_DRIVER append_driver;
+        generic_driver_file_init ( &append_driver );
+
+        st_HANDLER *h_append = generic_driver_open_file ( &append_handler, &append_driver,
+                                                           (char*) output_file, FILE_DRIVER_OPMODE_RO );
+        if ( !h_append ) {
+            fprintf ( stderr, "Error: cannot open WAV file '%s' for append\n", output_file );
+            free ( block_selection );
+            tzx_free ( file );
+            return EXIT_FAILURE;
+        }
+
+        /* parsovani a validace WAV hlavicky */
+        en_WAV_ERROR wav_err;
+        st_WAV_SIMPLE_HEADER *wav_hdr = wav_simple_header_new_from_handler ( h_append, &wav_err );
+        if ( !wav_hdr ) {
+            fprintf ( stderr, "Error: cannot read WAV header: %s\n", wav_error_string ( wav_err ) );
+            generic_driver_close ( h_append );
+            free ( block_selection );
+            tzx_free ( file );
+            return EXIT_FAILURE;
+        }
+
+        if ( wav_hdr->sample_rate != sample_rate ) {
+            fprintf ( stderr, "Error: WAV sample rate mismatch (%u Hz in file, %u Hz requested)\n",
+                      wav_hdr->sample_rate, sample_rate );
+            wav_simple_header_destroy ( wav_hdr );
+            generic_driver_close ( h_append );
+            free ( block_selection );
+            tzx_free ( file );
+            return EXIT_FAILURE;
+        }
+
+        if ( wav_hdr->format_code != WAVE_FORMAT_CODE_PCM || wav_hdr->channels != 1 ) {
+            fprintf ( stderr, "Error: append requires mono PCM WAV file\n" );
+            wav_simple_header_destroy ( wav_hdr );
+            generic_driver_close ( h_append );
+            free ( block_selection );
+            tzx_free ( file );
+            return EXIT_FAILURE;
+        }
+
+        printf ( "Existing WAV: %.3f s, %u Hz, %u-bit\n\n",
+                 wav_hdr->count_sec, wav_hdr->sample_rate, wav_hdr->bits_per_sample );
+
+        wav_simple_header_destroy ( wav_hdr );
+
+        /* nacist WAV do vstreamu */
+        master = cmt_vstream_new_from_wav ( h_append, CMT_STREAM_POLARITY_NORMAL );
+        generic_driver_close ( h_append );
+
+        if ( !master ) {
+            fprintf ( stderr, "Error: failed to load WAV as vstream\n" );
+            free ( block_selection );
+            tzx_free ( file );
+            return EXIT_FAILURE;
+        }
+    } else {
+        /* standardni mod - prazdny master vstream */
+        master = cmt_vstream_new ( sample_rate, CMT_VSTREAM_BYTELENGTH8, 0,
+                                    CMT_STREAM_POLARITY_NORMAL );
+        if ( !master ) {
+            fprintf ( stderr, "Error: failed to create master vstream\n" );
+            free ( block_selection );
+            tzx_free ( file );
+            return EXIT_FAILURE;
+        }
     }
 
-    /* prehrat vsechny bloky a pripojit do master vstreamu */
+    /* prehrat bloky a pripojit do master vstreamu */
     uint32_t audio_blocks = 0;
+    uint32_t skipped_blocks = 0;
     uint32_t error_blocks = 0;
 
     st_TMZ_PLAYER_STATE state;
@@ -281,10 +445,19 @@ int main ( int argc, char *argv[] ) {
         st_CMT_STREAM *stream = tmz_player_play_next ( &state, &player_err );
 
         if ( stream ) {
-            /* prehrani bylo uspesne - pripojit do master vstreamu */
             uint32_t bi = state.last_played_block;
             const st_TZX_BLOCK *block = &file->blocks[bi];
 
+            /* filtrovani podle vyberu bloku */
+            if ( block_selection && !block_selection[bi] ) {
+                printf ( "  [%3u] 0x%02X %-25s    SKIPPED\n",
+                         bi, block->id, tmz_block_id_name ( block->id ) );
+                cmt_stream_destroy ( stream );
+                skipped_blocks++;
+                continue;
+            }
+
+            /* prehrani bylo uspesne - pripojit do master vstreamu */
             if ( stream->stream_type == CMT_STREAM_TYPE_VSTREAM && stream->str.vstream ) {
                 if ( vstream_append ( master, stream->str.vstream ) != EXIT_SUCCESS ) {
                     fprintf ( stderr, "  [%3u] 0x%02X %-25s - ERROR: append failed\n",
@@ -307,15 +480,17 @@ int main ( int argc, char *argv[] ) {
                       tmz_player_error_string ( player_err ) );
             error_blocks++;
         }
-        /* player_err == OK && stream == NULL: konec souboru */
+        /* player_err == OK && stream == NULL: ridici/info blok */
     }
 
     printf ( "\nAudio blocks: %u", audio_blocks );
+    if ( skipped_blocks > 0 ) printf ( ", Skipped: %u", skipped_blocks );
     if ( error_blocks > 0 ) printf ( ", Errors: %u", error_blocks );
     printf ( "\n" );
 
-    if ( audio_blocks == 0 ) {
+    if ( audio_blocks == 0 && !append_mode ) {
         fprintf ( stderr, "Error: no audio blocks to export\n" );
+        free ( block_selection );
         cmt_vstream_destroy ( master );
         tzx_free ( file );
         return EXIT_FAILURE;
@@ -343,6 +518,7 @@ int main ( int argc, char *argv[] ) {
     }
 
     /* uklid - nerusit master pres cmt_stream_destroy, protoze wrapper je na stacku */
+    free ( block_selection );
     cmt_vstream_destroy ( master );
     tzx_free ( file );
 

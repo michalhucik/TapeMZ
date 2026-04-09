@@ -31,7 +31,10 @@ TESTS := \
     test_bsd_incomplete \
     test_zx_roundtrip \
     test_ic_normal \
-    test_tc_normal
+    test_tc_normal \
+    test_tc_loader_all \
+    test_ic_loader_all \
+    test_ic_sinclair_all
 
 .PHONY: all clean configure rebuild test html-docs
 

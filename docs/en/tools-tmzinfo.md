@@ -44,7 +44,7 @@ All information is printed to standard output.
 ### MZ Blocks (0x40-0x45)
 
 - **0x40 MZ Standard Data** - target machine, pulse set, pause, MZF header (name, type, size, addresses)
-- **0x41 MZ Turbo Data** - format (NORMAL/TURBO/FASTIPL/FSK/SLOW/DIRECT/CPM-TAPE), speed, pulse timing, MZF header
+- **0x41 MZ Turbo Data** - format (NORMAL/TURBO/FASTIPL/FSK/SLOW/DIRECT/CPM-TAPE), speed or custom pulseset (with pulse widths in us and estimated Bd), MZF header
 - **0x42 MZ Extra Body** - format, speed, pause, body size
 - **0x43 MZ Machine Info** - machine, CPU clock, ROM version
 - **0x44 MZ Loader** - loader type (TURBO/FASTIPL/FSK/SLOW/DIRECT), speed, size, MZF header

@@ -23,7 +23,7 @@ tmzedit <command> [options] <file> [arguments...]
 | `add-text` | Add a text description (block 0x30) |
 | `add-message` | Add a display message (block 0x31) |
 | `archive-info` | Add or replace metadata (block 0x32) |
-| `set` | Change format/speed on an MZ block (0x40/0x41) or timing on block 0x11 |
+| `set` | Change format/speed/pulse on an MZ block (0x40/0x41) or timing on block 0x11 |
 | `validate` | Check file integrity |
 
 ## Common Options
@@ -249,19 +249,21 @@ tmzedit archive-info tape.tmz --comment "Dumped from original tape" -o tape.tmz
 
 ---
 
-## set - Changing MZ Block Format/Speed
+## set - Changing MZ Block Format/Speed/Pulse
 
-Changes the format and/or speed of a recording on an MZ block (0x40 or 0x41),
-or the timing on block 0x11 (Turbo Speed Data / SINCLAIR).
+Changes the format, speed and/or pulse widths of a recording on an MZ block
+(0x40 or 0x41), or the timing on block 0x11 (Turbo Speed Data / SINCLAIR).
 
 Conversion rules:
-- Block 0x40 with non-standard format/speed is converted to block 0x41
-- Block 0x41 with format NORMAL and speed 1:1 is converted back to block 0x40
+- Block 0x40 with non-standard format/speed/pulse is converted to block 0x41
+- Block 0x41 with format NORMAL and speed 1:1 (without custom pulses) is converted back to block 0x40
 - Block 0x40 with NORMAL 1:1 remains unchanged
 - Block 0x11 only supports `--sinclair-speed`
+- `--pulse` sets custom mode (speed=0, pulse fields filled)
+- `--speed` clears pulse fields (back to table mode)
 
 ```
-tmzedit set <file> <index> [--format <fmt>] [--speed <spd>] [-o <output>]
+tmzedit set <file> <index> [--format <fmt>] [--speed <spd>] [--pulse <values>] [-o <output>]
 ```
 
 | Option | Values | Description |
@@ -271,6 +273,7 @@ tmzedit set <file> <index> [--format <fmt>] [--speed <spd>] [-o <output>]
 | `--fsk-speed` | 0-6 | FSK speed level (only with FSK format) |
 | `--slow-speed` | 0-4 | SLOW speed level (only with SLOW format) |
 | `--sinclair-speed` | 1381, 1772, 2074, 2487 | SINCLAIR speed in Bd (only for block 0x11) |
+| `--pulse` | long_h/long_l,short_h/short_l | Custom pulse widths in us*100 units |
 
 ### Examples
 
@@ -302,6 +305,18 @@ Changing SINCLAIR block (0x11) speed to 2074 Bd:
 
 ```
 tmzedit set tape.tmz 3 --sinclair-speed 2074 -o tape_sinclair.tmz
+```
+
+Setting custom pulse widths on a block (converts 0x40 to 0x41):
+
+```
+tmzedit set tape.tmz 0 --pulse 4980/4980,2490/2490 -o tape_custom.tmz
+```
+
+Switching a custom pulse block back to table mode:
+
+```
+tmzedit set tape.tmz 0 --speed 2:1 -o tape_table.tmz
 ```
 
 Converting block 0x41 back to 0x40 (by setting NORMAL 1:1):

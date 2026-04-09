@@ -128,7 +128,7 @@ static int test_zx_block ( const char *block_name,
         return 1;
     }
 
-    wav_analyzer_print_summary ( &analyzer_result, stdout );
+    wav_analyzer_print_summary ( &analyzer_result, stdout, 0 );
 
     /* === 3. Verifikace === */
 

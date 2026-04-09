@@ -1,7 +1,7 @@
 /**
  * @file   tmz_player.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Implementace TMZ playeru - generovani CMT audio streamu z TMZ/TZX bloku.
  *
  * Player prehrava jednotlive TMZ/TZX bloky na CMT audio streamy pomoci
@@ -361,9 +361,11 @@ static st_CMT_STREAM* play_turbo_fmt_normal ( const st_TMZ_MZ_TURBO_DATA *td,
     st_MZTAPE_MZF *mztmzf = tmz_player_create_mztmzf ( &td->mzf_header, body_data, td->body_size );
     if ( !mztmzf ) return NULL;
 
-    st_CMT_STREAM *stream = mztape_create_stream_from_mztapemzf (
+    st_CMT_STREAM *stream = mztape_create_stream_from_mztapemzf_ex (
         mztmzf, speed, config->stream_type,
-        config->default_formatset, config->sample_rate );
+        config->default_formatset, config->sample_rate,
+        td->long_high, td->long_low,
+        td->short_high, td->short_low );
 
     mztape_mztmzf_destroy ( mztmzf );
     return stream;

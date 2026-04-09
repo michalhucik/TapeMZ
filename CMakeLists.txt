@@ -150,7 +150,7 @@ add_library(wav_analyzer STATIC
     src/libs/wav_analyzer/wav_decode_zx.c
     src/libs/wav_analyzer/wav_analyzer.c
 )
-target_link_libraries(wav_analyzer PRIVATE generic_driver wav mzf endianity sharpmz_ascii)
+target_link_libraries(wav_analyzer PRIVATE generic_driver wav mzf endianity sharpmz_ascii cmtspeed)
 
 # tmz
 add_library(tmz STATIC
@@ -230,6 +230,12 @@ add_executable(bsd2dat
     src/tools/bsd2dat/bsd2dat.c
 )
 target_link_libraries(bsd2dat PRIVATE tmz mzf sharpmz_ascii generic_driver endianity cmt_stream wav mztape zxtape tzx cmtspeed mzcmt_turbo mzcmt_fastipl mzcmt_fsk mzcmt_slow mzcmt_direct mzcmt_bsd mzcmt_cpmtape)
+
+# extract_preloader - extraktor TurboCopy TURBO preloader binarky z WAV
+add_executable(extract_preloader
+    src/tools/extract_preloader/extract_preloader.c
+)
+target_link_libraries(extract_preloader PRIVATE wav_analyzer mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed m)
 
 # Linkovani math knihovny (pro round(), floor() atd.)
 target_link_libraries(mztape PRIVATE m)
@@ -342,6 +348,24 @@ add_executable(test_tc_normal
     tests/test_tc_normal.c
 )
 target_link_libraries(test_tc_normal PRIVATE wav_analyzer mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed m)
+
+# test_tc_loader_all - integracni test TurboCopy TURBO loader nahravky (5x Turbo Copy V1.21)
+add_executable(test_tc_loader_all
+    tests/test_tc_loader_all.c
+)
+target_link_libraries(test_tc_loader_all PRIVATE wav_analyzer mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed m)
+
+# test_ic_loader_all - integracni test Intercopy FAST IPL loader nahravky (4x Turbo Copy V1.21)
+add_executable(test_ic_loader_all
+    tests/test_ic_loader_all.c
+)
+target_link_libraries(test_ic_loader_all PRIVATE wav_analyzer mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed m)
+
+# test_ic_sinclair_all - integracni test Intercopy SINCLAIR nahravky (4x Turbo Copy V1.21)
+add_executable(test_ic_sinclair_all
+    tests/test_ic_sinclair_all.c
+)
+target_link_libraries(test_ic_sinclair_all PRIVATE wav_analyzer mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed m)
 
 # Adresar pro docasne soubory testu (WAV vystup roundtrip testu)
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/temp)
