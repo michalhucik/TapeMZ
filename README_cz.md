@@ -317,8 +317,8 @@ Projekt obsahuje sadu C knihoven (C99/C11) s modulární architekturou:
 ### 7.1 Základní I/O a utility
 - **generic_driver** - abstraktní I/O handler pro soubory i paměťové buffery
 - **endianity** - konverze little-endian (Z80) a host byte order
-- **sharpmz_ascii** - Sharp MZ znaková sada a standardní ASCII
-- **sharpmz_utf8** - Sharp MZ znaková sada (EU/JP varianty) a UTF-8/Unicode
+- **sharpmz_ascii** - Sharp MZ znaková sada (EU/JP varianty), konverze do standardní
+  ASCII a UTF-8/Unicode, KOI8-CS a display kódy
 
 ### 7.2 Formátové knihovny
 - **wav** - čtení/zápis RIFF WAVE (PCM 8/16/24/32/64-bit), normalizace na float

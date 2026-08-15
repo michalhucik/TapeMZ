@@ -20,16 +20,34 @@ tmzinfo <soubor.tmz|soubor.tzx>
 
 | Volba | Hodnoty | Výchozí | Popis |
 |-------|---------|---------|-------|
-| `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
+| `--charset` | eu, jp, utf8-eu, utf8-jp | eu | Znaková sada Sharp MZ pro zobrazení názvu souboru (viz níže) |
 | `--version` | - | - | Zobrazit verzi programu |
 | `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 
 ### Podrobnosti k volbám
 
-**--name-encoding** - určuje, jak se zobrazují názvy souborů z MZF hlaviček:
-- `ascii` - překlad Sharp MZ znakové sady do ASCII (výchozí, zpětně kompatibilní)
-- `utf8-eu` - překlad do UTF-8, evropská varianta znakové sady (zobrazí skutečné Sharp MZ glyfy)
-- `utf8-jp` - překlad do UTF-8, japonská varianta znakové sady (katakana místo malých písmen)
+**--charset** - určuje znakovou sadu Sharp MZ pro konverzi názvu souboru:
+
+Sharp MZ počítače používaly dvě varianty znakové sady - evropskou (EU) a japonskou (JP).
+Obě sdílejí rozsah 0x20-0x5D (velká písmena, číslice, základní interpunkce), který je
+shodný se standardním ASCII. Nad tímto rozsahem se sady liší:
+
+- **EU** (evropská) - obsahuje malá písmena a-z a několik speciálních znaků
+  (přehlásky, Eszett, šipky, karetní symboly). Při konverzi do ASCII se malá
+  písmena převedou správně, ale speciální znaky se nahradí mezerou.
+- **JP** (japonská) - obsahuje katakanu, kanji a speciální znaky (¥, £).
+  Při konverzi do ASCII se vše nad 0x5D nahradí mezerou - výsledek je tedy
+  ochuzený oproti EU variantě.
+
+Režimy konverze:
+- `eu` (výchozí) - Sharp MZ-EU -> ASCII. Malá písmena a základní znaky se převedou,
+  speciální evropské znaky (přehlásky, šipky) se nahradí mezerou.
+- `jp` - Sharp MZ-JP -> ASCII. Pouze znaky 0x20-0x5D se převedou, vše ostatní
+  (katakana, kanji) se nahradí mezerou.
+- `utf8-eu` - Sharp MZ-EU -> UTF-8. Zobrazí maximum znaků včetně přehlásek
+  (Ö, ü, ß, Ä, ö, ä), šipek (↑↓←→), karetních symbolů (♤♡♧♢), libry (£) a pí (π).
+- `utf8-jp` - Sharp MZ-JP -> UTF-8. Zobrazí maximum znaků včetně katakany (ア-ン),
+  kanji dnů v týdnu (日月火水木金土), ¥, £ a dalších japonských znaků.
 
 Všechny informace se vypisují na standardní výstup.
 
@@ -111,7 +129,7 @@ tmzinfo spectrum.tzx
 Zobrazení názvů souborů v evropské UTF-8 znakové sadě:
 
 ```
-tmzinfo game.tmz --name-encoding utf8-eu
+tmzinfo game.tmz --charset utf8-eu
 ```
 
 Zobrazení TMZ souboru s Archive Info:

@@ -58,15 +58,15 @@
 /** @brief Textové popisy chybových kódů indexované hodnotou en_WAV_ERROR */
 static const char *s_wav_error_strings[] = {
     [WAV_OK]                    = "OK",
-    [WAV_ERROR_IO]              = "chyba čtení/zápisu",
-    [WAV_ERROR_BAD_RIFF]        = "chybí RIFF/WAVE identifikátor",
-    [WAV_ERROR_NO_FMT_CHUNK]    = "chybí povinný 'fmt ' chunk",
-    [WAV_ERROR_NO_DATA_CHUNK]   = "chybí povinný 'data' chunk",
-    [WAV_ERROR_UNSUPPORTED_CODEC] = "nepodporovaný formátový kód (pouze PCM)",
-    [WAV_ERROR_UNSUPPORTED_BPS] = "nepodporovaná bitová hloubka",
-    [WAV_ERROR_CORRUPT_HEADER]  = "nekonzistentní hlavička",
-    [WAV_ERROR_ALLOC]           = "selhání alokace paměti",
-    [WAV_ERROR_INVALID_PARAM]   = "neplatný parametr",
+    [WAV_ERROR_IO]              = "I/O error",
+    [WAV_ERROR_BAD_RIFF]        = "missing RIFF/WAVE identifier",
+    [WAV_ERROR_NO_FMT_CHUNK]    = "missing required 'fmt ' chunk",
+    [WAV_ERROR_NO_DATA_CHUNK]   = "missing required 'data' chunk",
+    [WAV_ERROR_UNSUPPORTED_CODEC] = "unsupported format code (only PCM)",
+    [WAV_ERROR_UNSUPPORTED_BPS] = "unsupported bit depth",
+    [WAV_ERROR_CORRUPT_HEADER]  = "inconsistent header",
+    [WAV_ERROR_ALLOC]           = "memory allocation failed",
+    [WAV_ERROR_INVALID_PARAM]   = "invalid parameter",
 };
 
 /** @brief Počet položek v poli s_wav_error_strings */
@@ -83,7 +83,7 @@ const char* wav_error_string ( en_WAV_ERROR err ) {
     if ( (unsigned) err < WAV_ERROR_COUNT && s_wav_error_strings[err] != NULL ) {
         return s_wav_error_strings[err];
     }
-    return "neznámá chyba";
+    return "unknown error";
 }
 
 
@@ -187,7 +187,7 @@ static en_WAV_ERROR wav_find_chunk ( st_HANDLER *h, uint32_t start_offset, uint3
         offset += advance;
     }
 
-    return WAV_ERROR_NO_DATA_CHUNK; /* výchozí chyba — chunk nenalezen */
+    return WAV_ERROR_NO_DATA_CHUNK; /* výchozí chyba - chunk nenalezen */
 }
 
 

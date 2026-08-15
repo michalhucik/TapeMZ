@@ -317,8 +317,8 @@ The project contains a set of C libraries (C99/C11) with modular architecture:
 ### 7.1 Core I/O and Utilities
 - **generic_driver** - abstract I/O handler for files and memory buffers
 - **endianity** - little-endian (Z80) to host byte order conversion
-- **sharpmz_ascii** - Sharp MZ character set to standard ASCII conversion
-- **sharpmz_utf8** - Sharp MZ character set (EU/JP variants) to UTF-8/Unicode conversion
+- **sharpmz_ascii** - Sharp MZ character set (EU/JP variants) to standard ASCII
+  and UTF-8/Unicode conversion, KOI8-CS and display codes
 
 ### 7.2 Format Libraries
 - **wav** - reading/writing RIFF WAVE (PCM 8/16/24/32/64-bit), normalization to float

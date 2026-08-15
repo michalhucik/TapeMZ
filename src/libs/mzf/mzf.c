@@ -166,13 +166,13 @@ const char* mzf_error_message ( st_HANDLER *h, st_DRIVER *d ) {
 const char* mzf_error_string ( en_MZF_ERROR err ) {
     switch ( err ) {
         case MZF_OK:                        return "OK";
-        case MZF_ERROR_IO:                  return "Chyba I/O operace";
-        case MZF_ERROR_INVALID_HEADER:      return "Neplatná MZF hlavička";
-        case MZF_ERROR_NO_FNAME_TERMINATOR: return "Chybí terminátor jména souboru (0x0d)";
-        case MZF_ERROR_SIZE_MISMATCH:       return "Velikost souboru neodpovídá poli fsize";
-        case MZF_ERROR_ALLOC:               return "Selhání alokace paměti";
+        case MZF_ERROR_IO:                  return "I/O error";
+        case MZF_ERROR_INVALID_HEADER:      return "invalid MZF header";
+        case MZF_ERROR_NO_FNAME_TERMINATOR: return "missing filename terminator (0x0d)";
+        case MZF_ERROR_SIZE_MISMATCH:       return "file size does not match fsize field";
+        case MZF_ERROR_ALLOC:               return "memory allocation failed";
     }
-    return "Neznámá chyba";
+    return "unknown error";
 }
 
 

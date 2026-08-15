@@ -42,7 +42,6 @@ add_library(endianity STATIC
 # sharpmz_ascii
 add_library(sharpmz_ascii STATIC
     src/libs/sharpmz_ascii/sharpmz_ascii.c
-    src/libs/sharpmz_ascii/sharpmz_utf8.c
 )
 
 # wav

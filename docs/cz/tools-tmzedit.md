@@ -31,14 +31,33 @@ tmzedit <prikaz> [volby] <soubor> [argumenty...]
 | Volba | Hodnoty | Výchozí | Popis |
 |-------|---------|---------|-------|
 | `-o` | `<soubor>` | přepsat vstup | Výstupní soubor |
-| `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
+| `--charset` | eu, jp, utf8-eu, utf8-jp | eu | Znaková sada Sharp MZ pro zobrazení názvu souboru (viz níže) |
+| `--dump-charset` | raw, eu, jp, utf8-eu, utf8-jp | raw | Znaková sada textového sloupce hex dumpu (jen `dump`, viz níže) |
 | `--version` | - | - | Zobrazit verzi programu |
 | `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 
-**--name-encoding** - určuje, jak se zobrazují názvy souborů z MZF hlaviček:
-- `ascii` - překlad Sharp MZ znakové sady do ASCII (výchozí, zpětně kompatibilní)
-- `utf8-eu` - překlad do UTF-8, evropská varianta znakové sady (zobrazí skutečné Sharp MZ glyfy)
-- `utf8-jp` - překlad do UTF-8, japonská varianta znakové sady (katakana místo malých písmen)
+**--charset** - určuje znakovou sadu Sharp MZ pro konverzi názvu souboru:
+
+Sharp MZ počítače používaly dvě varianty znakové sady - evropskou (EU) a japonskou (JP).
+Obě sdílejí rozsah 0x20-0x5D (velká písmena, číslice, základní interpunkce), který je
+shodný se standardním ASCII. Nad tímto rozsahem se sady liší:
+
+- **EU** (evropská) - obsahuje malá písmena a-z a několik speciálních znaků
+  (přehlásky, Eszett, šipky, karetní symboly). Při konverzi do ASCII se malá
+  písmena převedou správně, ale speciální znaky se nahradí mezerou.
+- **JP** (japonská) - obsahuje katakanu, kanji a speciální znaky (¥, £).
+  Při konverzi do ASCII se vše nad 0x5D nahradí mezerou - výsledek je tedy
+  ochuzený oproti EU variantě.
+
+Režimy konverze:
+- `eu` (výchozí) - Sharp MZ-EU -> ASCII. Malá písmena a základní znaky se převedou,
+  speciální evropské znaky (přehlásky, šipky) se nahradí mezerou.
+- `jp` - Sharp MZ-JP -> ASCII. Pouze znaky 0x20-0x5D se převedou, vše ostatní
+  (katakana, kanji) se nahradí mezerou.
+- `utf8-eu` - Sharp MZ-EU -> UTF-8. Zobrazí maximum znaků včetně přehlásek
+  (Ö, ü, ß, Ä, ö, ä), šipek (↑↓←→), karetních symbolů (♤♡♧♢), libry (£) a pí (π).
+- `utf8-jp` - Sharp MZ-JP -> UTF-8. Zobrazí maximum znaků včetně katakany (ア-ン),
+  kanji dnů v týdnu (日月火水木金土), ¥, £ a dalších japonských znaků.
 
 ---
 
@@ -75,16 +94,32 @@ Total: 3 block(s)
 ## dump - Hex dump bloku
 
 Zobrazí hexadecimální dump dat bloku na zadaném indexu.
-Formát: 16 bajtů na řádek s offsetem, hex hodnotami a ASCII.
+Formát: 16 bajtů na řádek s offsetem, hex hodnotami a textovým sloupcem.
 
 ```
-tmzedit dump <soubor> <index>
+tmzedit dump [--dump-charset <režim>] <soubor> <index>
 ```
+
+**--dump-charset** - určuje, jak se bajty interpretují v textovém sloupci:
+
+- **raw** (výchozí) - standardní ASCII: bajty 0x20-0x7E se zobrazí jako znak,
+  ostatní jako `.`. Vhodné pro strojový kód a data, která nejsou textem.
+- **eu** / **jp** - bajty se berou jako Sharp MZ ASCII (evropská / japonská
+  varianta) a konvertují do ASCII. Bajt, který nemá ASCII ekvivalent nebo není
+  tisknutelný, se zobrazí jako `.`.
+- **utf8-eu** / **utf8-jp** - stejné jako výše, ale výstup v UTF-8 (zobrazí se
+  i přehlásky, šipky, karetní symboly, katakana apod.).
+
+Data MZ bloků (0x40, 0x41) začínají 128bajtovou MZF hlavičkou, ve které je jméno
+souboru v Sharp MZ ASCII - v režimu `raw` se malá písmena zobrazí jako `.`, v režimu
+`eu` správně.
 
 ### Příklad
 
 ```
 tmzedit dump game.tmz 1
+tmzedit dump --dump-charset eu game.tmz 1
+tmzedit dump --dump-charset utf8-eu game.tmz 1
 ```
 
 ---
@@ -372,10 +407,10 @@ Validating: broken.tmz
 
 ---
 
-## Příklad použití --name-encoding
+## Příklad použití --charset
 
 Výpis bloků s názvy v evropské UTF-8 znakové sadě:
 
 ```
-tmzedit list game.tmz --name-encoding utf8-eu
+tmzedit list game.tmz --charset utf8-eu
 ```

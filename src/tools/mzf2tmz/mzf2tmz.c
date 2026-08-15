@@ -31,7 +31,7 @@
  * - --slow-speed <level>   : rychlostni uroven SLOW koderu 0-4 (0=nejpomalejsi,
  *                            4=nejrychlejsi; vychozi: 0; pouze pro --format slow)
  * - --pause <ms>           : pauza po bloku v ms (vychozi: 1000)
- * - --name-encoding <enc>  : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
+ * - --charset <mode>       : znakova sada: eu (vychozi), jp, utf8-eu, utf8-jp
  * - --version              : zobrazit verzi programu
  * - --lib-versions         : zobrazit verze knihoven
  *
@@ -67,7 +67,7 @@
 #include "libs/endianity/endianity.h"
 
 /** @brief Verze programu mzf2tmz (z @version v hlavicce souboru). */
-#define MZF2TMZ_VERSION  "1.2.0"
+#define MZF2TMZ_VERSION  "1.3.0"
 
 
 /**
@@ -353,7 +353,7 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "  --slow-speed <level> SLOW speed level: 0-4 (0=slowest, 4=fastest, default: 0)\n" );
     fprintf ( stderr, "                      Only valid with --format slow\n" );
     fprintf ( stderr, "  --pause <ms>        Pause after block in ms (default: 1000)\n" );
-    fprintf ( stderr, "  --name-encoding <enc> Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n" );
+    fprintf ( stderr, "  --charset <mode>        Character set: eu (default), jp, utf8-eu, utf8-jp\n" );
     fprintf ( stderr, "  --version             Show program version\n" );
     fprintf ( stderr, "  --lib-versions        Show library versions\n" );
 }
@@ -525,7 +525,7 @@ int main ( int argc, char *argv[] ) {
     int fsk_speed = -1;     /* -1 = nezadano; platne hodnoty 0-6 */
     int slow_speed = -1;    /* -1 = nezadano; platne hodnoty 0-4 */
     uint16_t pause_ms = 1000;
-    en_MZF_NAME_ENCODING name_encoding = MZF_NAME_ASCII;
+    en_MZF_NAME_ENCODING name_encoding = MZF_NAME_ASCII_EU;
 
     /* parsovani argumentu */
     int positional = 0;
@@ -608,19 +608,21 @@ int main ( int argc, char *argv[] ) {
                 return EXIT_FAILURE;
             }
             pause_ms = (uint16_t) val;
-        } else if ( strcmp ( argv[i], "--name-encoding" ) == 0 ) {
+        } else if ( strcmp ( argv[i], "--charset" ) == 0 ) {
             if ( ++i >= argc ) {
-                fprintf ( stderr, "Error: --name-encoding requires a value\n" );
+                fprintf ( stderr, "Error: --charset requires a value\n" );
                 return EXIT_FAILURE;
             }
-            if ( strcmp ( argv[i], "ascii" ) == 0 ) {
-                name_encoding = MZF_NAME_ASCII;
+            if ( strcmp ( argv[i], "eu" ) == 0 ) {
+                name_encoding = MZF_NAME_ASCII_EU;
+            } else if ( strcmp ( argv[i], "jp" ) == 0 ) {
+                name_encoding = MZF_NAME_ASCII_JP;
             } else if ( strcmp ( argv[i], "utf8-eu" ) == 0 ) {
                 name_encoding = MZF_NAME_UTF8_EU;
             } else if ( strcmp ( argv[i], "utf8-jp" ) == 0 ) {
                 name_encoding = MZF_NAME_UTF8_JP;
             } else {
-                fprintf ( stderr, "Error: unknown name encoding '%s' (use: ascii, utf8-eu, utf8-jp)\n", argv[i] );
+                fprintf ( stderr, "Error: unknown charset '%s' (use: eu, jp, utf8-eu, utf8-jp)\n", argv[i] );
                 return EXIT_FAILURE;
             }
         } else if ( argv[i][0] == '-' ) {

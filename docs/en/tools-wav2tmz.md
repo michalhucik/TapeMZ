@@ -35,7 +35,7 @@ wav2tmz input.wav [-o output] [options]
 | `--raw-format` | direct | direct | Format for unidentified blocks |
 | `--pass` | `<N>` | 1 | Number of passes (not yet used) |
 | `--pulse-mode` | approximate, exact | approximate | Pulse width storage mode for TMZ output |
-| `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
+| `--charset` | eu, jp, utf8-eu, utf8-jp | eu | Sharp MZ character set for filename display (see below) |
 | `--recover` | - | off | Enable all recovery modes |
 | `--recover-bsd` | - | off | Recover incomplete BSD files (missing terminator) |
 | `--recover-body` | - | off | Recover partial body data (not yet implemented) |
@@ -73,10 +73,30 @@ Tape is typically recorded on the left channel.
 **--invert** - inverts signal polarity. Use when the
 recording has wrong polarity (e.g. from a different recording device).
 
-**--name-encoding** - determines how filenames from MZF headers are displayed:
-- `ascii` - Sharp MZ character set translation to ASCII (default, backward compatible)
-- `utf8-eu` - translation to UTF-8, European character set variant (displays actual Sharp MZ glyphs)
-- `utf8-jp` - translation to UTF-8, Japanese character set variant (katakana instead of lowercase letters)
+**--charset** - selects the Sharp MZ character set for filename conversion:
+
+Sharp MZ computers used two character set variants - European (EU) and Japanese (JP).
+Both share the range 0x20-0x5D (uppercase letters, digits, basic punctuation), which
+is identical to standard ASCII. Above this range the sets differ:
+
+- **EU** (European) - contains lowercase letters a-z and several special characters
+  (umlauts, Eszett, arrows, card suit symbols). When converting to ASCII, lowercase
+  letters are translated correctly, but special characters are replaced with spaces.
+- **JP** (Japanese) - contains katakana, kanji, and special characters (¥, £).
+  When converting to ASCII, everything above 0x5D is replaced with a space -
+  the result is therefore more limited compared to the EU variant.
+
+Conversion modes:
+- `eu` (default) - Sharp MZ-EU -> ASCII. Lowercase letters and basic characters
+  are translated, special European characters (umlauts, arrows) are replaced with spaces.
+- `jp` - Sharp MZ-JP -> ASCII. Only characters 0x20-0x5D are translated, everything
+  else (katakana, kanji) is replaced with spaces.
+- `utf8-eu` - Sharp MZ-EU -> UTF-8. Displays the maximum number of characters
+  including umlauts (Ö, ü, ß, Ä, ö, ä), arrows (↑↓←→), card suit symbols (♤♡♧♢),
+  pound sign (£), and pi (π).
+- `utf8-jp` - Sharp MZ-JP -> UTF-8. Displays the maximum number of characters
+  including katakana (ア-ン), day-of-week kanji (日月火水木金土), ¥, £,
+  and other Japanese characters.
 
 **--recover-bsd** - if a BSD file on tape is missing the termination chunk
 (ID=0xFFFF), e.g. due to a missing CLOSE in BASIC, all successfully decoded
@@ -184,7 +204,7 @@ wav2tmz clean_recording.wav --no-preprocess
 Decoding with filenames displayed in European UTF-8 character set:
 
 ```
-wav2tmz recording.wav --name-encoding utf8-eu
+wav2tmz recording.wav --charset utf8-eu
 ```
 
 Recovering incomplete BSD files:

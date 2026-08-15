@@ -11,7 +11,7 @@
  * @par Pouziti:
  * @code
  *   tmzedit list     <file>
- *   tmzedit dump     <file> <index>
+ *   tmzedit dump     [--dump-charset <mode>] <file> <index>
  *   tmzedit remove   <file> <index> -o <output>
  *   tmzedit move     <file> <from> <to> -o <output>
  *   tmzedit merge    <file1> <file2> ... -o <output>
@@ -26,7 +26,7 @@
  * @par Volby:
  * Prikazy (subcommands):
  * - list                     : vypsat vsechny bloky v souboru
- * - dump                     : hex dump dat bloku
+ * - dump                     : hex dump dat bloku (--dump-charset raw|eu|jp|utf8-eu|utf8-jp)
  * - remove                   : odebrat blok podle indexu
  * - move                     : presunout blok na jinou pozici
  * - merge                    : spojit vice tape souboru do jednoho
@@ -39,7 +39,7 @@
  *
  * Spolecne volby:
  * - -o <soubor>              : vystupni soubor (vychozi: prepsat vstup)
- * - --name-encoding <enc>    : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
+ * - --charset <mode>         : znakova sada: eu (vychozi), jp, utf8-eu, utf8-jp
  * - --version                : zobrazit verzi programu
  * - --lib-versions           : zobrazit verze knihoven
  *
@@ -98,11 +98,11 @@
 
 
 /** @brief Verze programu tmzedit. */
-#define TMZEDIT_VERSION "1.4.0"
+#define TMZEDIT_VERSION "1.6.0"
 
 
-/** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
-static en_MZF_NAME_ENCODING name_encoding = MZF_NAME_ASCII;
+/** @brief Znakova sada pro zobrazeni nazvu souboru (nastaveno z --charset). */
+static en_MZF_NAME_ENCODING name_encoding = MZF_NAME_ASCII_EU;
 
 
 /* ========================================================================= */
@@ -242,26 +242,28 @@ static const char* archive_text_id_name ( uint8_t id ) {
 static int cmd_list ( int argc, char *argv[] ) {
 
     if ( argc < 1 ) {
-        fprintf ( stderr, "Usage: tmzedit list [--name-encoding <enc>] <file>\n" );
+        fprintf ( stderr, "Usage: tmzedit list [--charset <mode>] <file>\n" );
         return EXIT_FAILURE;
     }
 
     /* parsovani voleb specifickych pro list */
     const char *input_file = NULL;
     for ( int i = 0; i < argc; i++ ) {
-        if ( strcmp ( argv[i], "--name-encoding" ) == 0 ) {
+        if ( strcmp ( argv[i], "--charset" ) == 0 ) {
             if ( ++i >= argc ) {
-                fprintf ( stderr, "Error: --name-encoding requires a value\n" );
+                fprintf ( stderr, "Error: --charset requires a value\n" );
                 return EXIT_FAILURE;
             }
-            if ( strcmp ( argv[i], "ascii" ) == 0 ) {
-                name_encoding = MZF_NAME_ASCII;
+            if ( strcmp ( argv[i], "eu" ) == 0 ) {
+                name_encoding = MZF_NAME_ASCII_EU;
+            } else if ( strcmp ( argv[i], "jp" ) == 0 ) {
+                name_encoding = MZF_NAME_ASCII_JP;
             } else if ( strcmp ( argv[i], "utf8-eu" ) == 0 ) {
                 name_encoding = MZF_NAME_UTF8_EU;
             } else if ( strcmp ( argv[i], "utf8-jp" ) == 0 ) {
                 name_encoding = MZF_NAME_UTF8_JP;
             } else {
-                fprintf ( stderr, "Error: unknown name encoding '%s' (use: ascii, utf8-eu, utf8-jp)\n", argv[i] );
+                fprintf ( stderr, "Error: unknown charset '%s' (use: eu, jp, utf8-eu, utf8-jp)\n", argv[i] );
                 return EXIT_FAILURE;
             }
         } else if ( argv[i][0] != '-' ) {
@@ -270,7 +272,7 @@ static int cmd_list ( int argc, char *argv[] ) {
     }
 
     if ( !input_file ) {
-        fprintf ( stderr, "Usage: tmzedit list [--name-encoding <enc>] <file>\n" );
+        fprintf ( stderr, "Usage: tmzedit list [--charset <mode>] <file>\n" );
         return EXIT_FAILURE;
     }
 
@@ -398,7 +400,10 @@ static int cmd_list ( int argc, char *argv[] ) {
 /**
  * @brief Vypise hex dump dat bloku na danem indexu.
  *
- * Format: 16 bajtu na radek, offset | hex | ASCII.
+ * Format: 16 bajtu na radek, offset | hex | znaky. Textovy sloupec se
+ * interpretuje podle volby --dump-charset (vychozi raw = standardni ASCII;
+ * eu/jp/utf8-eu/utf8-jp = konverze ze Sharp MZ znakove sady pres
+ * mzf_tools_hex_dump(), nezobrazitelne bajty jako '.').
  *
  * @param argc Pocet argumentu (za subcommand).
  * @param argv Argumenty.
@@ -406,19 +411,43 @@ static int cmd_list ( int argc, char *argv[] ) {
  */
 static int cmd_dump ( int argc, char *argv[] ) {
 
-    if ( argc < 2 ) {
-        fprintf ( stderr, "Usage: tmzedit dump <file> <index>\n" );
+    static const char *usage = "Usage: tmzedit dump [--dump-charset <mode>] <file> <index>\n";
+
+    /* parsovani voleb specifickych pro dump */
+    en_MZF_DUMP_CHARSET dump_charset = MZF_DUMP_RAW;
+    const char *pos[2] = { NULL, NULL };
+    int npos = 0;
+    for ( int i = 0; i < argc; i++ ) {
+        if ( strcmp ( argv[i], "--dump-charset" ) == 0 ) {
+            if ( ++i >= argc ) {
+                fprintf ( stderr, "Error: --dump-charset requires a value\n" );
+                return EXIT_FAILURE;
+            }
+            if ( !mzf_tools_parse_dump_charset ( argv[i], &dump_charset ) ) {
+                fprintf ( stderr, "Error: unknown dump charset '%s' (use: raw, eu, jp, utf8-eu, utf8-jp)\n", argv[i] );
+                return EXIT_FAILURE;
+            }
+        } else if ( argv[i][0] == '-' && argv[i][1] != '\0' && !isdigit ( ( unsigned char ) argv[i][1] ) ) {
+            fprintf ( stderr, "Error: unknown option '%s'\n", argv[i] );
+            return EXIT_FAILURE;
+        } else if ( npos < 2 ) {
+            pos[npos++] = argv[i];
+        }
+    }
+
+    if ( npos < 2 ) {
+        fprintf ( stderr, "%s", usage );
         return EXIT_FAILURE;
     }
 
     uint32_t index;
-    if ( !parse_uint32 ( argv[1], &index ) ) {
-        fprintf ( stderr, "Error: invalid block index '%s'\n", argv[1] );
+    if ( !parse_uint32 ( pos[1], &index ) ) {
+        fprintf ( stderr, "Error: invalid block index '%s'\n", pos[1] );
         return EXIT_FAILURE;
     }
 
     en_TZX_ERROR err;
-    st_TZX_FILE *file = load_file ( argv[0], &err );
+    st_TZX_FILE *file = load_file ( pos[0], &err );
     if ( !file ) return EXIT_FAILURE;
 
     if ( index >= file->block_count ) {
@@ -438,28 +467,8 @@ static int cmd_dump ( int argc, char *argv[] ) {
         return EXIT_SUCCESS;
     }
 
-    /* hex dump: 16 bajtu na radek */
-    for ( uint32_t off = 0; off < b->length; off += 16 ) {
-        printf ( "  %04X  ", off );
-
-        /* hex cast */
-        for ( uint32_t j = 0; j < 16; j++ ) {
-            if ( off + j < b->length ) {
-                printf ( "%02X ", b->data[off + j] );
-            } else {
-                printf ( "   " );
-            }
-            if ( j == 7 ) printf ( " " );
-        }
-
-        /* ASCII cast */
-        printf ( " |" );
-        for ( uint32_t j = 0; j < 16 && off + j < b->length; j++ ) {
-            uint8_t c = b->data[off + j];
-            printf ( "%c", ( c >= 0x20 && c <= 0x7E ) ? c : '.' );
-        }
-        printf ( "|\n" );
-    }
+    /* hex dump: 16 bajtu na radek, textovy sloupec dle --dump-charset */
+    mzf_tools_hex_dump ( stdout, b->data, b->length, 0, dump_charset, "  " );
 
     tzx_free ( file );
     return EXIT_SUCCESS;
@@ -2012,7 +2021,8 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "  validate      Validate file integrity\n" );
     fprintf ( stderr, "\nOptions:\n" );
     fprintf ( stderr, "  -o <output>   Output file (default: overwrite input)\n" );
-    fprintf ( stderr, "  --name-encoding <enc> Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n" );
+    fprintf ( stderr, "  --charset <mode>        Character set: eu (default), jp, utf8-eu, utf8-jp\n" );
+    fprintf ( stderr, "  --dump-charset <mode>   Dump text column charset: raw (default), eu, jp, utf8-eu, utf8-jp\n" );
     fprintf ( stderr, "  --version             Show program version\n" );
     fprintf ( stderr, "  --lib-versions        Show library versions\n" );
 }

@@ -29,7 +29,7 @@ mzf2tmz <vstup.mzf|vstup.mzt> <vystup.tmz> [volby]
 | `--fsk-speed` | 0-6 | 0 | Rychlostní úroveň FSK (0=nejpomalejší, 6=nejrychlejší; pouze s `--format fsk`) |
 | `--slow-speed` | 0-4 | 0 | Rychlostní úroveň SLOW (0=nejpomalejší, 4=nejrychlejší; pouze s `--format slow`) |
 | `--pause` | 0-65535 | 1000 | Pauza po bloku v milisekundách |
-| `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Kódování názvu souboru: ascii (výchozí), utf8-eu (evropská Sharp MZ), utf8-jp (japonská Sharp MZ) |
+| `--charset` | eu, jp, utf8-eu, utf8-jp | eu | Znaková sada Sharp MZ pro zobrazení názvu souboru (viz níže) |
 | `--version` | - | - | Zobrazit verzi programu |
 | `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 
@@ -50,10 +50,28 @@ mzf2tmz <vstup.mzf|vstup.mzt> <vystup.tmz> [volby]
 - `direct` - přímý bitový zápis
 - `cpm-tape` - Manchester kódování (Pezik/MarVan)
 
-**--name-encoding** - určuje, jak se zobrazují názvy souborů z MZF hlaviček:
-- `ascii` - překlad Sharp MZ znakové sady do ASCII (výchozí, zpětně kompatibilní)
-- `utf8-eu` - překlad do UTF-8, evropská varianta znakové sady (zobrazí skutečné Sharp MZ glyfy)
-- `utf8-jp` - překlad do UTF-8, japonská varianta znakové sady (katakana místo malých písmen)
+**--charset** - určuje znakovou sadu Sharp MZ pro konverzi názvu souboru:
+
+Sharp MZ počítače používaly dvě varianty znakové sady - evropskou (EU) a japonskou (JP).
+Obě sdílejí rozsah 0x20-0x5D (velká písmena, číslice, základní interpunkce), který je
+shodný se standardním ASCII. Nad tímto rozsahem se sady liší:
+
+- **EU** (evropská) - obsahuje malá písmena a-z a několik speciálních znaků
+  (přehlásky, Eszett, šipky, karetní symboly). Při konverzi do ASCII se malá
+  písmena převedou správně, ale speciální znaky se nahradí mezerou.
+- **JP** (japonská) - obsahuje katakanu, kanji a speciální znaky (¥, £).
+  Při konverzi do ASCII se vše nad 0x5D nahradí mezerou - výsledek je tedy
+  ochuzený oproti EU variantě.
+
+Režimy konverze:
+- `eu` (výchozí) - Sharp MZ-EU -> ASCII. Malá písmena a základní znaky se převedou,
+  speciální evropské znaky (přehlásky, šipky) se nahradí mezerou.
+- `jp` - Sharp MZ-JP -> ASCII. Pouze znaky 0x20-0x5D se převedou, vše ostatní
+  (katakana, kanji) se nahradí mezerou.
+- `utf8-eu` - Sharp MZ-EU -> UTF-8. Zobrazí maximum znaků včetně přehlásek
+  (Ö, ü, ß, Ä, ö, ä), šipek (↑↓←→), karetních symbolů (♤♡♧♢), libry (£) a pí (π).
+- `utf8-jp` - Sharp MZ-JP -> UTF-8. Zobrazí maximum znaků včetně katakany (ア-ン),
+  kanji dnů v týdnu (日月火水木金土), ¥, £ a dalších japonských znaků.
 
 **--speed** - poměr rychlosti nebo baudrate (pro FM formáty: normal, turbo, fastipl, sinclair):
 - Formát poměru: `1:1` = 1200 Bd, `2:1` = 2400 Bd, `7:3` = 2800 Bd, `8:3` = 3200 Bd, `3:1` = 3600 Bd atd.
@@ -126,5 +144,5 @@ mzf2tmz cpm.mzf tape.tmz --format cpm-tape --machine mz800
 Konverze se zobrazením názvů v evropské UTF-8 znakové sadě:
 
 ```
-mzf2tmz game.mzf game.tmz --name-encoding utf8-eu
+mzf2tmz game.mzf game.tmz --charset utf8-eu
 ```

@@ -33,7 +33,7 @@
  * - --raw-format <direct>      : format pro neidentifikovane bloky (vychozi: direct)
  * - --pass <N>                 : pocet pruchodu (vychozi: 1, zatim nepouzit)
  * - --pulse-mode <mode>        : rezim ukladani delek pulzu: approximate, exact (vychozi: approximate)
- * - --name-encoding <enc>      : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
+ * - --charset <mode>           : znakova sada: eu (vychozi), jp, utf8-eu, utf8-jp
  * - --recover                  : zapnout vsechny recovery mody
  * - --recover-bsd              : obnovit nekompletni BSD soubory (chybejici terminator)
  * - --recover-body             : obnovit castecne telo (neni implementovano)
@@ -79,11 +79,11 @@
 
 
 /** @brief Verze programu wav2tmz. */
-#define WAV2TMZ_VERSION "2.6.0"
+#define WAV2TMZ_VERSION "2.7.0"
 
 
-/** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
-static en_MZF_NAME_ENCODING name_encoding = MZF_NAME_ASCII;
+/** @brief Znakova sada pro zobrazeni nazvu souboru (nastaveno z --charset). */
+static en_MZF_NAME_ENCODING name_encoding = MZF_NAME_ASCII_EU;
 
 
 /** @brief Vystupni format programu. */
@@ -159,7 +159,7 @@ static void print_usage ( const char *prog_name ) {
               "  --raw-format <direct>     Format for unidentified blocks (default: direct)\n"
               "  --pass <N>               Number of passes (default: 1, not yet used)\n"
               "  --pulse-mode <mode>      Pulse width mode: approximate, exact (default: approximate)\n"
-              "  --name-encoding <enc>     Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n"
+              "  --charset <mode>            Character set: eu (default), jp, utf8-eu, utf8-jp\n"
               "\n"
               "Recovery options:\n"
               "  --recover                 Enable all partial data recovery\n"
@@ -1188,19 +1188,21 @@ int main ( int argc, char *argv[] ) {
             append_tmz = 1;
         } else if ( strcmp ( argv[i], "--overwrite-mzf" ) == 0 ) {
             overwrite = 1;
-        } else if ( strcmp ( argv[i], "--name-encoding" ) == 0 ) {
+        } else if ( strcmp ( argv[i], "--charset" ) == 0 ) {
             if ( ++i >= argc ) {
-                fprintf ( stderr, "Error: --name-encoding requires a value\n" );
+                fprintf ( stderr, "Error: --charset requires a value\n" );
                 return EXIT_FAILURE;
             }
-            if ( strcmp ( argv[i], "ascii" ) == 0 ) {
-                name_encoding = MZF_NAME_ASCII;
+            if ( strcmp ( argv[i], "eu" ) == 0 ) {
+                name_encoding = MZF_NAME_ASCII_EU;
+            } else if ( strcmp ( argv[i], "jp" ) == 0 ) {
+                name_encoding = MZF_NAME_ASCII_JP;
             } else if ( strcmp ( argv[i], "utf8-eu" ) == 0 ) {
                 name_encoding = MZF_NAME_UTF8_EU;
             } else if ( strcmp ( argv[i], "utf8-jp" ) == 0 ) {
                 name_encoding = MZF_NAME_UTF8_JP;
             } else {
-                fprintf ( stderr, "Error: unknown name encoding '%s' (use: ascii, utf8-eu, utf8-jp)\n", argv[i] );
+                fprintf ( stderr, "Error: unknown charset '%s' (use: eu, jp, utf8-eu, utf8-jp)\n", argv[i] );
                 return EXIT_FAILURE;
             }
         } else if ( argv[i][0] != '-' ) {

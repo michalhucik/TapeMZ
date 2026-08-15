@@ -31,14 +31,35 @@ tmzedit <command> [options] <file> [arguments...]
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
 | `-o` | `<output>` | overwrite input | Output file |
-| `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
+| `--charset` | eu, jp, utf8-eu, utf8-jp | eu | Sharp MZ character set for filename display (see below) |
+| `--dump-charset` | raw, eu, jp, utf8-eu, utf8-jp | raw | Character set of the hex dump text column (`dump` only, see below) |
 | `--version` | - | - | Show program version |
 | `--lib-versions` | - | - | Show library versions |
 
-**--name-encoding** - determines how filenames from MZF headers are displayed:
-- `ascii` - Sharp MZ character set translation to ASCII (default, backward compatible)
-- `utf8-eu` - translation to UTF-8, European character set variant (displays actual Sharp MZ glyphs)
-- `utf8-jp` - translation to UTF-8, Japanese character set variant (katakana instead of lowercase letters)
+**--charset** - selects the Sharp MZ character set for filename conversion:
+
+Sharp MZ computers used two character set variants - European (EU) and Japanese (JP).
+Both share the range 0x20-0x5D (uppercase letters, digits, basic punctuation), which
+is identical to standard ASCII. Above this range the sets differ:
+
+- **EU** (European) - contains lowercase letters a-z and several special characters
+  (umlauts, Eszett, arrows, card suit symbols). When converting to ASCII, lowercase
+  letters are translated correctly, but special characters are replaced with spaces.
+- **JP** (Japanese) - contains katakana, kanji, and special characters (¥, £).
+  When converting to ASCII, everything above 0x5D is replaced with a space -
+  the result is therefore more limited compared to the EU variant.
+
+Conversion modes:
+- `eu` (default) - Sharp MZ-EU -> ASCII. Lowercase letters and basic characters
+  are translated, special European characters (umlauts, arrows) are replaced with spaces.
+- `jp` - Sharp MZ-JP -> ASCII. Only characters 0x20-0x5D are translated, everything
+  else (katakana, kanji) is replaced with spaces.
+- `utf8-eu` - Sharp MZ-EU -> UTF-8. Displays the maximum number of characters
+  including umlauts (Ö, ü, ß, Ä, ö, ä), arrows (↑↓←→), card suit symbols (♤♡♧♢),
+  pound sign (£), and pi (π).
+- `utf8-jp` - Sharp MZ-JP -> UTF-8. Displays the maximum number of characters
+  including katakana (ア-ン), day-of-week kanji (日月火水木金土), ¥, £,
+  and other Japanese characters.
 
 ---
 
@@ -75,16 +96,32 @@ Total: 3 block(s)
 ## dump - Block Hex Dump
 
 Displays a hexadecimal dump of the block data at the given index.
-Format: 16 bytes per line with offset, hex values, and ASCII.
+Format: 16 bytes per line with offset, hex values, and a text column.
 
 ```
-tmzedit dump <file> <index>
+tmzedit dump [--dump-charset <mode>] <file> <index>
 ```
+
+**--dump-charset** - selects how bytes are interpreted in the text column:
+
+- **raw** (default) - standard ASCII: bytes 0x20-0x7E are shown as characters,
+  everything else as `.`. Suitable for machine code and non-text data.
+- **eu** / **jp** - bytes are treated as Sharp MZ ASCII (European / Japanese
+  variant) and converted to ASCII. A byte without an ASCII equivalent or a
+  non-printable one is shown as `.`.
+- **utf8-eu** / **utf8-jp** - same as above, but the output is UTF-8 (umlauts,
+  arrows, card suit symbols, katakana etc. are displayed).
+
+MZ block data (0x40, 0x41) start with the 128-byte MZF header containing the file
+name in Sharp MZ ASCII - in `raw` mode lowercase letters appear as `.`, in `eu`
+mode they are shown correctly.
 
 ### Example
 
 ```
 tmzedit dump game.tmz 1
+tmzedit dump --dump-charset eu game.tmz 1
+tmzedit dump --dump-charset utf8-eu game.tmz 1
 ```
 
 ---
@@ -372,10 +409,10 @@ Validating: broken.tmz
 
 ---
 
-## Example Usage of --name-encoding
+## Example Usage of --charset
 
 Listing blocks with names in European UTF-8 character set:
 
 ```
-tmzedit list game.tmz --name-encoding utf8-eu
+tmzedit list game.tmz --charset utf8-eu
 ```

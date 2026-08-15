@@ -29,7 +29,7 @@ mzf2tmz <input.mzf|input.mzt> <output.tmz> [options]
 | `--fsk-speed` | 0-6 | 0 | FSK speed level (0=slowest, 6=fastest; only with `--format fsk`) |
 | `--slow-speed` | 0-4 | 0 | SLOW speed level (0=slowest, 4=fastest; only with `--format slow`) |
 | `--pause` | 0-65535 | 1000 | Pause after block in milliseconds |
-| `--name-encoding` | ascii, utf8-eu, utf8-jp | ascii | Filename encoding: ascii (default), utf8-eu (European Sharp MZ), utf8-jp (Japanese Sharp MZ) |
+| `--charset` | eu, jp, utf8-eu, utf8-jp | eu | Sharp MZ character set for filename display (see below) |
 | `--version` | - | - | Show program version |
 | `--lib-versions` | - | - | Show library versions |
 
@@ -50,10 +50,30 @@ mzf2tmz <input.mzf|input.mzt> <output.tmz> [options]
 - `direct` - direct bit writing
 - `cpm-tape` - Manchester encoding (Pezik/MarVan)
 
-**--name-encoding** - determines how filenames from MZF headers are displayed:
-- `ascii` - Sharp MZ character set translation to ASCII (default, backward compatible)
-- `utf8-eu` - translation to UTF-8, European character set variant (displays actual Sharp MZ glyphs)
-- `utf8-jp` - translation to UTF-8, Japanese character set variant (katakana instead of lowercase letters)
+**--charset** - selects the Sharp MZ character set for filename conversion:
+
+Sharp MZ computers used two character set variants - European (EU) and Japanese (JP).
+Both share the range 0x20-0x5D (uppercase letters, digits, basic punctuation), which
+is identical to standard ASCII. Above this range the sets differ:
+
+- **EU** (European) - contains lowercase letters a-z and several special characters
+  (umlauts, Eszett, arrows, card suit symbols). When converting to ASCII, lowercase
+  letters are translated correctly, but special characters are replaced with spaces.
+- **JP** (Japanese) - contains katakana, kanji, and special characters (¥, £).
+  When converting to ASCII, everything above 0x5D is replaced with a space -
+  the result is therefore more limited compared to the EU variant.
+
+Conversion modes:
+- `eu` (default) - Sharp MZ-EU -> ASCII. Lowercase letters and basic characters
+  are translated, special European characters (umlauts, arrows) are replaced with spaces.
+- `jp` - Sharp MZ-JP -> ASCII. Only characters 0x20-0x5D are translated, everything
+  else (katakana, kanji) is replaced with spaces.
+- `utf8-eu` - Sharp MZ-EU -> UTF-8. Displays the maximum number of characters
+  including umlauts (Ö, ü, ß, Ä, ö, ä), arrows (↑↓←→), card suit symbols (♤♡♧♢),
+  pound sign (£), and pi (π).
+- `utf8-jp` - Sharp MZ-JP -> UTF-8. Displays the maximum number of characters
+  including katakana (ア-ン), day-of-week kanji (日月火水木金土), ¥, £,
+  and other Japanese characters.
 
 **--speed** - speed ratio or baudrate (for FM formats: normal, turbo, fastipl, sinclair):
 - Ratio format: `1:1` = 1200 Bd, `2:1` = 2400 Bd, `7:3` = 2800 Bd, `8:3` = 3200 Bd, `3:1` = 3600 Bd etc.
@@ -126,5 +146,5 @@ mzf2tmz cpm.mzf tape.tmz --format cpm-tape --machine mz800
 Conversion with filenames displayed in European UTF-8 character set:
 
 ```
-mzf2tmz game.mzf game.tmz --name-encoding utf8-eu
+mzf2tmz game.mzf game.tmz --charset utf8-eu
 ```

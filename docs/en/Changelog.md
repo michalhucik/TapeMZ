@@ -1,5 +1,54 @@
 # Changelog
 
+## 2026-08-15
+
+### tmzedit v1.6.0, extract_preloader
+- New option `--dump-charset <mode>` for hex dumps (tmzedit dump,
+  extract_preloader). Modes: raw (default, standard ASCII), eu, jp,
+  utf8-eu, utf8-jp (bytes interpreted as Sharp MZ ASCII EU/JP with ASCII
+  or UTF-8 output). Non-convertible or non-printable bytes are shown as '.'.
+
+### mzf_tools v2.2.0
+- New hex dump API with character set: en_MZF_DUMP_CHARSET,
+  mzf_tools_parse_dump_charset(), mzf_tools_dump_char(), mzf_tools_hex_dump().
+
+### sharpmz_ascii v2.2.0
+- Library upgrade to version 2.2.0 from the standalone sharpmz_ascii
+  repository. Adds KOI8-CS charset (sharpmz_koi8cs_*) and display codes
+  (sharpmz_display_*); enum sharpmz_charset_t extended with KOI8CS,
+  DISPLAY_EU and DISPLAY_JP. EU/JP behaviour unchanged.
+
+### wav v2.0.0, mzf v2.0.0
+- Error messages of the wav and mzf libraries and the MZF header dump are
+  now in English (unified with the mz800new emulator, project convention).
+
+## 2026-04-18
+
+### sharpmz_ascii v2.1.0
+- Library upgrade to version 2.1.0 from standalone sharpmz_ascii repository.
+  Merged sharpmz_ascii and sharpmz_utf8 into a single module.
+- New functions: sharpmz_convert_to_ASCII(), sharpmz_eu_convert_to_UTF8(),
+  sharpmz_eu_convert_UTF8_to(), sharpmz_jp_cnv_from(), sharpmz_jp_cnv_to(),
+  sharpmz_jp_convert_to_ASCII(), sharpmz_jp_convert_to_UTF8(),
+  sharpmz_jp_convert_UTF8_to().
+- Dispatch wrappers: sharpmz_to_utf8(), sharpmz_from_utf8(),
+  sharpmz_str_to_utf8(), sharpmz_str_from_utf8() with sharpmz_charset_t parameter.
+- Added mapping for '^' (0x8B) and '`' (0x93) in EU variant.
+
+### tmzinfo v1.4.0, tmzedit v1.5.0, wav2tmz v2.7.0, tmz2mzf v1.2.0, mzf2tmz v1.3.0, bsd2dat v1.1.0
+- New option `--charset <mode>` replaces the former `--name-encoding`.
+  Modes: eu (default), jp, utf8-eu, utf8-jp.
+- New mode `jp` for Japanese Sharp MZ character set (Sharp MZ-JP -> ASCII).
+  Converts only characters 0x20-0x5D, katakana and kanji are replaced with spaces.
+- Mode `eu` (formerly `ascii`) converts the European character set including
+  lowercase letters. Modes `utf8-eu` and `utf8-jp` display the maximum number
+  of characters including umlauts, arrows, katakana, and kanji.
+
+### mzf_tools v2.1.0
+- Function mzf_tools_get_fname_ex() now supports MZF_NAME_ASCII_JP
+  (Japanese character set -> ASCII).
+- Function mzf_tools_get_fname() is now a wrapper over mzf_tools_get_fname_ex().
+
 ## 2026-04-09
 
 ### tmz2mzf v1.1.0

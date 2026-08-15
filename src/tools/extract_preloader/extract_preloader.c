@@ -8,7 +8,11 @@
  * do binarniho souboru.
  *
  * Pouziti:
- *   extract_preloader <input.wav> <output.bin>
+ *   extract_preloader [--dump-charset <mode>] <input.wav> <output.bin>
+ *
+ * @par Volby:
+ * - --dump-charset <mode> : znakova sada textoveho sloupce hex dumpu:
+ *   raw (vychozi), eu, jp, utf8-eu, utf8-jp
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -24,6 +28,7 @@
 #include "libs/generic_driver/memory_driver.h"
 #include "libs/wav/wav.h"
 #include "libs/mzf/mzf.h"
+#include "libs/mzf/mzf_tools.h"
 #include "libs/wav_analyzer/wav_analyzer.h"
 #include "libs/wav_analyzer/wav_preprocess.h"
 #include "libs/wav_analyzer/wav_pulse.h"
@@ -38,49 +43,63 @@
 #define PRELOADER_FSIZE     90
 
 
+/** @brief Znakova sada textoveho sloupce hex dumpu (nastaveno z --dump-charset). */
+static en_MZF_DUMP_CHARSET dump_charset = MZF_DUMP_RAW;
+
+
 /**
  * @brief Vypise hex dump dat na stdout.
+ *
+ * Textovy sloupec se interpretuje podle globalni volby dump_charset
+ * (viz mzf_tools_hex_dump()).
  *
  * @param data Ukazatel na data.
  * @param size Pocet bajtu k vypisu.
  * @param base_addr Bazova adresa pro levy sloupec.
  */
 static void hex_dump ( const uint8_t *data, uint32_t size, uint16_t base_addr ) {
-    for ( uint32_t i = 0; i < size; i += 16 ) {
-        printf ( "%04X: ", base_addr + i );
-        for ( uint32_t j = 0; j < 16; j++ ) {
-            if ( i + j < size ) {
-                printf ( "%02X ", data[i + j] );
-            } else {
-                printf ( "   " );
-            }
-            if ( j == 7 ) printf ( " " );
-        }
-        printf ( " |" );
-        for ( uint32_t j = 0; j < 16 && ( i + j ) < size; j++ ) {
-            uint8_t c = data[i + j];
-            printf ( "%c", ( c >= 0x20 && c <= 0x7E ) ? c : '.' );
-        }
-        printf ( "|\n" );
-    }
+    mzf_tools_hex_dump ( stdout, data, size, base_addr, dump_charset, NULL );
 }
 
 
 int main ( int argc, char *argv[] ) {
-    if ( argc < 3 ) {
+    const char *wav_path = NULL;
+    const char *out_path = NULL;
+
+    for ( int i = 1; i < argc; i++ ) {
+        if ( strcmp ( argv[i], "--dump-charset" ) == 0 ) {
+            if ( ++i >= argc ) {
+                fprintf ( stderr, "ERROR: --dump-charset requires a value\n" );
+                return 1;
+            }
+            if ( !mzf_tools_parse_dump_charset ( argv[i], &dump_charset ) ) {
+                fprintf ( stderr, "ERROR: unknown dump charset '%s' (use: raw, eu, jp, utf8-eu, utf8-jp)\n", argv[i] );
+                return 1;
+            }
+        } else if ( argv[i][0] == '-' && argv[i][1] != '\0' ) {
+            fprintf ( stderr, "ERROR: unknown option '%s'\n", argv[i] );
+            return 1;
+        } else if ( !wav_path ) {
+            wav_path = argv[i];
+        } else if ( !out_path ) {
+            out_path = argv[i];
+        }
+    }
+
+    if ( !wav_path || !out_path ) {
         fprintf ( stderr,
-                  "Usage: %s <input.wav> <output.bin>\n"
+                  "Usage: %s [--dump-charset <mode>] <input.wav> <output.bin>\n"
                   "\n"
                   "Extracts the TurboCopy TURBO preloader binary (90 bytes)\n"
                   "from a WAV recording and saves it to a file.\n"
                   "\n"
-                  "The preloader is identified by: fstrt=$D400, fsize=90.\n",
+                  "The preloader is identified by: fstrt=$D400, fsize=90.\n"
+                  "\n"
+                  "Options:\n"
+                  "  --dump-charset <mode>   Dump text column charset: raw (default), eu, jp, utf8-eu, utf8-jp\n",
                   argv[0] );
         return 1;
     }
-
-    const char *wav_path = argv[1];
-    const char *out_path = argv[2];
 
     memory_driver_init ();
 

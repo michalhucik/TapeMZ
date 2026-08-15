@@ -19,7 +19,7 @@
  * - --index <N>            : extrahovat jen blok na indexu N (0-based)
  * - --list                 : vypsat BSD bloky bez extrakce
  * - --chunks               : kazdy chunk jako samostatny soubor do adresare
- * - --name-encoding <enc>  : kodovani nazvu: ascii, utf8-eu, utf8-jp (vychozi: ascii)
+ * - --charset <mode>       : znakova sada: eu (vychozi), jp, utf8-eu, utf8-jp
  * - --version              : zobrazit verzi programu
  * - --lib-versions         : zobrazit verze knihoven
  *
@@ -58,15 +58,15 @@
 
 
 /** @brief Verze programu bsd2dat. */
-#define BSD2DAT_VERSION "1.0.1"
+#define BSD2DAT_VERSION "1.1.0"
 
 
 /** @brief Maximalni delka cesty k vystupnimu souboru. */
 #define MAX_PATH_LENGTH  1024
 
 
-/** @brief Kodovani nazvu souboru pro zobrazeni (file-level, nastaveno z --name-encoding). */
-static en_MZF_NAME_ENCODING name_encoding = MZF_NAME_ASCII;
+/** @brief Znakova sada pro zobrazeni nazvu souboru (nastaveno z --charset). */
+static en_MZF_NAME_ENCODING name_encoding = MZF_NAME_ASCII_EU;
 
 
 /**
@@ -314,7 +314,7 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "  --index <N>       Extract only block at index N (0-based)\n" );
     fprintf ( stderr, "  --list            List BSD blocks without extracting\n" );
     fprintf ( stderr, "  --chunks          Export each chunk as separate file into directory\n" );
-    fprintf ( stderr, "  --name-encoding <enc> Filename encoding: ascii, utf8-eu, utf8-jp (default: ascii)\n" );
+    fprintf ( stderr, "  --charset <mode>        Character set: eu (default), jp, utf8-eu, utf8-jp\n" );
     fprintf ( stderr, "  --version             Show program version\n" );
     fprintf ( stderr, "  --lib-versions        Show library versions\n" );
 }
@@ -381,19 +381,21 @@ int main ( int argc, char *argv[] ) {
             list_only = true;
         } else if ( strcmp ( argv[i], "--chunks" ) == 0 ) {
             chunks_mode = true;
-        } else if ( strcmp ( argv[i], "--name-encoding" ) == 0 ) {
+        } else if ( strcmp ( argv[i], "--charset" ) == 0 ) {
             if ( ++i >= argc ) {
-                fprintf ( stderr, "Error: --name-encoding requires a value\n" );
+                fprintf ( stderr, "Error: --charset requires a value\n" );
                 return EXIT_FAILURE;
             }
-            if ( strcmp ( argv[i], "ascii" ) == 0 ) {
-                name_encoding = MZF_NAME_ASCII;
+            if ( strcmp ( argv[i], "eu" ) == 0 ) {
+                name_encoding = MZF_NAME_ASCII_EU;
+            } else if ( strcmp ( argv[i], "jp" ) == 0 ) {
+                name_encoding = MZF_NAME_ASCII_JP;
             } else if ( strcmp ( argv[i], "utf8-eu" ) == 0 ) {
                 name_encoding = MZF_NAME_UTF8_EU;
             } else if ( strcmp ( argv[i], "utf8-jp" ) == 0 ) {
                 name_encoding = MZF_NAME_UTF8_JP;
             } else {
-                fprintf ( stderr, "Error: unknown name encoding '%s' (use: ascii, utf8-eu, utf8-jp)\n", argv[i] );
+                fprintf ( stderr, "Error: unknown charset '%s' (use: eu, jp, utf8-eu, utf8-jp)\n", argv[i] );
                 return EXIT_FAILURE;
             }
         } else if ( argv[i][0] == '-' ) {
