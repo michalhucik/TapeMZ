@@ -6,7 +6,7 @@ TapeMZ (TMZ) je nový souborový formát pro uchovávání obsahu magnetofonový
 
 Formát TMZ vychází z TZX v1.20 (ZX Spectrum tape image format) a rozšiřuje ho o bloky specifické pro platformu Sharp MZ. Díky tomu je plně kompatibilní s existujícím TZX ekosystémem a zároveň přináší nativní podporu pro všechny známé kazetové formáty Sharp MZ.
 
-Součástí projektu je sada C knihoven pro práci s kazetovými formáty, WAV analyzér schopný automaticky dekódovat nahrávky z reálných kazet a jedenáct CLI nástrojů pro konverze, editaci a analýzu.
+Součástí projektu je sada C knihoven pro práci s kazetovými formáty, WAV analyzér schopný automaticky dekódovat nahrávky kazet (WAV) a jedenáct CLI nástrojů pro konverze, editaci a analýzu.
 
 ## 2. Motivace
 
@@ -29,7 +29,7 @@ Formát TZX (ZX Spectrum tape image) je de facto standard pro archivaci kazetov�
 - Logické seskupování (Group Start/End)
 - Pauzy a řídící bloky
 
-TZX specifikace v1.20 navíc explicitně rezervuje rozsah ID 0x40-0x4F pro budoucí extenze. Právě tento rozsah TMZ využívá pro Sharp MZ specifické bloky.
+TZX v1.20 rozsah ID 0x40-0x4F nedefinuje (ID 0x40 byl zastaralý blok Snapshot, ve v1.20 odstraněný) a dává obecné pravidlo, že bloky přidané po v1.10 nesou za ID 4bajtovou délku. TMZ tento rozsah využívá pro Sharp MZ specifické bloky; odlišení od případných budoucích bloků TZX zajišťuje hlavička "TapeMZ!".
 
 Kompatibilita s TZX znamená, že:
 - TMZ reader umí přehrát i čisté TZX soubory (ZX Spectrum)
@@ -71,7 +71,7 @@ Struktura na pásce:
 [Checksum]     2 bajty
 ```
 
-Do této kategorie patří i chunkovací formát **BSD/BRD** (BASIC data), kde za hlavičkou následuje sekvence 258B chunků (2B ID + 256B data), každý s vlastním tapemarkem a checksumem, ukončená chunkem s ID=0xFFFF.
+Do této kategorie patří i chunkovací formát **BSD/BRD** (datový soubor BASICu), kde za hlavičkou následuje sekvence kusů po 258 B (2B ID + 256B data), ukončená kusem s ID=0xFFFF, který nese zbytek dat. BASIC 1Z-016 (`WOPEN#`, `PRINT#`) zapisuje před každý kus vlastní tón a tapemark, za něj checksum a kopii a mezi kusy zastaví motor. V TMZ jde o blok 0x46 s profilem `BASIC-1Z016` (časování změřené v emulátoru); starý blok 0x45 se přehraje stejně.
 
 #### Kategorie 2: NORMAL FM při nestandardní rychlosti
 
@@ -104,7 +104,7 @@ Formáty v této kategorii:
 
 #### Mimo kategorie: CP/M Tape
 
-CP/M Tape (Pezik/MarVan, ZTAPE/TAPE.COM) používá zcela odlišný protokol - manchesterské kódování, LSB first, bez stop bitů, pilot "011". Běží mimo Sharp ROM pod CP/M. Podporuje 1200/2400/3200 Bd.
+CP/M Tape (Pezik/MarVan, ZTAPE/TAPE.COM, a stejný formát v režimu CPM programu Intercopy) používá zcela odlišný protokol - manchesterské kódování, LSB first, bez stop bitů, pilot "011". Běží mimo Sharp ROM pod CP/M. TAPE.COM zapisuje 2400 nebo 3200 Bd (1200 Bd neexistuje), Intercopy 2400 Bd. V TMZ jde o blok 0x46 s profilem `PEZIK-2.0A` nebo `IC-10.2-CPM`.
 
 ### 3.2 Přehled formátů
 
@@ -114,13 +114,13 @@ CP/M Tape (Pezik/MarVan, ZTAPE/TAPE.COM) používá zcela odlišný protokol - m
 | NORMAL    | 2         | FM           | 2400+ Bd    | žádný   | 0x41     |
 | CP/M CMT  | 2         | FM           | 2400 Bd     | žádný   | 0x41     |
 | MZ-80B    | 2         | FM           | 1800 Bd     | žádný   | 0x41     |
-| BSD/BRD   | 1/2       | FM (chunky)  | 1200+ Bd    | žádný   | 0x45     |
+| BSD/BRD   | 1         | FM (kusy)    | 1200 Bd     | žádný   | 0x46     |
 | TURBO     | 4         | FM           | konfig.     | $D400   | 0x41     |
 | FASTIPL   | 3         | FM + $BB     | konfig.     | comment | 0x41     |
 | FSK       | 4         | FSK          | 7 úrovní    | program | 0x41     |
 | SLOW      | 4         | kvarternální | 5 úrovní    | program | 0x41     |
 | DIRECT    | 4         | bitový       | sample rate | program | 0x41     |
-| CP/M Tape | (mimo)    | Manchester   | 1200-3200   | CP/M    | 0x41     |
+| CP/M Tape | (mimo)    | Manchester   | 2400-3200   | CP/M    | 0x46     |
 | SINCLAIR  | -         | vlastní      | 1400 Bd     | -       | TZX 0x10 |
 
 ### 3.3 Specialní případy
@@ -143,25 +143,23 @@ Program Intercopy generuje při ukládání na pásku speciální audio bloky um
 
 ### 3.4 Pulsní sady
 
-Délky pulzů se liší podle modelu počítače. ROM používá stejnou delay smyčku pro obě poloviny pulzu, takže teoretické časování je symetrické (HIGH = LOW). Reálné nahrávky z magnetofonu vykazují asymetrický duty cycle vlivem analogových artefaktů (magnetofon, zesilovač, hlavy).
+Délky pulzů se liší podle modelu počítače a podle programu, který záznam zapsal. ROM MZ-800 zapisuje pulzy asymetricky (HIGH a LOW mají různou délku). Nominál podle dokumentace HW:
 
-Teoretické ROM hodnoty (symetrické):
+| Parametr      | MZ-800/1500 ROM (nominál) |
+|---------------|---------------------------|
+| Long (H + L)  | 470 + 494 us              |
+| Short (H + L) | 240 + 278 us              |
+
+Výchozí pulzní sady v1.0, které používají kodéry (symetrické):
 
 | Parametr      | MZ-700/80K/80A | MZ-800/1500   | MZ-80B        |
 |---------------|----------------|---------------|---------------|
 | Long (H + L)  | ~504 + 504 us  | ~498 + 498 us | ~333 + 334 us |
 | Short (H + L) | ~252 + 252 us  | ~249 + 249 us | ~167 + 166 us |
 
-Typické hodnoty naměřené z reálných nahrávek (Intercopy 10.2 na MZ-800):
+Hodnoty pro MZ-700/80K/80A a MZ-80B nemají doložený zdroj [neověřeno]. Předzavaděče FSK, SLOW a DIRECT používají pro MZ-700 jinou sadu: LONG 464 + 494 us, SHORT 240 + 264 us [neověřeno].
 
-| Parametr     | MZ-800/1500 měřené |
-|--------------|--------------------|
-| Long high    | ~476 us            |
-| Long low     | ~499 us            |
-| Short high   | ~227 us            |
-| Short low    | ~272 us            |
-
-Pozn.: Asymetrické hodnoty z reálných nahrávek jsou důležité pro FASTIPL kódování, kde readpoint (parametr ROM delay) musí být konzistentní s pulsní sadou. Pro formáty NORMAL a TURBO fungují symetrické hodnoty správně, protože ROM se automaticky kalibruje z leader tónu.
+ROM má pevný čtecí bod: signál vzorkuje v pevném čase po hraně pulzu a podle úrovně v tom okamžiku rozliší krátký a dlouhý pulz. Čitelnost záznamu proto závisí na délkách pulzů vůči čtecímu bodu, ne na symetrii pulzu. Zavaděče TurboCopy a Intercopy čtecí bod mění (přepíší konstantu čtecí rutiny ROM).
 
 ### 3.5 Checksum
 
@@ -183,11 +181,11 @@ Typy bloků:
 - **Audio bloky** (0x10-0x15, 0x18, 0x19): nesou zvuková data nebo parametry pro generování signálu
 - **Řídící bloky** (0x20-0x27): pauzy, skupiny, smyčky
 - **Informační bloky** (0x30-0x35, 0x5A): metadata, archivní informace
-- **Extenzivní bloky** (0x40-0x4F): rezervováno pro extenze - zde se zařazují TMZ bloky
+- **Rozsah 0x40-0x4F**: TZX v1.20 ho nedefinuje (0x40 byl zastaralý blok Snapshot) - zde se zařazují TMZ bloky
 
 ### 4.3 TMZ rozšíření
 
-TMZ používá signaturu "TapeMZ!" místo "ZXTape!" a definuje 6 typů MZ-specifických bloků v rozsahu 0x40-0x45:
+TMZ používá signaturu "TapeMZ!" místo "ZXTape!" a definuje 7 typů MZ-specifických bloků v rozsahu 0x40-0x46:
 
 | ID   | Název              | Účel                                            |
 |------|--------------------|-------------------------------------------------|
@@ -197,16 +195,17 @@ TMZ používá signaturu "TapeMZ!" místo "ZXTape!" a definuje 6 typů MZ-specif
 | 0x43 | MZ Machine Info    | Cílový stroj, CPU takt, ROM verze                |
 | 0x44 | MZ Loader          | Preloader program (TURBO/FASTIPL/FSK/SLOW/...)   |
 | 0x45 | MZ BASIC Data      | BSD/BRD chunkovací formát                        |
+| 0x46 | MZ File            | MZF soubor a seznam jeho částí (TMZ v1.1)        |
 
-Bloky 0x46-0x4F jsou rezervovány pro budoucí rozšíření.
+Bloky 0x47-0x4F jsou rezervovány pro budoucí rozšíření.
 
-Formální specifikace TMZ formátu je v samostatném dokumentu: **[tmz-specification.md](https://github.com/michalhucik/TapeMZ/blob/main/docs/cz/tmz-specification.md)**
+Formální specifikace TMZ formátu je v samostatném dokumentu: **[tmz-specification.md](https://github.com/michalhucik/TapeMZ/blob/main/docs/cz/tmz-specification.md)**; blok 0x46 popisuje **[tmz-v1.1-specification.md](https://github.com/michalhucik/TapeMZ/blob/main/docs/cz/tmz-v1.1-specification.md)**
 
 ## 5. WAV analyzér
 
 ### 5.1 Přehled
 
-WAV analyzér je klíčová součást projektu - umožňuje automatickou analýzu a dekódování nahrávek z reálných magnetofonových kazet Sharp MZ. Jedná se o pětivrstevnou pipeline zpracovávající surový PCM audio signál až na strukturovaná data.
+WAV analyzér je klíčová součást projektu - umožňuje automatickou analýzu a dekódování nahrávek (WAV) magnetofonových kazet Sharp MZ. Jedná se o pětivrstevnou pipeline zpracovávající surový PCM audio signál až na strukturovaná data.
 
 ### 5.2 Architektura pipeline
 
@@ -239,9 +238,10 @@ WAV soubor (PCM 8/16/24/32/64-bit)
 [Vrstva 3] Klasifikace formátu
   |-- Dvoustupňová detekce:
   |     1. Třída rychlosti z průměru leader tónu
-  |     2. Signatura v hlavičce (ftype, $BB prefix, NIPSOFT)
+  |     2. Signatura v hlavičce (ftype, $BB prefix, předzavaděč TURBO)
   |-- Rozpoznávané formáty: NORMAL, TURBO, FASTIPL, BSD,
-  |   CP/M CMT, CP/M Tape, MZ-80B, FSK, SLOW, DIRECT, ZX Spectrum
+  |   CP/M CMT, CP/M Tape, FSK, SLOW, DIRECT, ZX Spectrum
+  |   (MZ-80B se automaticky nerozpoznává)
   |
   v
 [Vrstva 4] Specializované dekodéry
@@ -297,7 +297,8 @@ Projekt čerpá z následujících zdrojů:
 ### 6.2 Software
 - **Intercopy 10.2** (MZ-800, Marek Šmihla - NIPSOFT) - referenční implementace autodetekce, Z80 disassembly
 - **TurboCopy V1.21** (MZ-800, Michal Kreidl) - TURBO loader implementace
-- **cmt.com / ztape.com** (CP/M) - CP/M kazetové utility, manchesterské kódování
+- **cmt.com** (CP/M) - CP/M CMT, FM 2400 Bd
+- **ZTAPE/TAPE.COM** (CP/M, Pezik/MarVan) - CP/M Tape, manchesterské kódování
 - **mzftools** (mz-fuzzy, GPLv3) - referenční C implementace MZF konverzí, FSK/SLOW/DIRECT Z80 loadery
 
 ### 6.3 Formátové specifikace
@@ -335,6 +336,7 @@ Projekt obsahuje sadu C knihoven (C99/C11) s modulární architekturou:
 - **tzx** - parsování a generování audio streamů ze všech TZX v1.20 bloků
 - **tmz** - čtení/zápis TMZ/TZX souborů, bloková struktura, parsování MZ bloků
 - **tmz_blocks** - definice a parsování jednotlivých typů bloků (0x40-0x45)
+- **tmz_mzfile** - čtení, validace a zápis bloku 0x46 (MZ File)
 - **tmz_player** - generování CMT audio streamů z TMZ bloků
 
 ### 7.5 CMT kodéry
@@ -346,8 +348,8 @@ Samostatné knihovny pro každý kazetový formát, včetně embedded Z80 loader
 - **mzcmt_fsk** - FSK (Frequency Shift Keying, 7 rychlostí, dvoufázový loader)
 - **mzcmt_slow** - SLOW (kvarternální kódování, 5 rychlostí, dvoufázový loader)
 - **mzcmt_direct** - DIRECT (přímý bitový zápis, dvoufázový loader)
-- **mzcmt_bsd** - BSD/BRD (chunkovací NORMAL FM, bez loaderu)
-- **mzcmt_cpmtape** - CP/M Tape (Pezik/MarVan, Manchester, LSB first, 1200/2400/3200 Bd)
+- **mzcmt_bsd** - BSD/BRD v1.0 (tón jen před prvním kusem; BASIC takový záznam za prvním kusem nepřečte). Používá ho jen profil TAPEMZ-V1-LEGACY bsd, player hraje BSD profilem BASIC-1Z016
+- **mzcmt_manchester** - obecný generátor rodiny Manchester pro blok 0x46 (CP/M Tape: profily PEZIK-2.0A 2400/3200 Bd a IC-10.2-CPM 1500/2400/2800/3200/3600 Bd)
 
 ### 7.6 WAV analyzér
 - **wav_analyzer** - kompletní analytická pipeline (preprocessing, extrakce pulzů, detekce leaderu, klasifikace formátu, dekódování)
@@ -369,8 +371,8 @@ Projekt obsahuje 11 příkazových nástrojů pro konverze, analýzu a editaci:
 | **tmz2tap**  | Extrakce TAP bloků z TMZ/TZX                      |
 | **tmzconv**  | Konverze signatury TMZ a TZX                      |
 | **tmzedit**  | Editor páskového souboru (list, dump, edit, merge) |
-| **dat2bsd**  | Import binárních dat do TMZ jako BSD blok 0x45     |
-| **bsd2dat**  | Export BSD dat z TMZ bloku 0x45                    |
+| **dat2bsd**  | Import binárních dat do TMZ jako BSD (blok 0x46)   |
+| **bsd2dat**  | Export BSD dat z TMZ (bloky 0x45 a 0x46)           |
 
 Podrobná dokumentace každého nástroje s příklady je v samostatných souborech **tools-*.md**.
 

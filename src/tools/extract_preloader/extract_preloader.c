@@ -1,5 +1,6 @@
 /**
  * @file   extract_preloader.c
+ * @version 1.0.1
  * @brief  Extraktor TurboCopy TURBO preloader binarky z WAV nahravky.
  *
  * Pouziva nizkourovenove API wav_analyzeru (preprocessing, pulse extraction,
@@ -261,7 +262,7 @@ int main ( int argc, char *argv[] ) {
                 /* zapiseme v surovem tvaru (LE, jak je na pasce) */
                 st_MZF_HEADER raw_hdr;
                 memcpy ( &raw_hdr, &mzf->header, sizeof ( st_MZF_HEADER ) );
-                mzf_header_items_correction ( &raw_hdr ); /* host->LE */
+                mzf_header_swap_endianity ( &raw_hdr ); /* host->LE, 11h beze změny */
                 fwrite ( &raw_hdr, 1, sizeof ( st_MZF_HEADER ), fhdr );
                 fclose ( fhdr );
                 printf ( "Saved header (128 bytes) to '%s'\n", hdr_path );

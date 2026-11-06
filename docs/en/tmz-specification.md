@@ -4,7 +4,7 @@
 
 TMZ (TapeMZ) is a file format for preserving the contents of cassette tapes from Sharp MZ computers (MZ-700, MZ-800, MZ-1500, MZ-80B) and ZX Spectrum. The format is based on TZX v1.20 (ZX Spectrum tape format) and extends it with blocks specific to the Sharp MZ platform.
 
-TMZ is fully compatible with TZX at the block structure level. The "TapeMZ!" header (instead of "ZXTape!") ensures that extension block IDs (0x40-0x4F) are used for Sharp MZ specific data. A TZX format reader can read a TMZ file - it will skip unknown blocks thanks to the uniform block structure.
+TMZ is fully compatible with TZX at the block structure level. The "TapeMZ!" header (instead of "ZXTape!") distinguishes a file in which block IDs 0x40-0x4F carry Sharp MZ specific data (see chapter 4 - TZX does not reserve this range for extensions). A TZX format reader can read a TMZ file - it will skip unknown blocks thanks to the uniform block structure.
 
 ## 2. File Header (10 bytes)
 
@@ -36,7 +36,7 @@ See the TZX v1.20 specification for the complete list.
 
 ## 4. TMZ Extension Blocks (0x40-0x4F)
 
-The ID range 0x40-0x4F is reserved in the TZX specification for extensions. TMZ uses these blocks for Sharp MZ specific data.
+TMZ uses the ID range 0x40-0x4F for Sharp MZ specific data. TZX v1.20 does not reserve this range for extensions: ID 0x40 was the TZX Snapshot block (removed in v1.20, the ID is reserved) and IDs 0x41-0x4F are not defined by TZX. TZX only gives the general rule that blocks added after v1.10 carry a 4-byte length after the ID, so an unknown block can be skipped. A collision with a future TZX version is not excluded; the "TapeMZ!" header tells the files apart.
 
 ### 4.1 Block 0x40 - MZ Standard Data Block
 
@@ -47,7 +47,7 @@ The player generates the complete tape signal from this block: LGAP + LTM + head
 ```
 Offset  Type   Description
 0x00    BYTE   Block ID (0x40)
-0x01    DWORD  Data length (= 131 + N)
+0x01    DWORD  Data length (= 134 + N)
 0x05    BYTE   Target machine (0=generic, 1=MZ-700, 2=MZ-800, 3=MZ-1500, 4=MZ-80B)
 0x06    BYTE   Pulse set (0=MZ-700, 1=MZ-800, 2=MZ-80B)
 0x07    WORD   Pause after block (ms), 0 = no pause
@@ -79,17 +79,17 @@ Offset  Type   Description
 0x09    WORD   LGAP length (number of short pulses, 0=default for format)
 0x0B    WORD   SGAP length (number of short pulses, 0=default)
 0x0D    WORD   Pause after block (ms), 0 = no pause
-0x0F    WORD   Long pulse high (us*100, 0=default from pulse set)
-0x11    WORD   Long pulse low (us*100, 0=default)
-0x13    WORD   Short pulse high (us*100, 0=default)
-0x15    WORD   Short pulse low (us*100, 0=default)
+0x0F    WORD   Long pulse high (0.1 us, 0=default from pulse set)
+0x11    WORD   Long pulse low (0.1 us, 0=default)
+0x13    WORD   Short pulse high (0.1 us, 0=default)
+0x15    WORD   Short pulse low (0.1 us, 0=default)
 0x17    BYTE   Flags (bit0=with header copy, bit1=with body copy)
 0x18    128B   MZF header (raw 128 bytes)
 0x98    WORD   Body size N
 0x9A    N B    Body data
 ```
 
-Pulse lengths with value 0 mean "use default from pulse set". The unit us*100 = 10 ns resolution, sufficiently precise for all known formats.
+Pulse lengths with value 0 mean "use default from pulse set". The unit is 0.1 us (e.g. 4980 = 498.0 us).
 
 #### Interpretation of the "Speed" Field by Format
 
@@ -97,11 +97,12 @@ The "Speed" field (offset 0x08) is interpreted according to the "Format" field v
 
 | Format                            | Speed interpretation                                  | Range  |
 |-----------------------------------|-------------------------------------------------------|--------|
-| NORMAL, TURBO, FASTIPL, SINCLAIR  | en_CMTSPEED index (FM ratio)                          | 0-9    |
+| NORMAL, TURBO, FASTIPL            | en_CMTSPEED index (FM ratio)                          | 0-9    |
 | FSK                               | en_MZCMT_FSK_SPEED (0=slowest, 6=fastest)             | 0-6    |
 | SLOW                              | en_MZCMT_SLOW_SPEED (0=slowest, 4=fastest)            | 0-4    |
 | DIRECT                            | ignored (0)                                            | 0      |
-| CPM_TAPE                          | en_MZCMT_CPMTAPE_SPEED (0=1200, 1=2400, 2=3200 Bd)   | 0-2    |
+| CPM_TAPE                          | level: 2 = 3200 Bd, otherwise 2400 Bd (see below)     | 0-2    |
+| SINCLAIR                          | not used (see below)                                  | -      |
 
 #### FM Format Speed Ratios (NORMAL, TURBO, FASTIPL)
 
@@ -115,23 +116,16 @@ FM formats use en_CMTSPEED as a ratio relative to the base 1200 Bd speed. The sp
 | 3       | 2:1 CPM | 2400 Bd  | CP/M variant (cmt.com)            |
 | 4       | 3:1     | 3600 Bd  | Triple                            |
 | 5       | 3:2     | 1800 Bd  |                                   |
-| 6       | 7:3     | 2800 Bd  | Intercopy 10.2                    |
-| 7       | 8:3     | 3200 Bd  | CP/M cmt.com                      |
+| 6       | 7:3     | 2800 Bd  | close to Intercopy 10.2 "2800 Bd" |
+| 7       | 8:3     | 3200 Bd  | close to Intercopy 10.2 "3200 Bd" |
 | 8       | 9:7     | ~1543 Bd |                                   |
 | 9       | 25:14   | ~2143 Bd |                                   |
 
-#### SINCLAIR Format Speeds
+The Baudrate column is a nominal label (a multiple of 1200 Bd); real writers differ from it.
 
-The SINCLAIR format uses the same en_CMTSPEED ratios, but the base speed is 1400 Bd (not 1200 Bd as with Sharp MZ). Pulse lengths are derived from ZX Spectrum timing (pilot ~612 us, zero ~244 us, one ~488 us).
+#### SINCLAIR Format
 
-| Value   | Ratio   | Baudrate | Note                              |
-|---------|---------|----------|-----------------------------------|
-| 1       | 1:1     | 1400 Bd  | Standard ZX Spectrum speed        |
-| 5       | 3:2     | 2100 Bd  |                                   |
-| 8       | 9:7     | 1800 Bd  |                                   |
-| 9       | 25:14   | 2500 Bd  |                                   |
-
-Other ratios from en_CMTSPEED are also valid; the above are typical values.
+The SINCLAIR format (3) is not used in block 0x41; a ZX Spectrum recording is stored as TZX blocks 0x10/0x11. The player does not play block 0x41 with the SINCLAIR format and the tools do not create it.
 
 #### FSK Format Speeds
 
@@ -169,73 +163,14 @@ The DIRECT format (direct bit writing) has no configurable speed. The "Speed" fi
 
 #### CP/M Tape Format Speeds
 
-CP/M Tape (Pezik/MarVan, Manchester encoding) has 3 fixed baud rates:
+CP/M Tape (Pezik/MarVan, Manchester encoding). The player always converts block 0x41 with the CPM_TAPE format to block 0x46 with profile `PEZIK-2.0A` (see `tmz-v1.1-specification.md` chapter 9.2). A body longer than 16384 B is not converted and the block is not played (block error). New CPM-TAPE recordings are written by `mzf2tmz` as block 0x46.
 
-| Value   | Baudrate | Note                                  |
-|---------|----------|---------------------------------------|
-| 0       | 1200 Bd  | Compatible with ROM speed             |
-| 1       | 2400 Bd  | Default for TAPE.COM                  |
-| 2       | 3200 Bd  | Maximum speed                         |
+| Value   | Played as                             |
+|---------|---------------------------------------|
+| 2       | PEZIK-2.0A 3200 Bd                    |
+| other   | PEZIK-2.0A 2400 Bd                    |
 
-#### Reference Load Time Comparison
-
-Reference file: **Flappy ver 1.0A** (Flappy.mzf, 44161 bytes: 128B header + 44033B body).
-Measured as WAV signal length generated from TMZ via tmz2wav (44100 Hz, pulseset MZ-800).
-Time includes the complete tape signal including leader tone, GAP, tapemarks, and checksums.
-For category 3 and 4 formats, the NORMAL FM preloader/loader (~16 s) is included.
-
-**FM formats (NORMAL, TURBO, FASTIPL):**
-
-| Speed             | NORMAL  | TURBO   | FASTIPL |
-|-------------------|---------|---------|---------|
-| 1:1 (1200 Bd)     | 291.5 s | 312.0 s | 312.3 s |
-| 3:2 (1800 Bd)     | 193.7 s | 211.4 s | 213.9 s |
-| 9:7 (~1543 Bd)    | 225.7 s | 244.4 s | 246.1 s |
-| 2:1 (2400 Bd)     | 141.0 s | 157.3 s | 161.0 s |
-| 25:14 (~2143 Bd)  | 163.6 s | 180.6 s | 183.7 s |
-| 7:3 (~2800 Bd)    | 124.1 s | 140.0 s | 144.0 s |
-| 8:3 (~3200 Bd)    | 111.0 s | 126.5 s | 130.8 s |
-| 3:1 (3600 Bd)     |  97.8 s | 113.0 s | 117.6 s |
-
-TURBO and FASTIPL are slower than NORMAL at the same speed because they contain a loader in the header (header is always in NORMAL 1:1, only the body is at the target speed).
-
-**FSK (Frequency Shift Keying):**
-
-| Speed    | Time    | Effective Bd |
-|----------|---------|--------------|
-| 0        |  58.8 s | ~8 400 Bd    |
-| 1        |  56.1 s | ~9 000 Bd    |
-| 2        |  53.3 s | ~9 700 Bd    |
-| 3        |  48.1 s | ~11 300 Bd   |
-| 4        |  40.1 s | ~15 200 Bd   |
-| 5        |  37.4 s | ~17 200 Bd   |
-| 6        |  34.6 s | ~19 900 Bd   |
-
-**SLOW (quaternary):**
-
-| Speed    | Time    | Effective Bd |
-|----------|---------|--------------|
-| 0        |  64.3 s | ~7 500 Bd    |
-| 1        |  56.3 s | ~9 000 Bd    |
-| 2        |  40.3 s | ~15 300 Bd   |
-| 3        |  36.3 s | ~18 500 Bd   |
-| 4        |  32.3 s | ~23 500 Bd   |
-
-**DIRECT (direct bit writing):**
-
-| Speed    | Time    | Effective Bd |
-|----------|---------|--------------|
-| 0        |  28.9 s | ~32 000 Bd   |
-
-**CP/M Tape (Manchester):**
-
-| Speed    | Time    |
-|----------|---------|
-| 0 (1200) | 298.2 s |
-| 1 (2400) | 149.3 s |
-| 2 (3200) | 116.2 s |
-
-Effective Bd for FSK, SLOW, and DIRECT is calculated from the data section transfer time (total time minus ~16 s NORMAL FM preloader). The actual bit rate varies depending on data content, because bits 0 and 1 (or symbols 0-3) have different pulse lengths.
+TAPE.COM writes only 2400 and 3200 Bd; a 1200 Bd level does not exist.
 
 ### 4.3 Block 0x42 - MZ Extra Body Block
 
@@ -254,14 +189,14 @@ Offset  Type   Description
 
 ### 4.4 Block 0x43 - MZ Machine Info
 
-Specifies the target machine and its parameters. Affects interpretation of subsequent blocks.
+Specifies the target machine and its parameters. The CPU clock is the default time base of the parts of the 0x46 blocks that follow it and have no TIMEBASE tag (see `tmz-v1.1-specification.md` chapter 5.3). It does not affect the timing of TZX blocks.
 
 ```
 Offset  Type   Description
 0x00    BYTE   Block ID (0x43)
 0x01    DWORD  Data length (= 6)
 0x05    BYTE   Machine type (0=generic, 1=MZ-700, 2=MZ-800, 3=MZ-1500, 4=MZ-80B)
-0x06    DWORD  CPU clock (Hz), e.g. 3546900 for MZ-800
+0x06    DWORD  CPU clock (Hz), e.g. 3546895 for MZ-800
 0x0A    BYTE   ROM version (0=unknown)
 ```
 
@@ -284,7 +219,7 @@ Offset  Type   Description
 
 A BASIC data recording (BSD/BRD). Unlike a standard MZF recording where data size is given by the fsize field, in a BSD/BRD recording fsize=0 and data is divided into 258B chunks. Each chunk contains a 2B ID (LE) and 256B of data. Chunks are stored on tape as separate body blocks with short tapemarks.
 
-TMZ block 0x45 stores the complete chunked recording - header and all chunks including their IDs. The player generates the complete tape signal from this block: LGAP + LTM + header + CHKH + (STM + chunk + CHK) * N.
+TMZ block 0x45 stores the complete chunked recording - header and all chunks including their IDs. The player (TMZ v1.1) always converts this block to block 0x46 with profile `BASIC-1Z016` (BASIC 1Z-016 timing measured in the emulator): the header and, for every chunk, its own 11000 S tone, short tapemark, chunk, checksum and copy; a pause between the segments as after the motor stops. The pulse set of the block is not used. A block with more than 254 chunks is not played.
 
 ```
 Offset  Type   Description
@@ -304,7 +239,11 @@ Chunk structure:
 - Last chunk: ID = 0xFFFF (termination marker)
 - Total BASIC data size = N * 256 bytes
 
-### 4.7 Blocks 0x46-0x4F - Reserved
+### 4.7 Block 0x46 - MZ File
+
+One MZF file and the list of its tape parts with parameters in TLV (TMZ v1.1). The block is described in the document `tmz-v1.1-specification.md`.
+
+### 4.8 Blocks 0x47-0x4F - Reserved
 
 Reserved for future extensions. The reader must skip these blocks using the length after the ID.
 
@@ -312,34 +251,33 @@ Reserved for future extensions. The reader must skip these blocks using the leng
 
 ### 5.1 TMZ MZ-Specific Blocks (0x40-0x4F)
 
-Pulse lengths in TMZ MZ-specific blocks use the unit us*100 (1 unit = 10 ns). This timing is absolute - it does not depend on the target machine's CPU clock.
+Custom pulse lengths in block 0x41 use the unit 0.1 us (e.g. 4980 = 498.0 us). This timing is absolute - it does not depend on the target machine's CPU clock. A value of 0 means "use default from pulse set".
 
-A value of 0 means "use default from pulse set".
+Times in blocks 0x46 are in units of the time base of the part (see `tmz-v1.1-specification.md` chapter 5.3).
 
 ### 5.2 Default Pulse Sets
 
-| Parameter      | MZ-700/80K/80A | MZ-800/1500 | MZ-80B |
-|----------------|----------------|-------------|--------|
-| Long high (us) | ~464           | ~498        | ~333   |
-| Long low (us)  | ~494           | ~498        | ~334   |
-| Short high (us)| ~240           | ~249        | ~167   |
-| Short low (us) | ~264           | ~249        | ~166   |
+| Parameter       | MZ-700/80K/80A | MZ-800/1500 | MZ-80B |
+|-----------------|----------------|-------------|--------|
+| Long high (us)  | 504            | 498         | 333    |
+| Long low (us)   | 504            | 498         | 334    |
+| Short high (us) | 252            | 249         | ~167   |
+| Short low (us)  | 252            | 249         | 166    |
 
-MZ-800/1500 uses symmetric pulses - the ROM uses the same delay loop for both HIGH
-and LOW pulse halves. Original asymmetric values from Intercopy 10.2 measurements
-(GDG ticks {8335,8760}, {4356,4930} -> 470/494/246/278 us) caused incorrect rounding
-at 44100 Hz (short pulse 11+12=23 samples instead of 11+11=22).
+The table lists the default v1.0 pulse sets used by the encoders. The sets are symmetric (HIGH = LOW, except MZ-80B). The values for MZ-700/80K/80A and MZ-80B have no documented source [unverified]. The FSK, SLOW and DIRECT preloaders use a different MZ-700 set: LONG 464/494 µs, SHORT 240/264 µs [unverified].
+
+The MZ-800 ROM writes asymmetric pulses. The nominal values per the hardware documentation are SHORT 240/278 us and LONG 470/494 us (HIGH/LOW). The player plays block 0x40 with the MZ-800 set with profile `ROM-800-NOMINAL` (see `tmz-v1.1-specification.md` chapter 9.2).
 
 ### 5.3 Standard TZX Blocks (0x10-0x19)
 
-For standard TZX blocks, timing remains in Z80 T-states at 3.5 MHz (per TZX specification). The player converts T-states to the target CPU clock according to the MZ Machine Info block (0x43), if present.
+For standard TZX blocks, timing remains in Z80 T-states at 3.5 MHz (per TZX specification). The MZ Machine Info block (0x43) does not affect them.
 
 ## 6. Conversion Strategy
 
 ```
 MZF -> TMZ:    Block 0x40 (standard NORMAL 1:1) or 0x41 (other format/speed)
 TMZ -> MZF:    Data extraction from 0x40/0x41 (lossless for standard)
-WAV -> TMZ:    Signal analysis -> 0x40/0x41/0x45, or Direct Recording 0x15
+WAV -> TMZ:    Signal analysis -> 0x40/0x41/0x46, or Direct Recording 0x15
 TMZ -> WAV:    Player generates audio -> WAV export (via cmt_stream)
 TZX -> TMZ:    Header change + content validation
 TMZ -> TZX:    Header change (MZ blocks remain, TZX reader skips them)
@@ -376,7 +314,7 @@ MZF -> TMZ -> MZF conversion is lossless for standard data (round-trip). WAV -> 
 | 0       | NORMAL   | Standard 1200 Bd FM modulation (1 bit = 1 pulse)              |
 | 1       | TURBO    | Proprietary fast encoding (TurboCopy)                          |
 | 2       | FASTIPL  | Fast IPL encoding with $BB prefix (Intercopy)                  |
-| 3       | SINCLAIR | ZX Spectrum compatible encoding                                |
+| 3       | SINCLAIR | ZX Spectrum encoding; not used in block 0x41 (chapter 4.2)     |
 | 4       | FSK      | Frequency Shift Keying (carrier frequency change)              |
 | 5       | SLOW     | 2 bits per pulse, more compact than FM                         |
 | 6       | DIRECT   | Direct bit writing without modulation, fastest transfer        |
@@ -392,8 +330,8 @@ MZF -> TMZ -> MZF conversion is lossless for standard data (round-trip). WAV -> 
 | 3       | 2:1 CPM | 2400 Bd (CP/M variant)       |
 | 4       | 3:1     | 3600 Bd                      |
 | 5       | 3:2     | 1800 Bd                      |
-| 6       | 7:3     | 2800 Bd (Intercopy 10.2)     |
-| 7       | 8:3     | 3200 Bd (CP/M cmt.com)       |
+| 6       | 7:3     | 2800 Bd                      |
+| 7       | 8:3     | 3200 Bd                      |
 | 8       | 9:7     | ~1543 Bd                     |
 | 9       | 25:14   | ~2143 Bd                     |
 
@@ -419,7 +357,7 @@ MZF -> TMZ -> MZF conversion is lossless for standard data (round-trip). WAV -> 
 ### 8.2 Backward Compatibility
 - A TMZ file without MZ-specific blocks is functionally equivalent to a TZX file
 - The player must support both header types (TapeMZ! and ZXTape!)
-- A single file can contain both ZX Spectrum (blocks 0x10-0x15) and Sharp MZ (0x40-0x45) data
+- A single file can contain both ZX Spectrum (blocks 0x10-0x15) and Sharp MZ (0x40-0x46) data
 
 ## 9. Verification
 

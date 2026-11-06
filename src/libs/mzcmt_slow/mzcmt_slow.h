@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_slow.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  SLOW koder pro kazetovy zaznam Sharp MZ (2 bity na pulz).
  *
  * Knihovna implementuje SLOW modulaci pouzivnou programem mzf2snd (mzftools).
@@ -37,9 +37,9 @@
  * a ulozen primo v kodu loaderu.
  *
  * @par Referencni implementace:
- * - docs/detailne-prozkoumat/mzftools-code/src/coder.c (slow_encode_data_byte)
- * - docs/detailne-prozkoumat/mzftools-code/src/formats.c (fsk_body - spolecny frame)
- * - docs/detailne-prozkoumat/mzftools-code/src/slow.asm (Z80 dekoder)
+ * - mzftools: src/coder.c (slow_encode_data_byte)
+ * - mzftools: src/formats.c (fsk_body - spolecny frame)
+ * - mzftools: src/slow.asm (Z80 dekoder)
  *
  * @par Licence:
  * Odvozeno z projektu MZFTools v0.2.2 (mz-fuzzy@users.sf.net),
@@ -320,6 +320,11 @@ extern "C" {
      * @param type      Typ vystupniho streamu (bitstream/vstream).
      * @param rate      Vzorkovaci frekvence (Hz).
      * @return Novy stream, nebo NULL pri chybe.
+     *
+     * @note Čitelnost zavaděčem závisí na vzorkovací frekvenci: při 44100 Hz
+     *       prošly v emulátoru všechny úrovně, jinde jen některé
+     *       (měření v emulátoru). Player změřené nečitelné
+     *       kombinace odmítne; tato funkce frekvenci nekontroluje.
      */
     extern st_CMT_STREAM* mzcmt_slow_create_tape_stream (
         const st_MZF_HEADER *original,
@@ -356,7 +361,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny mzcmt_slow. */
-#define MZCMT_SLOW_VERSION "1.0.0"
+#define MZCMT_SLOW_VERSION "1.0.1"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny mzcmt_slow.

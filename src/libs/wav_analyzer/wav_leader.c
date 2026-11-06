@@ -1,7 +1,7 @@
 /**
  * @file   wav_leader.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.2.0
  * @brief  Implementace vrstvy 2 - detekce leader tónů.
  *
  * Algoritmus detekce leader tónu:
@@ -111,9 +111,10 @@ en_WAV_ANALYZER_ERROR wav_leader_detect (
      *
      * Kvantizační podlaha: pro rychlé signály (málo vzorků na
      * půl-periodu) je kvantizační chyba ±1 vzorek dominantní.
-     * Např. při 3200 Bd / 44100 Hz má půl-perioda ~4 vzorky,
-     * takže kvantizace dává ±22.7 us = ±25 % jitter.
      * Podlaha zajistí, že max_diff nebude menší než 1 vzorek.
+     * Asymetrické pulzy Intercopy 2800/3200 Bd při 44100 Hz ale
+     * nezvládne (půlvlny 3-6 vzorků, odchylka nad 0,4 x průměr): pro
+     * ně je wav_leader_detect_period().
      *
      * Bootstrap fáze: prvních BOOTSTRAP_COUNT pulzů používá
      * dvojnásobnou toleranci, protože running average je
@@ -130,9 +131,9 @@ en_WAV_ANALYZER_ERROR wav_leader_detect (
      * Bootstrap: pocet pulzu s dvojnasobnou toleranci.
      * Realne nahravky maji asymetricky duty cycle (HIGH != LOW
      * pul-perioda), takze prvnich min_pulses pulzu pouziva sirsi
-     * toleranci. To zajisti uspesnou akumulaci i pro signaly
-     * s vysokym jitterem (3200+ Bd pri 44100 Hz), kde kvantizace
-     * a duty cycle asymetrie dohromady davaji ~25% variaci.
+     * toleranci. Pro asymetrické pulzy s jitterem kvantizace
+     * (Intercopy 2800/3200 Bd při 44100 Hz) to nestačí, viz
+     * wav_leader_detect_period().
      * Po dosazeni min_pulses se running average stabilizuje
      * a rozsirovaci smycka pouziva standardni toleranci
      * s kvantizacni podlahou.
@@ -218,14 +219,48 @@ en_WAV_ANALYZER_ERROR wav_leader_find_all (
         st_WAV_LEADER_INFO leader;
         en_WAV_ANALYZER_ERROR err = wav_leader_detect ( seq, search_from, min_pulses, tolerance, &leader );
 
+        if ( err != WAV_ANALYZER_OK && err != WAV_ANALYZER_ERROR_NO_LEADER ) {
+            wav_leader_list_destroy ( out_list );
+            return err;
+        }
+
+        /*
+         * Tón s nesouměrnými půlvlnami (generátor Intercopy NORMAL 2800/3200 podle
+         * kódu programu, krátká půlvlna 3-6 vzorků při 44,1 kHz) detektor po půlvlnách
+         * rozseká hned za fází s dvojnásobnou tolerancí, nebo nenajde vůbec. Leader
+         * po periodách se použije, když začíná dřív (detektor po půlvlnách ho
+         * minul), nebo na stejném místě a je aspoň dvakrát delší. Musí mít aspoň
+         * 2 * min_pulses půlvln: v datech (FM, Manchester) detektor po periodách
+         * projde fází s dvojnásobnou tolerancí a skončí přesně na min_pulses
+         * (změřeno na nahrávkách z emulátoru), skutečný tón je delší. Kratší
+         * kandidáty přeskočí a hledá dál (tón dalšího souboru za daty). Souměrné tóny
+         * najdou oba detektory stejně, výsledek se pro ně nemění.
+         */
+        st_WAV_LEADER_INFO by_period;
+        int have_period = 0;
+        /* krátké kandidáty (data) přeskočit a hledat dál, nejvýš do začátku leaderu po půlvlnách */
+        for ( uint32_t from = search_from; from < seq->count; ) {
+            if ( wav_leader_detect_period ( seq, from, min_pulses, tolerance, &by_period ) != WAV_ANALYZER_OK ) break;
+            if ( err == WAV_ANALYZER_OK && by_period.start_index > leader.start_index ) break;
+            if ( by_period.pulse_count >= 2 * min_pulses ) {
+                have_period = 1;
+                break;
+            }
+            from = by_period.start_index + by_period.pulse_count;
+        }
+        if ( have_period ) {
+            if ( err == WAV_ANALYZER_ERROR_NO_LEADER
+                 || by_period.start_index + by_period.pulse_count <= leader.start_index
+                 || ( by_period.start_index <= leader.start_index
+                      && by_period.start_index + by_period.pulse_count >= leader.start_index + 2 * leader.pulse_count ) ) {
+                leader = by_period;
+                err = WAV_ANALYZER_OK;
+            }
+        }
+
         if ( err == WAV_ANALYZER_ERROR_NO_LEADER ) {
             /* žádný další leader nenalezen - konec */
             break;
-        }
-
-        if ( err != WAV_ANALYZER_OK ) {
-            wav_leader_list_destroy ( out_list );
-            return err;
         }
 
         /* přidáme leader do seznamu */
@@ -250,4 +285,69 @@ en_WAV_ANALYZER_ERROR wav_leader_find_all (
     }
 
     return WAV_ANALYZER_OK;
+}
+
+
+en_WAV_ANALYZER_ERROR wav_leader_detect_period (
+    const st_WAV_PULSE_SEQUENCE *seq,
+    uint32_t from_index,
+    uint32_t min_pulses,
+    double tolerance,
+    st_WAV_LEADER_INFO *out_leader
+) {
+    if ( !seq || !seq->pulses || seq->count == 0 || !out_leader ) return WAV_ANALYZER_ERROR_INVALID_PARAM;
+    if ( from_index >= seq->count ) return WAV_ANALYZER_ERROR_NO_LEADER;
+
+    memset ( out_leader, 0, sizeof ( *out_leader ) );
+
+    /* porovnávají se celé periody (součty sousedních půlvln) s průměrem period běhu */
+    double quant_floor_us = 1000000.0 / ( double ) seq->sample_rate;
+
+    uint32_t run_start = from_index;
+    uint32_t run_count = 1;        /* půlvlny v běhu */
+    double pair_sum = 0.0;         /* součet period v běhu */
+    uint32_t pair_n = 0;           /* počet period v běhu */
+
+    for ( uint32_t i = from_index + 1; i < seq->count; i++ ) {
+        double pair_us = seq->pulses[i - 1].duration_us + seq->pulses[i].duration_us;
+        int ok = 1;
+        if ( pair_n > 0 ) {
+            double avg = pair_sum / pair_n;
+            /* bootstrap: do min_pulses dvojnásobná tolerance (jako wav_leader_detect) */
+            double eff_tol = ( run_count < min_pulses ) ? tolerance * 2.0 : tolerance;
+            double max_diff = avg * eff_tol;
+            if ( max_diff < quant_floor_us ) max_diff = quant_floor_us;
+            ok = ( fabs ( pair_us - avg ) <= max_diff );
+        }
+        if ( ok ) {
+            pair_sum += pair_us;
+            pair_n++;
+            run_count++;
+            if ( run_count >= min_pulses ) {
+                out_leader->start_index = run_start;
+                out_leader->pulse_count = run_count;
+                /* rozšíření se standardní tolerancí */
+                for ( uint32_t j = i + 1; j < seq->count; j++ ) {
+                    double next_pair = seq->pulses[j - 1].duration_us + seq->pulses[j].duration_us;
+                    double cur_avg = pair_sum / pair_n;
+                    double next_max = cur_avg * tolerance;
+                    if ( next_max < quant_floor_us ) next_max = quant_floor_us;
+                    if ( fabs ( next_pair - cur_avg ) > next_max ) break;
+                    pair_sum += next_pair;
+                    pair_n++;
+                    run_count++;
+                    out_leader->pulse_count = run_count;
+                }
+                leader_refine_stats ( seq, out_leader );
+                return WAV_ANALYZER_OK;
+            }
+        } else {
+            run_start = i;
+            run_count = 1;
+            pair_sum = 0.0;
+            pair_n = 0;
+        }
+    }
+
+    return WAV_ANALYZER_ERROR_NO_LEADER;
 }

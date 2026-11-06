@@ -1,9 +1,9 @@
 /**
  * @file   test_ic_normal.c
- * @brief  Integracni test: dekodovani realne nahravky Intercopy NORMAL
+ * @brief  Integracni test: dekódování nahrávky Intercopy NORMAL z emulátoru
  *
  * Testovaci program:
- * 1. Nacte tstdata/ic-normal.wav (realna nahravka z Intercopy)
+ * 1. Nacte tstdata/ic-normal.wav (nahrávka Intercopy z emulátoru)
  * 2. Spusti wav_analyzer s preprocessingem (DC offset, HP filtr, normalizace)
  * 3. Overi, ze byly dekodovany 4 kopie programu Y2K
  * 4. Kontroluje: format NORMAL, body_size 32747, ftype 0x01, CRC OK
@@ -12,6 +12,7 @@
  * WAV soubor obsahuje 4 kopie programu Y2K v NORMAL FM pri rychlostech
  * 1200, 2400, 2800 a 3200 Bd. Pred kazdou kopii je kratky audio prefix
  * (synteticky hlas), ktery dekoder ignoruje.
+ * Bez tstdata/ vypíše SKIP a skončí 0 (tests/tstdata_skip.h).
  */
 
 #include <stdio.h>
@@ -20,6 +21,7 @@
 
 #include "libs/generic_driver/generic_driver.h"
 #include "libs/wav_analyzer/wav_analyzer.h"
+#include "tstdata_skip.h"
 
 
 /** @brief Ocekavany pocet dekodovanych souboru. */
@@ -36,6 +38,7 @@ static const char *g_wav_path = "../tstdata/ic-normal.wav";
 
 
 int main ( int argc, char *argv[] ) {
+    if ( argc < 2 && tstdata_skip ( "test_ic_normal" ) ) return 0;   /* argv[1] dává vstup místo tstdata/ */
     const char *wav_path = g_wav_path;
     int failures = 0;
 

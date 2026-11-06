@@ -1,7 +1,7 @@
 /**
  * @file   wav.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.1.0
  * @brief  Implementace knihovny pro čtení a zápis WAV souborů.
  *
  * Parsování hlavičky:
@@ -12,15 +12,20 @@
  *   - Korektně konvertuje endianitu všech polí
  *
  * Čtení vzorků:
- *   - wav_get_sample_float() — normalizovaná hodnota [-1.0, 1.0]
+ *   - wav_get_sample_float() - normalizovaná hodnota (PCM [-1.0, 1.0],
+ *     IEEE float beze změny)
  *   - wav_get_bit_value_of_sample() — 1-bit kvantizace (prahování)
- *   - Podpora 8/16/24/32/64-bit PCM, volitelný výběr kanálu
+ *   - wav_decode_sample() - jediný převod bajtů vzorku na hodnotu
+ *   - Podpora 8/16/24/32/64-bit PCM a IEEE float 32/64 bit (i ve
+ *     WAVE_FORMAT_EXTENSIBLE), volitelný výběr kanálu
  *
  * Zápis:
  *   - wav_write() — generuje kompletní WAV soubor (RIFF + fmt + data)
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
+ * - 2026-10-18 (2.1.0): čtení IEEE float a WAVE_FORMAT_EXTENSIBLE; převod
+ *   vzorků sjednocen do wav_decode_sample().
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -62,7 +67,7 @@ static const char *s_wav_error_strings[] = {
     [WAV_ERROR_BAD_RIFF]        = "missing RIFF/WAVE identifier",
     [WAV_ERROR_NO_FMT_CHUNK]    = "missing required 'fmt ' chunk",
     [WAV_ERROR_NO_DATA_CHUNK]   = "missing required 'data' chunk",
-    [WAV_ERROR_UNSUPPORTED_CODEC] = "unsupported format code (only PCM)",
+    [WAV_ERROR_UNSUPPORTED_CODEC] = "unsupported format code (only PCM and IEEE float)",
     [WAV_ERROR_UNSUPPORTED_BPS] = "unsupported bit depth",
     [WAV_ERROR_CORRUPT_HEADER]  = "inconsistent header",
     [WAV_ERROR_ALLOC]           = "memory allocation failed",
@@ -196,10 +201,19 @@ static en_WAV_ERROR wav_find_chunk ( st_HANDLER *h, uint32_t start_offset, uint3
  * ======================================================================== */
 
 /**
+ * @brief Ocas GUID SubFormat (bajty 4..15) společný pro KSDATAFORMAT_SUBTYPE_PCM
+ *        a _IEEE_FLOAT, jak je uložen ve WAV (ksmedia.h, DEFINE_WAVEFORMATEX_GUID).
+ */
+static const uint8_t s_ks_guid_tail[12] = { 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 };
+
+/**
  * @brief Interní parsování — vyplní caller-owned st_WAV_SIMPLE_HEADER.
  *
  * Validuje RIFF strukturu, vyhledá fmt a data chunky, konvertuje endianitu
- * a sestaví výstupní hlavičku.
+ * a sestaví výstupní hlavičku. Přijme PCM, IEEE float a WAVE_FORMAT_EXTENSIBLE
+ * se SubFormat PCM nebo IEEE float (fmt aspoň 40 B, cbSize aspoň 22,
+ * platné bity <= kontejner). Neznámý SubFormat = WAV_ERROR_UNSUPPORTED_CODEC,
+ * poškozené rozšíření = WAV_ERROR_CORRUPT_HEADER.
  *
  * @param h  Otevřený handler s WAV daty
  * @param sh Výstupní hlavička (vlastněná volajícím)
@@ -250,14 +264,44 @@ static en_WAV_ERROR wav_read_simple_header ( st_HANDLER *h, st_WAV_SIMPLE_HEADER
     uint16_t block_size = endianity_bswap16_LE ( fmt->block_size );
     uint16_t bits_per_sample = endianity_bswap16_LE ( fmt->bits_per_sample );
 
-    /* validace formátového kódu — podporujeme jen PCM */
-    if ( format_code != WAVE_FORMAT_CODE_PCM ) {
+    /*
+     * Formátový kód: PCM, IEEE float, nebo EXTENSIBLE se SubFormat PCM/float
+     *. format_code zůstává surový, sample_format je skutečné kódování.
+     */
+    uint16_t sample_format = format_code;
+    uint16_t valid_bits = bits_per_sample;
+    if ( format_code == WAVE_FORMAT_CODE_EXTENSIBLE ) {
+        if ( fmt_size < sizeof ( st_WAV_FMT16 ) + sizeof ( st_WAV_FMT_EXTENSIBLE_TAIL ) ) {
+            return WAV_ERROR_CORRUPT_HEADER;
+        }
+        uint8_t tail_buffer[sizeof ( st_WAV_FMT_EXTENSIBLE_TAIL )];
+        st_WAV_FMT_EXTENSIBLE_TAIL *tail = NULL;
+        if ( EXIT_SUCCESS != generic_driver_direct_read ( h, fmt_data_offset + sizeof ( st_WAV_FMT16 ), (void**) &tail,
+                                                          &tail_buffer, sizeof ( tail_buffer ) ) ) {
+            return WAV_ERROR_IO;
+        }
+        if ( endianity_bswap16_LE ( tail->cb_size ) < sizeof ( st_WAV_FMT_EXTENSIBLE_TAIL ) - sizeof ( uint16_t ) ) {
+            return WAV_ERROR_CORRUPT_HEADER;
+        }
+        uint32_t data1 = (uint32_t) tail->sub_format[0] | ( (uint32_t) tail->sub_format[1] << 8 )
+                         | ( (uint32_t) tail->sub_format[2] << 16 ) | ( (uint32_t) tail->sub_format[3] << 24 );
+        if ( memcmp ( &tail->sub_format[4], s_ks_guid_tail, sizeof ( s_ks_guid_tail ) ) != 0
+             || !( data1 == WAVE_FORMAT_CODE_PCM || data1 == WAVE_FORMAT_CODE_IEEE_FLOAT ) ) {
+            return WAV_ERROR_UNSUPPORTED_CODEC;
+        }
+        sample_format = (uint16_t) data1;
+        uint16_t vb = endianity_bswap16_LE ( tail->valid_bits_per_sample );
+        if ( vb > bits_per_sample ) return WAV_ERROR_CORRUPT_HEADER;
+        if ( vb != 0 ) valid_bits = vb;   /* 0 = celý kontejner */
+    } else if ( format_code != WAVE_FORMAT_CODE_PCM && format_code != WAVE_FORMAT_CODE_IEEE_FLOAT ) {
         return WAV_ERROR_UNSUPPORTED_CODEC;
     }
 
-    /* validace bitové hloubky — 8, 16, 24, 32, 64 */
-    if ( !( bits_per_sample == 8 || bits_per_sample == 16 || bits_per_sample == 24 ||
-            bits_per_sample == 32 || bits_per_sample == 64 ) ) {
+    /* validace bitové hloubky podle kódování: PCM 8/16/24/32/64, float 32/64 */
+    if ( sample_format == WAVE_FORMAT_CODE_IEEE_FLOAT ) {
+        if ( !( bits_per_sample == 32 || bits_per_sample == 64 ) ) return WAV_ERROR_UNSUPPORTED_BPS;
+    } else if ( !( bits_per_sample == 8 || bits_per_sample == 16 || bits_per_sample == 24 ||
+                   bits_per_sample == 32 || bits_per_sample == 64 ) ) {
         return WAV_ERROR_UNSUPPORTED_BPS;
     }
 
@@ -279,6 +323,8 @@ static en_WAV_ERROR wav_read_simple_header ( st_HANDLER *h, st_WAV_SIMPLE_HEADER
     sh->bytes_per_sec = bytes_per_sec;
     sh->block_size = block_size;
     sh->bits_per_sample = bits_per_sample;
+    sh->sample_format = sample_format;
+    sh->valid_bits_per_sample = valid_bits;
     sh->real_data_offset = data_offset;
     sh->data_size = data_size;
     sh->blocks = data_size / block_size;
@@ -351,50 +397,79 @@ en_WAV_ERROR wav_get_sample_float ( st_HANDLER *h, const st_WAV_SIMPLE_HEADER *s
         return WAV_ERROR_IO;
     }
 
+    return wav_decode_sample ( sh, buffer, value );
+}
+
+
+/** @copydoc wav_decode_sample */
+en_WAV_ERROR wav_decode_sample ( const st_WAV_SIMPLE_HEADER *sh, const uint8_t *raw, double *value ) {
+
+    if ( !sh || !raw || !value ) return WAV_ERROR_INVALID_PARAM;
+
+    if ( sh->sample_format == WAVE_FORMAT_CODE_IEEE_FLOAT ) {
+        double x;
+        if ( sh->bits_per_sample == 32 ) {
+            uint32_t u;
+            float f;
+            memcpy ( &u, raw, sizeof ( u ) );
+            u = endianity_bswap32_LE ( u );
+            memcpy ( &f, &u, sizeof ( f ) );
+            x = (double) f;
+        } else if ( sh->bits_per_sample == 64 ) {
+            uint64_t u;
+            memcpy ( &u, raw, sizeof ( u ) );
+            u = endianity_bswap64_LE ( u );
+            memcpy ( &x, &u, sizeof ( x ) );
+        } else {
+            return WAV_ERROR_UNSUPPORTED_BPS;
+        }
+        if ( x != x ) x = 0.0;                      /* NaN */
+        else if ( x > 1.0e300 ) x = 1.0;            /* +Inf */
+        else if ( x < -1.0e300 ) x = -1.0;          /* -Inf */
+        *value = x;
+        return WAV_OK;
+    }
+
     switch ( sh->bits_per_sample ) {
 
         case 8:
-        {
             /* 8-bit PCM je unsigned: 0..255, střed 128 */
-            uint8_t raw = buffer[0];
-            *value = ( (double) raw - 128.0 ) / 128.0;
+            *value = ( (double) raw[0] - 128.0 ) / 128.0;
             break;
-        }
 
         case 16:
         {
-            int16_t raw;
-            memcpy ( &raw, buffer, sizeof ( raw ) );
-            raw = endianity_bswap16_LE ( (uint16_t) raw );
-            *value = (double) raw / 32768.0;
+            int16_t v;
+            memcpy ( &v, raw, sizeof ( v ) );
+            v = (int16_t) endianity_bswap16_LE ( (uint16_t) v );
+            *value = (double) v / 32768.0;
             break;
         }
 
         case 24:
         {
             /* 24-bit signed little-endian → rozšíření na int32_t */
-            int32_t raw = (int32_t) buffer[0] | ( (int32_t) buffer[1] << 8 ) | ( (int32_t) buffer[2] << 16 );
-            /* rozšíření znaménka z 24 na 32 bitů */
-            if ( raw & 0x800000 ) raw |= (int32_t) 0xFF000000;
-            *value = (double) raw / 8388608.0;  /* 2^23 */
+            int32_t v = (int32_t) raw[0] | ( (int32_t) raw[1] << 8 ) | ( (int32_t) raw[2] << 16 );
+            if ( v & 0x800000 ) v |= (int32_t) 0xFF000000;
+            *value = (double) v / 8388608.0;  /* 2^23 */
             break;
         }
 
         case 32:
         {
-            int32_t raw;
-            memcpy ( &raw, buffer, sizeof ( raw ) );
-            raw = (int32_t) endianity_bswap32_LE ( (uint32_t) raw );
-            *value = (double) raw / 2147483648.0;  /* 2^31 */
+            int32_t v;
+            memcpy ( &v, raw, sizeof ( v ) );
+            v = (int32_t) endianity_bswap32_LE ( (uint32_t) v );
+            *value = (double) v / 2147483648.0;  /* 2^31 */
             break;
         }
 
         case 64:
         {
-            int64_t raw;
-            memcpy ( &raw, buffer, sizeof ( raw ) );
-            raw = (int64_t) endianity_bswap64_LE ( (uint64_t) raw );
-            *value = (double) raw / 9223372036854775808.0;  /* 2^63 */
+            int64_t v;
+            memcpy ( &v, raw, sizeof ( v ) );
+            v = (int64_t) endianity_bswap64_LE ( (uint64_t) v );
+            *value = (double) v / 9223372036854775808.0;  /* 2^63 */
             break;
         }
 

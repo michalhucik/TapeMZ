@@ -1,7 +1,7 @@
 /**
  * @file   tmz.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.11.0
  * @brief  Implementace TMZ knihovny - MZ-specificka nadstavba nad TZX.
  *
  * Obsahuje funkce specificke pro TMZ format:
@@ -98,6 +98,7 @@ const char* tmz_block_id_name ( uint8_t id ) {
         case TMZ_BLOCK_ID_MZ_MACHINE_INFO:   return "MZ Machine Info";
         case TMZ_BLOCK_ID_MZ_LOADER:         return "MZ Loader";
         case TMZ_BLOCK_ID_MZ_BASIC_DATA:     return "MZ BASIC Data";
+        case TMZ_BLOCK_ID_MZ_FILE:           return "MZ File";
 
         /* vsechny ostatni delegovat na TZX */
         default:

@@ -25,9 +25,17 @@ Knihovna pracuje ve dvou krocich:
 1. **Parsovani** - raw bajty bloku -> typovana struktura (zero-copy, ukazatele do raw dat)
 2. **Generovani** - typovana struktura -> CMT vstream (RLE kodovane pulzy)
 
+Úroveň signálu (od 1.1.0) podle TZX 1.20: aktuální úroveň je úroveň
+dalšího pulzu, pulz se zapíše na ní a úroveň se otočí. Pauza > 0 při vysoké
+úrovni začne 1 ms vysoko, zbytek nízko; po pauze je úroveň nízká, Pause 0 ji
+nemění. Po 0x15 platí opak posledního vzorku (spec to neurčuje, (hypotéza)).
+`tzx_generate_block(block, config, &level, &err)` úroveň přebírá a vrací,
+takže přehrávač ji drží mezi bloky; ostatní `tzx_generate_*()` začínají nízkou
+úrovní.
+
 Casovani je v Z80 T-states. Prepocet na vzorky: `samples = tstates * sample_rate / cpu_clock`.
 Vychozi CPU takt je 3 500 000 Hz (ZX Spectrum), ale lze zmenit pres st_TZX_CONFIG.cpu_clock
-pro Sharp MZ (3 546 900 Hz) nebo jiny procesor.
+pro Sharp MZ-800 (3 546 895 Hz = 17 734 475 / 5) nebo jiny procesor.
 
 ## Implementovano
 
@@ -35,13 +43,13 @@ pro Sharp MZ (3 546 900 Hz) nebo jiny procesor.
 
 | ID   | Blok | Parsovani | Generovani | Poznamka |
 |------|------|-----------|------------|----------|
-| 0x10 | Standard Speed Data | ano | ano | Standardni ROM casovani, pilot 8063/3223 pulzu |
-| 0x11 | Turbo Speed Data | ano | ano | Vlastni pilot/sync/bit timing - klicovy pro nestandardni formaty |
+| 0x10 | Standard Speed Data | ano | ano | Standardni ROM casovani, pilot 8063/3223 pulzu (půlvln; od 1.1.0 už ne dvojnásobek) |
+| 0x11 | Turbo Speed Data | ano | ano | Vlastni pilot/sync/bit timing - klicovy pro nestandardni formaty; pilot = pilot_count pulzu |
 | 0x12 | Pure Tone | ano | ano | Sekvence pulzu stejne delky |
 | 0x13 | Pulse Sequence | ano | ano | Az 255 pulzu ruznych delek |
 | 0x14 | Pure Data | ano | ano | Data bez pilot/sync, vlastni bit timing |
 | 0x15 | Direct Recording | ano | ano | Primy 1-bit zaznam, libovolny signal |
-| 0x20 | Pause | ano | ano | Ticho / zastaveni pasky |
+| 0x20 | Pause | ano | ano | Ticho; Pause 0 = zastaveni pasky (generator vrati NULL s TZX_OK, vyhodnoti prehravac) |
 
 ### Bloky pouze s parsovanim (bez generovani)
 
@@ -99,8 +107,8 @@ zpracovava je dispatcher v tmz_player na vyssi urovni.
 ### Omezeni
 
 - Knihovna neprovadi validaci semantiky dat (napr. neoveruje, ze pilot_count > 0)
-- Pulse Sequence (0x13): pole pulzu se cte primo z raw dat bez konverze endianity
-  za runtime - funguje spravne jen na little-endian platformach
+- Pulse Sequence (0x13): parser vraci pole pulzu v raw datech (LE), generator je cte
+  pres read_le16(), takze funguje na little- i big-endian platformach
 - Direct Recording: sousedni bity se stejnou urovni se slucuji do jednoho pulzu
   pro efektivnejsi vstream, coz je semanticky ekvivalentni ale fyzicky odlisna
   reprezentace
@@ -117,7 +125,7 @@ zpracovava je dispatcher v tmz_player na vyssi urovni.
 
 st_TZX_CONFIG cfg;
 tzx_config_init(&cfg);
-cfg.cpu_clock = 3546900; /* Sharp MZ-800 */
+cfg.cpu_clock = 3546895; /* Sharp MZ-800 */
 
 /* parsovani bloku 0x11 */
 st_TZX_TURBO_SPEED parsed;

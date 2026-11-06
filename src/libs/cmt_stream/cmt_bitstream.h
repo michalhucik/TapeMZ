@@ -1,7 +1,7 @@
 /**
  * @file   cmt_bitstream.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Bitstream — kondenzovaný WAV formát, kde 1 bit = 1 vzorek.
  *
  * Data jsou uložena jako pole uint32_t bloků (po 32 bitech).
@@ -9,7 +9,7 @@
  * pro přehrávání s náhodným přístupem k pozici v čase.
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)

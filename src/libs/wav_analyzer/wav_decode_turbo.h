@@ -1,22 +1,21 @@
 /**
  * @file   wav_decode_turbo.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
- * @brief  Vrstva 4b analyzeru - TURBO dekoder (NIPSOFT signatura).
+ * @version 1.3.1
+ * @brief  Vrstva 4b analyzéru - TURBO dekodér (tělo za předzavaděčem).
  *
- * Dekoduje TURBO format z WAV signalu. TURBO signal se sklada ze dvou casti:
+ * TURBO záznam má dvě části:
  *
- * Cast 1 (NORMAL 1:1 rychlost):
- *   LGAP + LTM + 2L + LOADER_HDR(128B, fsize=0, NIPSOFT v cmnt) + CHKH + 2L
- *   Loader hlavicka s fsize=0 - ROM ji nacte a spusti loader kod.
+ * Část 1 (NORMAL 1:1): předzavaděč, který ROM načte a spustí. TurboCopy
+ *   má tělo 90 B na $D400 se signaturou "[turbo]" v cmnt (wav_classify),
+ *   mzftools má fsize 0 a zavaděč v cmnt.
  *
- * Cast 2 (TURBO rychlost):
- *   LGAP + LTM + 2L + ORIG_HDR(128B, realne parametry) + CHKH + 2L
- *   + [kopie] + SGAP + STM + 2L + BODY + CHKB + 2L + [kopie]
- *   Kompletni MZF ramec s originalnimi parametry a telem.
+ * Část 2 (TURBO rychlost): LGAP + krátký tapemark + tělo + checksum.
+ *   Předzavaděč přepne rychlost ROM a čte jen tělo, hlavička se v TURBO
+ *   rychlosti nezapisuje; parametry (fsize, fstrt, fexec) nese předzavaděč.
  *
- * Dekoder prijme jiz dekodovanou loader hlavicku (z FM dekoderu),
- * najde Cast 2 a dekoduje ji jako standardni FM MZF.
+ * Dekodér přijme už dekódovaný předzavaděč (z FM dekodéru), najde část 2
+ * a přečte tělo (detektor leaderu nezávislý na rychlosti, mez hledání).
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -53,41 +52,6 @@ extern "C" {
 
 
     /**
-     * @brief Dekoduje kompletni MZF soubor z TURBO signalu.
-     *
-     * Predpoklada, ze FM dekoder jiz dekodoval loader hlavicku
-     * (Cast 1, fsize=0, NIPSOFT signatura). Tato funkce:
-     * 1. Najde leader Cast 2 (od search_from_pulse vpred)
-     * 2. Deleguje dekodovani Cast 2 na FM dekoder
-     * 3. Cast 2 obsahuje kompletni MZF ramec (hlavicka + telo)
-     *
-     * @param seq Sekvence pulzu. Nesmi byt NULL.
-     * @param search_from_pulse Pozice od ktere hledat Cast 2
-     *        (typicky hdr_res.pulse_end z FM dekoderu).
-     * @param[out] out_mzf Vystupni MZF struktura (volajici uvolni pres mzf_free).
-     *             Nesmi byt NULL.
-     * @param[out] out_header_result Vysledek dekodovani hlavicky Cast 2. Muze byt NULL.
-     * @param[out] out_body_result Vysledek dekodovani tela Cast 2. Muze byt NULL.
-     * @param[out] out_consumed_until Pozice za poslednim zpracovanym pulzem.
-     *             Orchestrator pouzije pro preskoceni leaderu Cast 2.
-     *             Muze byt NULL.
-     * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
-     *
-     * @pre FM dekoder jiz dekodoval Cast 1 hlavicku a klasifikator
-     *      urcil format jako WAV_TAPE_FORMAT_TURBO.
-     * @post Pri uspechu *out_mzf ukazuje na dekodovany MZF soubor z Cast 2.
-     */
-    extern en_WAV_ANALYZER_ERROR wav_decode_turbo_decode_mzf (
-        const st_WAV_PULSE_SEQUENCE *seq,
-        uint32_t search_from_pulse,
-        st_MZF **out_mzf,
-        st_WAV_DECODE_RESULT *out_header_result,
-        st_WAV_DECODE_RESULT *out_body_result,
-        uint32_t *out_consumed_until
-    );
-
-
-    /**
      * @brief Dekoduje TurboCopy TURBO body-only signal.
      *
      * TurboCopy TURBO preloader (fsize>0, fstrt=$D400) patchne ROM
@@ -104,7 +68,9 @@ extern "C" {
      *
      * @param seq Sekvence pulzu. Nesmi byt NULL.
      * @param search_from_pulse Pozice od ktere hledat TURBO LGAP.
-     * @param preloader_header Hlavicka preloaderu (ftype, fname pro vysledny MZF).
+     * @param preloader_header Hlavička preloaderu (ftype, fname a cmnt[7..] pro výsledný MZF;
+     *        cmnt[0..6] nese signaturu TurboCopy a nahradí se původními 7 B z těla
+     *        preloaderu na 53h, je-li tělo dost dlouhé).
      * @param preloader_body Telo preloaderu (90B loader, obsahuje user_params).
      * @param preloader_body_size Velikost tela preloaderu.
      * @param[out] out_mzf Vystupni MZF (volajici uvolni pres mzf_free). Nesmi byt NULL.

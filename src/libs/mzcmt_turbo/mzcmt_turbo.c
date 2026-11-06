@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_turbo.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.1
+ * @version 2.3.0
  * @brief  Implementace TURBO koderu pro Sharp MZ.
  *
  * TURBO je standardni NORMAL FM modulace s konfigurovatelnym pulznim
@@ -12,18 +12,15 @@
  * Za kazdym bajtem nasleduje stop bit (long pulz). Bajty se odesilaji
  * od MSB k LSB (shodne s ROM rutinou).
  *
- * Pulzni casovani lze zadat explicitne (pole *_us100 v konfiguraci),
- * nebo se pouziji vychozi hodnoty z pulsesetu skalovane rychlostnim
- * divisorem (en_CMTSPEED).
+ * Časování datové části (tape API, mzcmt_turbo_create_tape_*) a čtecí
+ * bod N počítá mzcmt_turbo_get_timing() z profilu zapisovače (TurboCopy
+ * V1.2x) nebo z vlastních pulzů (pole *_us100, jednotka 0,1 us);
+ * mzcmt_turbo_check_readpoint() ověří čitelnost ROM rutinou. Pulzní sada
+ * (g_pulses_*) určuje jen předzavaděč zapisovaný 1:1.
  *
- * @par Popis vychozich pulznich konstant:
- * @verbatim
- *   MZ-700:  long 464+494 us, short 240+264 us
- *   MZ-800:  long 498+498 us, short 249+249 us  (symetricke, ROM chovani)
- *   MZ-80B:  long 333+334 us, short 167+166 us
- *
- *   Pri rychlosti 2:1 se vsechny casy deli 2, pri 7:3 deli 7/3 atd.
- * @endverbatim
+ * Experimentální API bez předzavaděče (mzcmt_turbo_create_vstream/_stream)
+ * dál používá staré škálování: pulzy sady dělené poměrem rychlosti, bez
+ * vazby na N a bez kontroly čitelnosti (turbo_prepare_pulses).
  *
  * @par Licence:
  * Odvozeno z projektu MZFTools v0.2.2 (mz-fuzzy@users.sf.net),
@@ -137,10 +134,8 @@ typedef struct st_turbo_pulses_length {
 /**
  * @brief Vychozi pulzni konstanty pro MZ-700, MZ-80K, MZ-80A.
  *
- * Symetricke hodnoty - MZ-700 ROM pouziva stejnou delay smycku
- * pro obe poloviny pulzu. Zakladni casovani: SHORT = 252 us,
- * LONG = 504 us (pomer 1:2). Odvozeno ze stredni hodnoty
- * puvodniho mereni (240+264)/2 = 252, (464+494)/2 = 479 ~ 504.
+ * Symetrické hodnoty TMZ v1.0: SHORT 252 us, LONG 504 us, bez doloženého
+ * zdroje [neověřeno]. ROM zapisuje pulzy asymetricky.
  */
 static const st_turbo_pulses_length g_pulses_700 = {
     { 0.000504, 0.000504 },   /* long: 504 us H + 504 us L */
@@ -151,14 +146,11 @@ static const st_turbo_pulses_length g_pulses_700 = {
 /**
  * @brief Vychozi pulzni konstanty pro MZ-800, MZ-1500.
  *
- * Symetricke hodnoty odpovidajici chovani MZ-800 ROM - ROM pouziva
- * stejnou delay smycku pro HIGH i LOW cast pulzu, takze obe poloviny
- * maji shodnou delku. Puvodni asym. hodnoty (246/278, 470/494) z mereni
- * Intercopy 10.2 zpusobovaly spatne zaokrouhlovani na 44100 Hz
- * (11+12 vzorku misto 11+11 pro SHORT), coz se projevilo odchylkou
- * namerenene rychlosti v Intercopy (~1099 Bd misto ~1150 Bd).
- *
- * Zakladni casovani: SHORT = 249 us, LONG = 498 us (pomer 1:2).
+ * Symetrické hodnoty TMZ v1.0: SHORT 249 us, LONG 498 us; v TURBO slouží
+ * jen pro předzavaděč (1:1). ROM podle T-stavů píše asymetricky, asi
+ * 238/259 a 469/491 us, nominál
+ * dokumentace HW je 240/278 a 470/494 us (profil ROM-800-NOMINAL). Pro čtení ROM
+ * 1:1 je symetrická sada čitelná (čtecí bod ~379 us).
  */
 static const st_turbo_pulses_length g_pulses_800 = {
     { 0.000498, 0.000498 },         /* long: 498 us H + 498 us L */
@@ -213,7 +205,7 @@ typedef struct st_turbo_pulses_samples {
  * @brief Pripravi skalovane pulzni sirky z konfigurace.
  *
  * Pokud jsou explicitni casovani v konfiguraci nenulove, pouzije je
- * (konverze z us*100 na pocty vzorku). Jinak pouzije vychozi pulzni
+ * (konverze z 0,1 us na počty vzorků). Jinak použije výchozí pulzní
  * konstanty skalovane rychlostnim divisorem.
  *
  * @param[out] pulses Vystupni struktura se skalovanymi pulzy.
@@ -226,7 +218,7 @@ static void turbo_prepare_pulses ( st_turbo_pulses_samples *pulses, const st_MZC
     const st_turbo_pulses_length *src = g_pulses[config->pulseset];
 
     if ( config->long_high_us100 != 0 ) {
-        /* explicitni casovani: us*100 -> sekundy -> vzorky */
+        /* explicitní časování: 0,1 us -> sekundy -> vzorky */
         double sec = config->long_high_us100 / 10000000.0;
         pulses->long_pulse.high = ( uint32_t ) round ( sec * rate );
     } else {
@@ -606,7 +598,7 @@ st_CMT_STREAM* mzcmt_turbo_create_stream (
  *
  * Struktura kompletniho 90B loaderu:
  * - bajty 0x00-0x4A: genericka cast (75B, vzdy stejna) = toto pole
- * - bajt 0x4B: speed_val (ROM delay pro $0A4B)
+ * - bajt 0x4B: čtecí bod N (předzavaděč ho zapíše na $0A4B)
  * - bajt 0x4C: read_param (vzdy $01, pro $0512)
  * - bajty 0x4D-0x4E: user fsize (2B LE)
  * - bajty 0x4F-0x50: user fstrt (2B LE)
@@ -627,13 +619,13 @@ static const uint8_t g_tc_loader_generic[75] = {
 /** @brief Velikost genericke casti TurboCopy loaderu (bajty). */
 #define TC_LOADER_GENERIC_SIZE  75
 
-/** @brief Celkova velikost TurboCopy loader body (bajty). */
-#define TC_LOADER_BODY_SIZE     90
+/** @brief Celkova velikost TurboCopy loader body (bajty), viz MZCMT_TURBO_PRELOADER_SIZE. */
+#define TC_LOADER_BODY_SIZE     MZCMT_TURBO_PRELOADER_SIZE
 
 /** @brief Load/exec adresa TurboCopy loaderu v pameti Z80. */
 #define TC_LOADER_ADDR          0xD400
 
-/** @brief Offset speed_val v loader body (1B, ROM delay hodnota pro $0A4B). */
+/** @brief Offset čtecího bodu N v loader body (1B, předzavaděč ho zapíše na $0A4B). */
 #define TC_OFF_SPEED            0x4B
 
 /** @brief Offset read_param v loader body (1B, vzdy $01, pro $0512). */
@@ -664,47 +656,185 @@ static const uint8_t g_tc_signature[7] = {
 };
 
 
+int mzcmt_turbo_build_preloader ( const st_MZF_HEADER *original, uint32_t body_size, uint8_t readpoint,
+                                  uint8_t header_out[128], uint8_t body_out[MZCMT_TURBO_PRELOADER_SIZE] ) {
+    if ( !original || !header_out || !body_out || body_size > 0xFFFF ) return EXIT_FAILURE;
+
+    /* hlavička: fsize/fstrt/fexec loaderu, signatura v cmnt[0..6], cmnt[7..103] z originálu */
+    st_MZF_HEADER preloader_hdr;
+    memcpy ( &preloader_hdr, original, sizeof ( st_MZF_HEADER ) );
+    preloader_hdr.fsize = TC_LOADER_BODY_SIZE;
+    preloader_hdr.fstrt = TC_LOADER_ADDR;
+    preloader_hdr.fexec = TC_LOADER_ADDR;
+    memcpy ( &preloader_hdr.cmnt[0], g_tc_signature, 7 );
+    mzf_header_swap_endianity ( &preloader_hdr );   /* -> LE, jak jde na pásku; 11h z originálu */
+    memcpy ( header_out, &preloader_hdr, sizeof ( st_MZF_HEADER ) );
+
+    /* tělo: generická část + čtecí bod N + read_param + metadata programu + cmnt[0..6] originálu */
+    memset ( body_out, 0, TC_LOADER_BODY_SIZE );
+    memcpy ( body_out, g_tc_loader_generic, TC_LOADER_GENERIC_SIZE );
+    body_out[TC_OFF_SPEED] = readpoint;
+    body_out[TC_OFF_RDPARAM] = 0x01;
+    uint16_t u_size = endianity_bswap16_LE ( ( uint16_t ) body_size );
+    uint16_t u_strt = endianity_bswap16_LE ( original->fstrt );
+    uint16_t u_exec = endianity_bswap16_LE ( original->fexec );
+    memcpy ( &body_out[TC_OFF_FSIZE], &u_size, 2 );
+    memcpy ( &body_out[TC_OFF_FSTRT], &u_strt, 2 );
+    memcpy ( &body_out[TC_OFF_FEXEC], &u_exec, 2 );
+    memcpy ( &body_out[TC_OFF_ROMPARAMS], &original->cmnt[0], 7 );
+    return EXIT_SUCCESS;
+}
+
+
 /* =========================================================================
- *  ROM delay vypocet pro TurboCopy loader
+ *  Čtecí bod ROM a časování datové části (profil zapisovače)
  * ========================================================================= */
 
-/**
- * @brief Referencni ROM delay hodnota pro rychlost 1:1 (NORMAL).
- *
- * Odvozeno z mereni realnych TurboCopy nahravek:
- *   2:1 -> delay 41 ($29), 82/2.0 = 41.0
- *   7:3 -> delay 35 ($23), 82/2.333 = 35.1
- *   8:3 -> delay 30 ($1E), 82/2.667 = 30.75
- *   3:1 -> delay 27 ($1B), 82/3.0 = 27.3
- *
- * Vzorec: delay = floor(82 / speed_ratio)
- * TurboCopy na Z80 pouziva celociselne deleni (truncation),
- * ekvivalentne: delay = (82 * denominator) / numerator.
- * Rounding (+ 0.5) zpusoboval chybu u 8:3 (31 misto 30),
- * coz vedlo k ~2.5% odchylce v namerenene rychlosti.
- */
-#define TC_ROM_DELAY_REF    82.0
+/** @brief Takt CPU MZ-800 pro výpočet T-stavů čtecí rutiny (Hz). */
+#define TURBO_CPU_HZ        3546895.0
+
+
+int mzcmt_turbo_check_readpoint ( const st_MZCMT_TURBO_TIMING *timing, uint32_t rate, st_MZCMT_TURBO_MARGINS *margins ) {
+    st_MZCMT_TURBO_MARGINS local;
+    if ( !margins ) margins = &local;
+    memset ( margins, 0, sizeof ( *margins ) );
+    if ( !timing || rate == 0 ) return EXIT_FAILURE;
+
+    double t_per_sample = TURBO_CPU_HZ / rate;
+    double us_per_t = 1000000.0 / TURBO_CPU_HZ;
+    double n = timing->readpoint;
+    double sh = timing->short_high * t_per_sample;
+    double sl = timing->short_low * t_per_sample;
+    double lh = timing->long_high * t_per_sample;
+
+    margins->short_high_us = ( ( 86.0 + 14.0 * n ) - sh ) * us_per_t;
+    margins->long_high_us = ( lh - ( 138.0 + 14.0 * n ) ) * us_per_t;
+    margins->short_period_us = ( ( sh + sl ) - ( 256.0 + 14.0 * n ) ) * us_per_t;
+
+    if ( margins->short_high_us < MZCMT_TURBO_MIN_MARGIN_US ) return EXIT_FAILURE;
+    if ( margins->long_high_us < MZCMT_TURBO_MIN_MARGIN_US ) return EXIT_FAILURE;
+    if ( margins->short_period_us < MZCMT_TURBO_MIN_MARGIN_US ) return EXIT_FAILURE;
+    return EXIT_SUCCESS;
+}
+
+
+/** @brief Takt čítače CTC0 (8253) MZ-800 (Hz) - zdroj tiků S-modelu TurboCopy. */
+#define TURBO_CTC0_HZ       1108405.0
+
 
 /**
- * @brief Spocita ROM delay pro TurboCopy loader z rychlostniho pomeru.
+ * @brief Převede en_CMTSPEED na poměr a:b s číslicemi 1-9 (zápis TurboCopy).
  *
- * TurboCopy loader patchne ROM na adrese $0A4B timto delay.
- * Delay urcuje prodlevu v ROM cteci smycce - nizsi delay = rychlejsi
- * cteni = vyssi rychlostni pomer.
- *
- * Pouziva truncation (floor) misto rounding, protoze TurboCopy
- * na Z80 pocita delay celociselnym delenim.
- *
- * @param speed en_CMTSPEED hodnota.
- * @return Hodnota delay pro patchovani loaderu (1-82).
+ * @param speed Rychlost.
+ * @param[out] a Čitatel (1-9).
+ * @param[out] b Jmenovatel (1-9).
+ * @return EXIT_SUCCESS, nebo EXIT_FAILURE pro poměr, který TurboCopy zadat
+ *         neumí (25:14, 2:1 CP/M) nebo neplatnou hodnotu.
  */
-static uint8_t turbo_tape_get_rom_delay ( en_CMTSPEED speed ) {
-    double divisor = cmtspeed_get_divisor ( speed );
-    if ( divisor <= 0.0 ) divisor = 1.0;
-    int delay = ( int ) ( TC_ROM_DELAY_REF / divisor );
-    if ( delay < 1 ) delay = 1;
-    if ( delay > 255 ) delay = 255;
-    return ( uint8_t ) delay;
+int mzcmt_turbo_speed_to_ratio ( en_CMTSPEED speed, unsigned *a, unsigned *b ) {
+    switch ( speed ) {
+        case CMTSPEED_1_1: *a = 1; *b = 1; return EXIT_SUCCESS;
+        case CMTSPEED_2_1: *a = 2; *b = 1; return EXIT_SUCCESS;
+        case CMTSPEED_3_1: *a = 3; *b = 1; return EXIT_SUCCESS;
+        case CMTSPEED_3_2: *a = 3; *b = 2; return EXIT_SUCCESS;
+        case CMTSPEED_7_3: *a = 7; *b = 3; return EXIT_SUCCESS;
+        case CMTSPEED_8_3: *a = 8; *b = 3; return EXIT_SUCCESS;
+        case CMTSPEED_9_7: *a = 9; *b = 7; return EXIT_SUCCESS;
+        default: return EXIT_FAILURE;
+    }
+}
+
+
+int mzcmt_turbo_speed_is_supported ( en_MZCMT_TURBO_PROFILE profile, en_CMTSPEED speed ) {
+    unsigned a, b;
+    if ( profile != MZCMT_TURBO_PROFILE_TURBOCOPY_V12X ) return 0;
+    return mzcmt_turbo_speed_to_ratio ( speed, &a, &b ) == EXIT_SUCCESS;
+}
+
+
+/**
+ * @brief Najde čtecí bod N s největší rezervou pro dané pulzy.
+ *
+ * Přípustné N splňuje (v T-stavech) sh < 86+14N, lh > 138+14N
+ * a sh+sl > 256+14N. Vrací střed přípustného intervalu v 1..255.
+ *
+ * @param t Časování ve vzorcích (readpoint se nečte).
+ * @param rate Vzorkovací frekvence (Hz, > 0).
+ * @return N, nebo 0 pokud je přípustný interval prázdný.
+ */
+static uint8_t turbo_readpoint_from_pulses ( const st_MZCMT_TURBO_TIMING *t, uint32_t rate ) {
+    double tps = TURBO_CPU_HZ / rate;
+    double sh = t->short_high * tps;
+    double sl = t->short_low * tps;
+    double lh = t->long_high * tps;
+    long n_min = ( long ) floor ( ( sh - 86.0 ) / 14.0 ) + 1;
+    double hi1 = ( lh - 138.0 ) / 14.0;
+    double hi2 = ( sh + sl - 256.0 ) / 14.0;
+    long n_max = ( long ) ceil ( hi1 < hi2 ? hi1 : hi2 ) - 1;
+    if ( n_min < 1 ) n_min = 1;
+    if ( n_max > 255 ) n_max = 255;
+    if ( n_max < n_min ) return 0;
+    return ( uint8_t ) ( ( n_min + n_max ) / 2 );
+}
+
+
+int mzcmt_turbo_get_timing ( const st_MZCMT_TURBO_CONFIG *config, uint32_t rate, st_MZCMT_TURBO_TIMING *timing ) {
+    if ( !timing ) return EXIT_FAILURE;
+    memset ( timing, 0, sizeof ( *timing ) );
+    if ( !config || rate == 0 ) return EXIT_FAILURE;
+
+    if ( config->profile != MZCMT_TURBO_PROFILE_TURBOCOPY_V12X ) {
+        g_error_cb ( __func__, __LINE__, "Unknown TURBO profile %d\n", config->profile );
+        return EXIT_FAILURE;
+    }
+
+    int custom = config->long_high_us100 || config->long_low_us100 || config->short_high_us100 || config->short_low_us100;
+
+    if ( !custom ) {
+        unsigned a, b;
+        if ( EXIT_SUCCESS != mzcmt_turbo_speed_to_ratio ( config->speed, &a, &b ) ) {
+            g_error_cb ( __func__, __LINE__, "Speed %s is not supported by the TurboCopy profile\n", cmtspeed_get_ratiotxt ( config->speed ) );
+            return EXIT_FAILURE;
+        }
+        /* S-model TurboCopy (hypotéza): S tiků CTC0, SHORT = S/2, LONG = S na půlvlnu */
+        unsigned s_ticks = 71 + ( 480 * b ) / a;
+        double tick = ( double ) rate / TURBO_CTC0_HZ;
+        timing->readpoint = ( uint8_t ) ( ( 82 * b ) / a ); /* celočíselně jako TurboCopy */
+        timing->short_high = ( uint32_t ) lround ( s_ticks / 2.0 * tick );
+        timing->short_low = timing->short_high;
+        timing->long_high = ( uint32_t ) lround ( s_ticks * tick );
+        timing->long_low = timing->long_high;
+    } else {
+        /* vlastní pulzy (0,1 us); chybějící půlvlna = druhá půlvlna téhož pulzu */
+        double sh = config->short_high_us100, sl = config->short_low_us100;
+        double lh = config->long_high_us100, ll = config->long_low_us100;
+        if ( ( sh == 0 && sl == 0 ) || ( lh == 0 && ll == 0 ) ) {
+            g_error_cb ( __func__, __LINE__, "Incomplete custom pulses (both halves of a pulse are zero)\n" );
+            return EXIT_FAILURE;
+        }
+        if ( sh == 0 ) sh = sl;
+        if ( sl == 0 ) sl = sh;
+        if ( lh == 0 ) lh = ll;
+        if ( ll == 0 ) ll = lh;
+        timing->short_high = ( uint32_t ) lround ( sh / 1e7 * rate );
+        timing->short_low = ( uint32_t ) lround ( sl / 1e7 * rate );
+        timing->long_high = ( uint32_t ) lround ( lh / 1e7 * rate );
+        timing->long_low = ( uint32_t ) lround ( ll / 1e7 * rate );
+    }
+
+    if ( timing->short_high < 1 ) timing->short_high = 1;
+    if ( timing->short_low < 1 ) timing->short_low = 1;
+    if ( timing->long_high < 1 ) timing->long_high = 1;
+    if ( timing->long_low < 1 ) timing->long_low = 1;
+
+    if ( custom ) {
+        timing->readpoint = turbo_readpoint_from_pulses ( timing, rate );
+        if ( timing->readpoint == 0 ) {
+            g_error_cb ( __func__, __LINE__, "Custom pulses admit no ROM read point\n" );
+            return EXIT_FAILURE;
+        }
+    }
+    return EXIT_SUCCESS;
 }
 
 
@@ -725,17 +855,21 @@ static uint8_t turbo_tape_get_rom_delay ( en_CMTSPEED speed ) {
  *   LGAP + STM(20L+20S) + 2L + BODY + CHKB + 2L + [kopie]
  *
  * TurboCopy loader (90B na $D400) patchne ROM:
- * - $0A4B = speed delay (rychlost TURBO cteni)
- * - $0512 = $01 (body-only rezim)
+ * - $0A4B = čtecí bod N z mzcmt_turbo_get_timing()
+ * - $0512 = $01 (počet čtených kopií bloku, H v @RBLOK)
  * Pak vola $002A (CMT read), ktera cte pouze telo v TURBO rychlosti.
  * Metadata (fsize/fstrt/fexec) jsou v loader body na offsetu $4D.
  *
  * @param original  Originalni MZF hlavicka (v host byte-order).
  * @param body      Datove telo.
  * @param body_size Velikost datoveho tela.
- * @param config    Konfigurace (pulseset, speed, GAP delky, flags).
+ * @param config    Konfigurace: pulseset (jen předzavaděč; 80B je chyba),
+ *                  speed a profile, nebo vlastní pulzy v 0,1 us (pak se
+ *                  N počítá z pulzů), délky GAP, flags.
  * @param rate      Vzorkovaci frekvence (Hz).
- * @return Novy vstream, nebo NULL pri chybe.
+ * @return Novy vstream, nebo NULL pri chybe: neplatný vstup, sada 80B,
+ *         rychlost nepodporovaná profilem, časování nečitelné ROM s
+ *         rezervou MZCMT_TURBO_MIN_MARGIN_US, chyba vstreamu.
  */
 st_CMT_VSTREAM* mzcmt_turbo_create_tape_vstream (
     const st_MZF_HEADER *original,
@@ -765,8 +899,9 @@ st_CMT_VSTREAM* mzcmt_turbo_create_tape_vstream (
         return NULL;
     }
 
-    if ( !cmtspeed_is_valid ( config->speed ) ) {
-        g_error_cb ( __func__, __LINE__, "Invalid speed %d\n", config->speed );
+    if ( config->pulseset == MZCMT_TURBO_PULSESET_80B ) {
+        /* TurboCopy je program pro MZ-700/800; pulzy 80B jsou pro ROM 1:1 nečitelné */
+        g_error_cb ( __func__, __LINE__, "TURBO format is not supported for MZ-80B pulseset\n" );
         return NULL;
     }
 
@@ -775,47 +910,37 @@ st_CMT_VSTREAM* mzcmt_turbo_create_tape_vstream (
         return NULL;
     }
 
-    /* ===== A. Sestaveni TurboCopy preloader hlavicky ===== */
-
-    st_MZF_HEADER preloader_hdr;
-    memcpy ( &preloader_hdr, original, sizeof ( st_MZF_HEADER ) );
-
-    /* nahradime fsize/fstrt/fexec hodnotami loaderu */
-    preloader_hdr.fsize = TC_LOADER_BODY_SIZE;  /* 90 */
-    preloader_hdr.fstrt = TC_LOADER_ADDR;       /* $D400 */
-    preloader_hdr.fexec = TC_LOADER_ADDR;       /* $D400 */
-
-    /* vlozime TurboCopy signaturu do cmnt[0..6] */
-    memcpy ( &preloader_hdr.cmnt[0], g_tc_signature, 7 );
-    /* cmnt[7..103] zustava z originalni hlavicky */
-
-    /* konverze na LE pro zakodovani do signalu */
-    mzf_header_items_correction ( &preloader_hdr );
-
-    /* ===== B. Sestaveni patchovaneho TurboCopy loader body (90B) ===== */
-
-    uint8_t tc_body[TC_LOADER_BODY_SIZE];
-    memset ( tc_body, 0, TC_LOADER_BODY_SIZE );
-    memcpy ( tc_body, g_tc_loader_generic, TC_LOADER_GENERIC_SIZE );
-
-    /* patch speed delay */
-    tc_body[TC_OFF_SPEED] = turbo_tape_get_rom_delay ( config->speed );
-
-    /* patch read parametr */
-    tc_body[TC_OFF_RDPARAM] = 0x01;
-
-    /* patch user metadata (LE format pro Z80) */
+    /*
+     * Časování datové části a čtecí bod N z profilu (nebo z vlastních
+     * pulzů). Rychlost se validuje zde. Signál, který ROM se zapsaným N
+     * nepřečte s rezervou MZCMT_TURBO_MIN_MARGIN_US, se negeneruje.
+     */
+    st_MZCMT_TURBO_TIMING timing;
+    if ( EXIT_SUCCESS != mzcmt_turbo_get_timing ( config, rate, &timing ) ) {
+        return NULL;
+    }
     {
-        uint16_t u_size = endianity_bswap16_LE ( ( uint16_t ) body_size );
-        uint16_t u_strt = endianity_bswap16_LE ( original->fstrt );
-        uint16_t u_exec = endianity_bswap16_LE ( original->fexec );
-        memcpy ( &tc_body[TC_OFF_FSIZE], &u_size, 2 );
-        memcpy ( &tc_body[TC_OFF_FSTRT], &u_strt, 2 );
-        memcpy ( &tc_body[TC_OFF_FEXEC], &u_exec, 2 );
+        st_MZCMT_TURBO_MARGINS m;
+        if ( EXIT_SUCCESS != mzcmt_turbo_check_readpoint ( &timing, rate, &m ) ) {
+            g_error_cb ( __func__, __LINE__,
+                         "TURBO timing not readable at %u Hz (N=%u, margins %.1f/%.1f/%.1f us, min %.1f)\n",
+                         rate, timing.readpoint, m.short_high_us, m.long_high_us, m.short_period_us,
+                         MZCMT_TURBO_MIN_MARGIN_US );
+            return NULL;
+        }
     }
 
-    /* extra ROM parametry z cmnt[0..6] originalni hlavicky */
-    memcpy ( &tc_body[TC_OFF_ROMPARAMS], &original->cmnt[0], 7 );
+    /* ===== A, B. Hlavička a tělo předzavaděče TurboCopy ===== */
+
+    uint8_t preloader_raw[sizeof ( st_MZF_HEADER )];
+    uint8_t tc_body[TC_LOADER_BODY_SIZE];
+    if ( EXIT_SUCCESS != mzcmt_turbo_build_preloader ( original, body_size, timing.readpoint, preloader_raw, tc_body ) ) {
+        g_error_cb ( __func__, __LINE__, "Can't build TurboCopy preloader\n" );
+        return NULL;
+    }
+    /* LE bajty hlavičky, jak je kóduje signál */
+    st_MZF_HEADER preloader_hdr;
+    memcpy ( &preloader_hdr, preloader_raw, sizeof ( st_MZF_HEADER ) );
 
     /* ===== C. Pulzy pro preloader (1:1 rychlost) ===== */
 
@@ -839,6 +964,20 @@ st_CMT_VSTREAM* mzcmt_turbo_create_tape_vstream (
                                      ( const uint8_t* ) &preloader_hdr, sizeof ( st_MZF_HEADER ) );
     uint16_t chk_tc_body = mzcmt_turbo_compute_checksum (
                                tc_body, TC_LOADER_BODY_SIZE );
+
+    /*
+     * Parametry datové části (část 2) - počítají se před prvním skokem
+     * na návěští error, aby goto nepřeskakovalo inicializace.
+     */
+    st_turbo_pulses_samples data_pulses;
+    data_pulses.short_pulse.high = timing.short_high;
+    data_pulses.short_pulse.low = timing.short_low;
+    data_pulses.long_pulse.high = timing.long_high;
+    data_pulses.long_pulse.low = timing.long_low;
+
+    uint32_t lgap = config->lgap_length > 0 ? config->lgap_length : MZCMT_TURBO_LGAP_DEFAULT;
+
+    uint16_t chk_body = mzcmt_turbo_compute_checksum ( body, ( uint16_t ) body_size );
 
     /* ===== D. Vytvoreni vstreamu ===== */
 
@@ -873,21 +1012,16 @@ st_CMT_VSTREAM* mzcmt_turbo_create_tape_vstream (
     /*
      * ----- Cast 2: Uzivatelska data v TURBO formatu -----
      *
-     * Loader (loader_turbo.asm) patchne ROM ($0512=$01, $0A4B=delay)
+     * Předzavaděč TurboCopy (tc_body, mzcmt_turbo_build_preloader) patchne ROM ($0512=$01 počet kopií, $0A4B=čtecí bod N)
      * a vola $04F8 (RDATA), ktera cte POUZE telo (body-only).
      * Proto generujeme pouze:
      *   LGAP + STM(20+20) + 2L + BODY + CRC + 2L + [kopie]
      *
      * Hlavicka se NEPOSILA - metadata (fsize/fstrt/fexec) jsou
      * ulozena v loader comment oblasti preloaderu.
+     *
+     * data_pulses, lgap a chk_body jsou spočítané před částí 1.
      */
-
-    st_turbo_pulses_samples data_pulses;
-    turbo_prepare_pulses ( &data_pulses, config, rate );
-
-    uint32_t lgap = config->lgap_length > 0 ? config->lgap_length : MZCMT_TURBO_LGAP_DEFAULT;
-
-    uint16_t chk_body = mzcmt_turbo_compute_checksum ( body, ( uint16_t ) body_size );
 
     /* LGAP */
     if ( EXIT_SUCCESS != turbo_add_pulses ( vstream, &data_pulses.short_pulse, lgap ) ) goto error;

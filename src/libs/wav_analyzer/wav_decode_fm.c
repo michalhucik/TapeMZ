@@ -1,12 +1,12 @@
 /**
  * @file   wav_decode_fm.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.3.0
  * @brief  Implementace vrstvy 4a - FM dekodér.
  *
  * Dekóduje FM modulovaný signál (NORMAL/SINCLAIR/CPM/MZ-80B).
  * Algoritmus inspirován wavdec.c a Intercopy V10.2:
- * - práh SHORT/LONG = leader_avg * 1.5
+ * - práh SHORT/LONG = leader_avg * 1.6 (WAV_ANALYZER_FM_THRESHOLD_FACTOR)
  * - tapemark: N LONG + N SHORT pulzů
  * - bajty: MSB first, 1 stop bit (LONG)
  * - CRC: 16-bit popcount (počet jedničkových bitů), big-endian
@@ -51,6 +51,8 @@
 #define TAPEMARK_SHORT_MIN_LTM  30  /**< min SHORT pro hlavičku */
 #define TAPEMARK_LONG_MIN_STM   18  /**< min LONG pro tělo */
 #define TAPEMARK_SHORT_MIN_STM  18  /**< min SHORT pro tělo */
+/** @brief Nejvíc dlouhých period tapemarku těla při hledání po periodách (STM má 20, LTM 40). */
+#define BODY_STM_MAX_LONG       30
 
 /**
  * @brief Minimální počet pulzů leader tónu pro hledání body leaderu.
@@ -153,6 +155,53 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_find_tapemark (
 
     return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
 }
+
+
+/**
+ * @brief Průměr půlvlny v dvojici začínající na idx (us).
+ * @param seq Sekvence. @param idx Index první půlvlny dvojice (idx + 1 < count).
+ * @return Průměrná délka půlvlny dvojice.
+ */
+static inline double pair_avg_us ( const st_WAV_PULSE_SEQUENCE *seq, uint32_t idx ) {
+    return ( seq->pulses[idx].duration_us + seq->pulses[idx + 1].duration_us ) / 2.0;
+}
+
+
+en_WAV_ANALYZER_ERROR wav_decode_fm_find_tapemark_period (
+    st_WAV_FM_DECODER *dec,
+    uint32_t min_long,
+    uint32_t min_short,
+    uint32_t max_long,
+    uint32_t max_skip
+) {
+    if ( !dec || !dec->seq ) return WAV_ANALYZER_ERROR_INVALID_PARAM;
+    const st_WAV_PULSE_SEQUENCE *seq = dec->seq;
+    uint32_t q = dec->pos;
+    while ( q + 1 < seq->count ) {
+        while ( q + 1 < seq->count && pair_avg_us ( seq, q ) < dec->threshold_us ) q += 2;
+        /* tapemark musí začít nejvýš max_skip period od začátku hledání */
+        if ( max_skip && ( q - dec->pos ) / 2 > max_skip ) return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
+        uint32_t n_long = 0;
+        while ( q + 1 < seq->count && pair_avg_us ( seq, q ) >= dec->threshold_us ) {
+            n_long++;
+            q += 2;
+        }
+        if ( n_long < min_long ) continue;
+        if ( max_long && n_long > max_long ) return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
+        uint32_t n_short = 0;
+        while ( q + 1 < seq->count && pair_avg_us ( seq, q ) < dec->threshold_us ) {
+            n_short++;
+            q += 2;
+        }
+        if ( n_short < min_short ) continue;
+        /* synchronizace: nejvýš 2 dlouhé periody (2L) */
+        for ( int sk = 0; sk < 2 && q + 1 < seq->count && pair_avg_us ( seq, q ) >= dec->threshold_us; sk++ ) q += 2;
+        dec->pos = q;
+        return WAV_ANALYZER_OK;
+    }
+    return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
+}
+
 
 
 en_WAV_ANALYZER_ERROR wav_decode_fm_read_bit (
@@ -295,70 +344,62 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_verify_checksum (
 
 
 /**
- * @brief Minimální počet SHORT půl-period v GAP mezi první a druhou kopií.
+ * @brief Nejkratší oddělovač druhé kopie (půlvlny SHORT).
  *
- * GAP je sekvence krátkých pulzů oddělující dvě kopie bloku.
- * Sharp MZ typicky generuje 256 SHORT pulzů = 512 SHORT půl-period.
+ * ROM MZ-800 zapisuje mezi kopie 256 SHORT pulzů (512 půlvln) a při čtení
+ * kopie čeká na 100 souvislých nul (@RINTR v ROM), tedy 200 půlvln. V datech FM je nejdelší
+ * běh SHORT 16 půlvln (8 nul a start bit LONG), takže kratší běh je data.
  */
-#define COPY2_MIN_GAP_SHORT_PULSES  100
+#define COPY2_MIN_SEP_HALVES    200
 
 /**
- * @brief Maximální počet SHORT půl-period v GAP mezi kopiemi.
+ * @brief Nejdelší oddělovač druhé kopie (půlvlny SHORT).
  *
- * Standardní mini-gap je 256 SHORT pulzů = 512 půl-period.
- * Limit 3000 dává dostatečnou rezervu pro zašuměné nahrávky,
- * ale zabraňuje záměně s LGAP dalšího záznamu (22000+ půl-period).
- * Bez tohoto limitu copy2 search omylem sežere další nahrávku
- * na vícesouborových páskách (TurboCopy, Intercopy).
+ * Delší běh SHORT je tón další části záznamu (GAP těla nebo další nahrávka),
+ * hledání kopie tím končí.
  */
-#define COPY2_MAX_GAP_SHORT_PULSES  3000
+#define COPY2_MAX_SEP_HALVES    3000
 
-/**
- * @brief Maximální vzdálenost (v půl-periodách) pro hledání druhé kopie za první CRC.
- *
- * Omezuje prohledávanou oblast, aby se nehledalo příliš daleko
- * v případě poškozených záznamů. Reálná copy2 začíná do ~600
- * půl-period za CRC (2L term + 256S mini-gap + STM + 2L sync).
- */
-#define COPY2_MAX_SEARCH_PULSES     5000
-
-/**
- * @brief Maximální celková vzdálenost (v půl-periodách) od search_from
- *        po nalezený tapemark copy2 (včetně GAP + STM).
- *
- * Standardní vzdálenost: 2L term (4) + 256S mini-gap (512)
- * + STM (80) + 2L sync (4) = ~600 půl-period. Limit 2000
- * dává dostatečnou rezervu pro šum, ale zabraňuje záměně
- * s tapemarks dalšího záznamu (vzdálený 10000+ půl-period).
- */
-#define COPY2_MAX_TOTAL_DISTANCE    2000
+/** @brief Rezerva okna hledání kopie za dvojnásobkem nominální délky sekce (půlvlny). */
+#define COPY2_SEARCH_MARGIN     4000
 
 
 /**
- * @brief Pokusí se dekódovat data z druhé kopie bloku (Copy2).
+ * @brief Pokusí se dekódovat druhou kopii bloku (Copy2) podle zápisu ROM.
  *
- * Sharp MZ zapisuje každý blok dvakrát (hlavička i tělo). Pokud
- * první kopie má CRC chybu, pokusíme se najít a dekódovat
- * druhou kopii. Mezi kopiemi je GAP (sekvence SHORT pulzů),
- * pak krátký tapemark (STM: 18+ LONG + 18+ SHORT) a sync.
+ * ROM zapíše za checksum 1. kopie 1 LONG, 256 SHORT a hned druhou kopii
+ * (každý bajt start bit LONG a 8 bitů, pak checksum a 1 LONG), bez tónu
+ * a tapemarku (kód ROM; záznam ROM SAVE z emulátoru; generátor mzcmt_fm). Funkce hledá od začátku
+ * 1. kopie běh SHORT dlouhý COPY2_MIN_SEP_HALVES až COPY2_MAX_SEP_HALVES
+ * půlvln (kratší jsou data, delší tón další části), za ním přeskočí start
+ * bit (2 půlvlny) a přečte blok a checksum. Kandidát s chybou CRC se
+ * přeskočí a zkusí se další běh v okně (šum v 1. kopii umí vytvořit
+ * falešný dlouhý běh SHORT).
+ *
+ * Hledá se od začátku sekce, ne od konce 1. kopie: výpadek v 1. kopii
+ * posune čtení přes oddělovač do 2. kopie. Za oddělovačem se nehledá
+ * tapemark, ROM ho před kopii nezapisuje.
  *
  * @param seq Sekvence pulzů.
- * @param search_from Pozice za CRC první kopie (začátek hledání).
+ * @param section_start První datová půlvlna 1. kopie sekce (za start bitem).
  * @param threshold_us Práh SHORT/LONG v mikrosekundách.
- * @param expected_size Očekávaná velikost dat v bajtech.
- * @param[out] out_data Dekódovaná data (alokována na heapu). Může být NULL pokud chyba.
- * @param[out] out_crc_status CRC status druhé kopie.
+ * @param expected_size Velikost dat sekce v bajtech (bez checksumu).
+ * @param[out] out_data Data 2. kopie s CRC OK (alokována, uvolní volající),
+ *             jinak NULL.
+ * @param[out] out_crc_status WAV_CRC_OK (kopie s platným checksumem),
+ *             WAV_CRC_ERROR (kopie strukturálně nalezena, ale checksum
+ *             nesedí; data se nevracejí), WAV_CRC_NOT_AVAILABLE (nenalezena).
  * @param[out] out_crc_stored Uložený checksum. Může být NULL.
  * @param[out] out_crc_computed Vypočtený checksum. Může být NULL.
- * @param[out] out_end_pos Pozice za koncem druhé kopie (za CRC bajty).
- * @return WAV_ANALYZER_OK při úspěšném dekódování,
- *         WAV_ANALYZER_ERROR_NO_LEADER pokud nebyla nalezena druhá kopie,
- *         WAV_ANALYZER_ERROR_DECODE_TAPEMARK pokud nebyl nalezen tapemark,
- *         WAV_ANALYZER_ERROR_DECODE_DATA při chybě dekódování.
+ * @param[out] out_end_pos Pozice za checksumem 2. kopie (i při WAV_CRC_ERROR,
+ *             aby se oddělovač nehlásil jako leader). Může být NULL.
+ * @return WAV_ANALYZER_OK, když byla kopie nalezena (CRC viz out_crc_status);
+ *         WAV_ANALYZER_ERROR_NO_LEADER, když v okně není žádný oddělovač
+ *         s čitelnou kopií; WAV_ANALYZER_ERROR_ALLOC; WAV_ANALYZER_ERROR_INVALID_PARAM.
  */
-static en_WAV_ANALYZER_ERROR try_decode_copy2 (
+en_WAV_ANALYZER_ERROR wav_decode_fm_try_copy2 (
     const st_WAV_PULSE_SEQUENCE *seq,
-    uint32_t search_from,
+    uint32_t section_start,
     double threshold_us,
     uint32_t expected_size,
     uint8_t **out_data,
@@ -373,91 +414,119 @@ static en_WAV_ANALYZER_ERROR try_decode_copy2 (
 
     *out_data = NULL;
     *out_crc_status = WAV_CRC_NOT_AVAILABLE;
-    if ( out_end_pos ) *out_end_pos = search_from;
+    if ( out_end_pos ) *out_end_pos = section_start;
 
-    /*
-     * === 1. Hledáme GAP (sekvenci SHORT pulzů) ===
-     * Tolerance: max COPY2_MAX_SEARCH_PULSES pulzů od search_from.
-     */
-    uint32_t search_limit = search_from + COPY2_MAX_SEARCH_PULSES;
-    if ( search_limit > seq->count ) search_limit = seq->count;
+    /* okno: 2x nominální délka sekce (data + checksum, 18 půlvln na bajt) + rezerva */
+    uint64_t sec_halves = ( ( uint64_t ) expected_size + 2 ) * 18 + 2;
+    uint64_t lim64 = ( uint64_t ) section_start + 2 * sec_halves + COPY2_SEARCH_MARGIN;
+    uint32_t limit = ( lim64 > seq->count ) ? seq->count : ( uint32_t ) lim64;
 
-    uint32_t pos = search_from;
-    uint32_t short_count = 0;
+    int structural_found = 0;       /* kopie s chybou CRC (pro konec spotřebovaného úseku) */
+    uint32_t structural_end = section_start;
+    uint16_t structural_stored = 0, structural_computed = 0;
 
-    /* přeskočíme případné LONG pulzy (zbytek CRC) */
-    while ( pos < search_limit && seq->pulses[pos].duration_us >= threshold_us ) {
-        pos++;
+    uint32_t pos = section_start;
+    while ( pos < limit ) {
+        if ( seq->pulses[pos].duration_us >= threshold_us ) {
+            pos++;
+            continue;
+        }
+        uint32_t run_start = pos;
+        while ( pos < seq->count && seq->pulses[pos].duration_us < threshold_us ) pos++;
+        uint32_t run = pos - run_start;
+        if ( run < COPY2_MIN_SEP_HALVES ) continue;          /* krátký běh SHORT = data */
+        if ( run > COPY2_MAX_SEP_HALVES ) break;             /* tón další části */
+
+        /* start bit prvního bajtu kopie = 1 LONG (2 půlvlny) */
+        if ( pos + 1 >= seq->count ) break;
+        st_WAV_FM_DECODER dec;
+        dec.seq = seq;
+        dec.pos = pos + 2;
+        dec.threshold_us = threshold_us;
+        dec.crc_accumulator = 0;
+
+        uint8_t *data = ( uint8_t* ) malloc ( expected_size ? expected_size : 1 );
+        if ( !data ) return WAV_ANALYZER_ERROR_ALLOC;
+        if ( wav_decode_fm_read_block ( &dec, data, expected_size ) != WAV_ANALYZER_OK ) {
+            free ( data );
+            continue;
+        }
+        en_WAV_CRC_STATUS st;
+        uint16_t cs = 0, cc = 0;
+        wav_decode_fm_verify_checksum ( &dec, &st, &cs, &cc );
+        if ( st == WAV_CRC_OK ) {
+            *out_data = data;
+            *out_crc_status = WAV_CRC_OK;
+            if ( out_crc_stored ) *out_crc_stored = cs;
+            if ( out_crc_computed ) *out_crc_computed = cc;
+            if ( out_end_pos ) *out_end_pos = dec.pos;
+            return WAV_ANALYZER_OK;
+        }
+        free ( data );
+        if ( !structural_found ) {
+            structural_found = 1;
+            structural_end = dec.pos;
+            structural_stored = cs;
+            structural_computed = cc;
+        }
+        /* chyba CRC: další kandidát (např. šum v 1. kopii) */
     }
 
-    /* počítáme SHORT pulzy (GAP) */
-    while ( pos < search_limit && seq->pulses[pos].duration_us < threshold_us ) {
-        short_count++;
-        pos++;
+    if ( structural_found ) {
+        *out_crc_status = WAV_CRC_ERROR;
+        if ( out_crc_stored ) *out_crc_stored = structural_stored;
+        if ( out_crc_computed ) *out_crc_computed = structural_computed;
+        if ( out_end_pos ) *out_end_pos = structural_end;
+        return WAV_ANALYZER_OK;
     }
+    return WAV_ANALYZER_ERROR_NO_LEADER;
+}
 
-    if ( short_count < COPY2_MIN_GAP_SHORT_PULSES ) {
-        return WAV_ANALYZER_ERROR_NO_LEADER;
-    }
 
-    if ( short_count > COPY2_MAX_GAP_SHORT_PULSES ) {
-        /*
-         * GAP je příliš dlouhý - pravděpodobně jsme narazili
-         * na LGAP dalšího záznamu, ne na mini-gap mezi kopiemi.
-         */
-        return WAV_ANALYZER_ERROR_NO_LEADER;
-    }
-
-    /* === 2. Hledáme STM tapemark (min 18 LONG + 18 SHORT) === */
-    st_WAV_FM_DECODER dec;
-    dec.seq = seq;
-    dec.pos = pos;
-    dec.threshold_us = threshold_us;
-    dec.crc_accumulator = 0;
-
-    en_WAV_ANALYZER_ERROR err = wav_decode_fm_find_tapemark ( &dec, WAV_TAPEMARK_SHORT );
-    if ( err != WAV_ANALYZER_OK ) {
-        return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
-    }
-
-    /*
-     * Ověříme, že tapemark nebyl nalezen příliš daleko od search_from.
-     * Reálný copy2 tapemark je do ~600 půl-period za CRC.
-     * Pokud je dále, pravděpodobně jsme našli tapemark dalšího záznamu.
-     */
-    if ( dec.pos - search_from > COPY2_MAX_TOTAL_DISTANCE ) {
-        return WAV_ANALYZER_ERROR_NO_LEADER;
-    }
-
-    /* === 3. Přeskočíme sync (max 4 LONG pulzy) === */
-    {
-        int sync_skip = 0;
-        while ( dec.pos < seq->count &&
-                seq->pulses[dec.pos].duration_us >= dec.threshold_us &&
-                sync_skip < 4 ) {
-            dec.pos++;
-            sync_skip++;
+/**
+ * @brief Tapemark po celých periodách v obou fázích dvojic půlvln.
+ *
+ * Konec leaderu může ležet na sudé i liché půlvlně; při nesouměrných
+ * půlvlnách jen jedna fáze dvojic dá správné bity. Zkusí fázi od from
+ * a od from + 1; za tapemarkem přečte data_size bajtů a checksum a vybere
+ * fázi s platným checksumem. Bez platného checksumu vrátí první fázi,
+ * ve které se tapemark našel (data a CRC pak vyhodnotí volající).
+ *
+ * @param dec Kontext dekodéru (seq, threshold_us); nemění se.
+ * @param from Začátek hledání (pulz). @param min_long, min_short, max_long Jako
+ *        wav_decode_fm_find_tapemark_period(). @param data_size Bajtů dat za
+ *        tapemarkem (0 = jen najít tapemark ve fázi from).
+ * @param[out] pos Pozice první půlvlny dat (za synchronizací).
+ * @return WAV_ANALYZER_OK, nebo WAV_ANALYZER_ERROR_DECODE_TAPEMARK, když se
+ *         tapemark nenašel v žádné fázi.
+ */
+static en_WAV_ANALYZER_ERROR find_tapemark_period_phase ( const st_WAV_FM_DECODER *dec, uint32_t from,
+                                                         uint32_t min_long, uint32_t min_short, uint32_t max_long,
+                                                         uint32_t data_size, uint32_t *pos ) {
+    int found = 0;
+    for ( uint32_t phase = 0; phase < 2; phase++ ) {
+        st_WAV_FM_DECODER t = *dec;
+        t.pos = from + phase;
+        if ( wav_decode_fm_find_tapemark_period ( &t, min_long, min_short, max_long, 0 ) != WAV_ANALYZER_OK ) continue;
+        if ( !found ) *pos = t.pos;
+        found = 1;
+        if ( data_size == 0 ) break;
+        uint8_t *probe = ( uint8_t* ) malloc ( data_size );
+        if ( !probe ) break;
+        st_WAV_FM_DECODER p = t;
+        p.crc_accumulator = 0;
+        en_WAV_CRC_STATUS st = WAV_CRC_ERROR;
+        uint16_t stored = 0, computed = 0;
+        if ( wav_decode_fm_read_block ( &p, probe, data_size ) == WAV_ANALYZER_OK ) {
+            wav_decode_fm_verify_checksum ( &p, &st, &stored, &computed );
+        }
+        free ( probe );
+        if ( st == WAV_CRC_OK ) {
+            *pos = t.pos;
+            break;
         }
     }
-
-    /* === 4. Dekódujeme data === */
-    uint8_t *data = ( uint8_t* ) malloc ( expected_size );
-    if ( !data ) return WAV_ANALYZER_ERROR_ALLOC;
-
-    dec.crc_accumulator = 0;
-    err = wav_decode_fm_read_block ( &dec, data, expected_size );
-    if ( err != WAV_ANALYZER_OK ) {
-        free ( data );
-        return WAV_ANALYZER_ERROR_DECODE_DATA;
-    }
-
-    /* === 5. Ověříme CRC === */
-    wav_decode_fm_verify_checksum ( &dec, out_crc_status, out_crc_stored, out_crc_computed );
-
-    *out_data = data;
-    if ( out_end_pos ) *out_end_pos = dec.pos;
-
-    return WAV_ANALYZER_OK;
+    return found ? WAV_ANALYZER_OK : WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
 }
 
 
@@ -481,15 +550,27 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
 
     /* === 1. Detekce tapemarku hlavicky (LTM) === */
     en_WAV_ANALYZER_ERROR err = wav_decode_fm_find_tapemark ( &dec, WAV_TAPEMARK_LONG );
+    int sync_done = 0;
     if ( err != WAV_ANALYZER_OK ) {
-        return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
+        /*
+         * Nesouměrné půlvlny (generátor Intercopy NORMAL 2800/3200 podle kódu programu:
+         * dlouhá půlvlna 7 a 10 vzorků při 44,1 kHz) se po kvantizaci dostanou pod práh
+         * po půlvlnách; podle celých period se tapemark najde. Synchronizaci přeskočí.
+         */
+        uint32_t found = 0;
+        if ( find_tapemark_period_phase ( &dec, data_start, TAPEMARK_LONG_MIN_LTM, TAPEMARK_SHORT_MIN_LTM, 0,
+                                          MZF_HEADER_SIZE, &found ) != WAV_ANALYZER_OK ) {
+            return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
+        }
+        dec.pos = found;
+        sync_done = 1;
     }
 
     /*
      * === 2. Sync blok (2L = max 4 LONG pul-periody) ===
      * Po tapemarku preskocime LONG pul-periody (sync/tapemark koncovka).
      */
-    {
+    if ( !sync_done ) {
         int sync_skip = 0;
         while ( dec.pos < seq->count && is_long_pulse ( &dec, dec.pos ) && sync_skip < 4 ) {
             dec.pos++;
@@ -518,9 +599,8 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
     }
 
     /*
-     * === 4b. Copy2 - pokus o dekódování druhé kopie hlavičky ===
-     * Hlavička je jen 128B a zřídka se poškodí, ale pro úplnost
-     * zkusíme druhou kopii při CRC chybě.
+     * === 4b. Copy2 - druhá kopie hlavičky při CRC chybě ===
+     * Hledá se od začátku 1. kopie (wav_decode_fm_try_copy2).
      */
     int hdr_copy2_used = 0;
 
@@ -530,8 +610,8 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
         uint16_t hdr_c2_stored = 0, hdr_c2_computed = 0;
         uint32_t hdr_c2_end = 0;
 
-        en_WAV_ANALYZER_ERROR c2err = try_decode_copy2 (
-            seq, dec.pos, dec.threshold_us, MZF_HEADER_SIZE,
+        en_WAV_ANALYZER_ERROR c2err = wav_decode_fm_try_copy2 (
+            seq, header_pulse_start, dec.threshold_us, MZF_HEADER_SIZE,
             &hdr_copy2_data, &hdr_c2_crc, &hdr_c2_stored, &hdr_c2_computed, &hdr_c2_end
         );
 
@@ -566,9 +646,21 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
     /* parsujeme hlavičku */
     st_MZF_HEADER mzf_header;
     memcpy ( &mzf_header, header_raw, MZF_HEADER_SIZE );
-    mzf_header_items_correction ( &mzf_header );
+    mzf_header_swap_endianity ( &mzf_header );   /* 11h (fname.terminator) zůstává podle pásky */
 
     uint16_t body_size = mzf_header.fsize;
+
+    /*
+     * Deklarace před prvním skokem na create_mzf_no_body - goto nesmí
+     * přeskočit inicializaci (dříve zde vznikal free() neurčeného ukazatele).
+     */
+    uint8_t *body_data = NULL;
+    uint32_t body_pulse_start = 0;
+
+    /* soubor bez těla: CRC těla se neověřuje (volající výsledek nuluje, 0 = WAV_CRC_OK) */
+    if ( body_size == 0 && out_body_result ) {
+        out_body_result->crc_status = WAV_CRC_NOT_AVAILABLE;
+    }
 
     /*
      * === 5. Hledání body leaderu ===
@@ -586,7 +678,24 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
      */
 
     /* hledáme krátký tapemark (STM) */
+    uint32_t stm_from = dec.pos;
     err = wav_decode_fm_find_tapemark ( &dec, WAV_TAPEMARK_SHORT );
+    sync_done = 0;
+    if ( err != WAV_ANALYZER_OK ) {
+        /*
+         * Podle celých period (nesouměrné půlvlny, viz LTM). Delší běh než
+         * BODY_STM_MAX_LONG period je LTM další hlavičky, ne tapemark těla.
+         */
+        uint32_t found = 0;
+        err = find_tapemark_period_phase ( &dec, stm_from, TAPEMARK_LONG_MIN_STM, TAPEMARK_SHORT_MIN_STM,
+                                           BODY_STM_MAX_LONG, body_size, &found );
+        if ( err == WAV_ANALYZER_OK ) {
+            dec.pos = found;
+            sync_done = 1;
+        } else {
+            dec.pos = stm_from;
+        }
+    }
     if ( err != WAV_ANALYZER_OK ) {
         /*
          * Pokud nenajdeme krátký tapemark, zkusíme najít leader.
@@ -614,7 +723,7 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
     }
 
     /* === 6. Sync blok za tapemarkem těla (2L = max 4 půl-periody) === */
-    {
+    if ( !sync_done ) {
         int sync_skip = 0;
         while ( dec.pos < seq->count && is_long_pulse ( &dec, dec.pos ) && sync_skip < 4 ) {
             dec.pos++;
@@ -623,8 +732,7 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
     }
 
     /* === 7. Dekódování těla === */
-    uint32_t body_pulse_start = dec.pos;
-    uint8_t *body_data = NULL;
+    body_pulse_start = dec.pos;
 
     if ( body_size > 0 ) {
         body_data = ( uint8_t* ) malloc ( body_size );
@@ -648,10 +756,10 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
         }
 
         /*
-         * === 8b. Copy2 - pokus o dekódování druhé kopie těla ===
-         * Sharp MZ zapisuje každý blok dvakrát. Pokud první kopie
-         * má CRC chybu, zkusíme druhou kopii. Vždy se ale pokusíme
-         * najít konec druhé kopie pro aktualizaci consumed_until.
+         * === 8b. Copy2 - druhá kopie těla ===
+         * ROM zapisuje kopii bez tónu a tapemarku (wav_decode_fm_try_copy2). Při CRC
+         * chybě 1. kopie se použije 2. kopie s platným checksumem. Konec 2. kopie
+         * se hledá vždy (i s chybou CRC), aby se oddělovač nehlásil jako leader.
          */
         int body_copy2_used = 0;
         uint32_t body_consumed_end = dec.pos;
@@ -662,8 +770,8 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
             uint16_t copy2_stored = 0, copy2_computed = 0;
             uint32_t copy2_end = 0;
 
-            en_WAV_ANALYZER_ERROR c2err = try_decode_copy2 (
-                seq, dec.pos, dec.threshold_us, body_size,
+            en_WAV_ANALYZER_ERROR c2err = wav_decode_fm_try_copy2 (
+                seq, body_pulse_start, dec.threshold_us, body_size,
                 &copy2_data, &copy2_crc, &copy2_stored, &copy2_computed, &copy2_end
             );
 

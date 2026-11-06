@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_fsk.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  Implementace FSK (Frequency Shift Keying) koderu pro Sharp MZ.
  *
  * FSK modulace koduje bity zmenou frekvence signalu:
@@ -218,7 +218,7 @@ static void fsk_prepare_pulses ( st_fsk_pulses *pulses, en_MZCMT_FSK_SPEED speed
 /**
  * @brief Prida GAP (leader) sekvenci do vstreamu.
  *
- * GAP slouzi jako leader ton pro kalibraci FSK dekoderu na Z80.
+ * GAP slouzi jako leader ton pred daty (dekoder na Z80 ma pevny prah z tabulky).
  * Dekoder meri sirku GAP pulzu a nastavi prahovou hodnotu pro
  * rozliseni short/long datovych pulzu.
  *
@@ -339,7 +339,7 @@ static int fsk_add_fadeout ( st_CMT_VSTREAM *vstream, uint32_t rate ) {
  * @brief Vytvori CMT vstream z datoveho bloku FSK kodovanim.
  *
  * Generuje kompletni FSK signal:
- * 1. GAP (200 cyklu leader tonu pro kalibraci dekoderu)
+ * 1. GAP (200 cyklu leader tonu)
  * 2. Polaritni pulz (detekce polarity signalu)
  * 3. Sync kod (oznaceni zacatku dat)
  * 4. Datove bajty (8 FSK pulzu na bajt, MSB first, bez stop bitu)

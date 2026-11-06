@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.6.0
+ * @version 1.10.0
  * @brief  Implementace hlavního API knihovny wav_analyzer.
  *
  * Orchestruje všechny vrstvy analyzéru:
@@ -27,6 +27,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,8 +52,8 @@
 
 /** @brief Referenční SHORT půl-perioda NORMAL FM při 1200 Bd (us).
  *
- * Odvozeno z měření reálných nahrávek: leader avg ~249 us
- * při 44100 Hz odpovídající standardní rychlosti 1:1.
+ * Průměrná půlvlna SHORT ROM MZ-800 ((844 + 920) T / 2, asi 249 us)
+ * při standardní rychlosti 1:1.
  * Používá se pro výpočet reálné rychlosti v Bd z naměřené
  * průměrné půl-periody leaderu.
  */
@@ -139,27 +140,242 @@ static en_WAV_ANALYZER_ERROR result_add_file (
 /** @{ */
 #define FSK_LDR_OFF_EXEC       11   /**< offset fexec (2B LE) */
 #define FSK_LDR_OFF_FROM       33   /**< offset fstrt (2B LE) */
+#define FSK_LDR_OFF_CHK       176   /**< offset XOR těla (1 B), mzcmt_fsk.c FSK_LOADER_OFF_CHECKSUM */
 /** @} */
 
 /** @name SLOW loader body offsety (249B) */
 /** @{ */
 #define SLOW_LDR_OFF_EXEC      12   /**< offset fexec (2B LE) */
 #define SLOW_LDR_OFF_FROM      76   /**< offset fstrt (2B LE) */
+#define SLOW_LDR_OFF_CHK      231   /**< offset XOR těla (1 B), mzcmt_slow.c SLOW_LOADER_OFF_CHECKSUM */
 /** @} */
+
+/** @brief Pilot ZX Spectrum standardní rychlosti: 2168 T při 3,5 MHz (us). */
+#define ZX_STD_PILOT_US       ( 2168.0 / 3.5 )
+/** @brief Relativní odchylka pilotu, do které jde o standardní rychlost (blok 0x10). */
+#define ZX_STD_PILOT_TOL      0.05
+
+/** @name Bajt zpoždění v těle zavaděče FSK a SLOW (určuje úroveň rychlosti) */
+/** @{ */
+#define FSK_LDR_OFF_DELAY     145   /**< mzcmt_fsk.c FSK_LOADER_OFF_DELAY */
+#define SLOW_LDR_OFF_DELAY    238   /**< mzcmt_slow.c SLOW_LOADER_OFF_DELAY */
+/** @} */
+
+/**
+ * @brief Bajty zpoždění zavaděče FSK podle úrovně 0-6 (44100 / 48000 Hz).
+ *
+ * Shodné s tabulkami kodéru (mzcmt_fsk.c g_fsk_delay_44k/48k, odvozené
+ * z mzftools). Pro danou frekvenci jsou hodnoty jedinečné, mezi frekvencemi
+ * se překrývají (D0h = 44100 úroveň 0 i 48000 úroveň 1).
+ */
+static const uint8_t g_fsk_delay[2][7] = {
+    { 0xD0, 0xD1, 0xD3, 0xD5, 0xD8, 0xDA, 0xDB },
+    { 0xCF, 0xD0, 0xD2, 0xD4, 0xD7, 0xD9, 0xDA },
+};
+
+/** @brief Bajty zpoždění zavaděče SLOW podle úrovně 0-4 (44100 / 48000 Hz), mzcmt_slow.c g_slow_delay_*. */
+static const uint8_t g_slow_delay[2][5] = {
+    { 22, 17, 11, 9, 6 },
+    { 20, 15, 10, 8, 5 },
+};
+
+
+/**
+ * @brief Určí úroveň rychlosti FSK/SLOW z bajtu zpoždění v těle zavaděče.
+ *
+ * Kodér TapeMZ volí tabulku podle vzorkovací frekvence: od 46050 Hz tabulku
+ * 48000 Hz, jinak 44100 Hz (mzftools zná jen pevné 44100 a 48000 Hz). Stejně
+ * se tu vybere podle frekvence WAV. Převzorkovaná nahrávka (zavaděč pro jinou
+ * frekvenci, než má WAV) může dát -1, nebo i jinou úroveň: tabulky 44k a 48k
+ * se překrývají (např. D0h = 44k úroveň 0 i 48k úroveň 1).
+ *
+ * @param loader_body Dekódované tělo zavaděče.
+ * @param loader_size Velikost těla v bajtech.
+ * @param format WAV_TAPE_FORMAT_FSK nebo WAV_TAPE_FORMAT_SLOW.
+ * @param sample_rate Vzorkovací frekvence WAV (Hz).
+ * @return Úroveň (FSK 0-6, SLOW 0-4), -1 když bajt chybí nebo v tabulce není
+ *         (jiný zavaděč), nebo jiný formát.
+ */
+static int fsl_speed_from_loader ( const uint8_t *loader_body, uint32_t loader_size,
+                                   en_WAV_TAPE_FORMAT format, uint32_t sample_rate ) {
+    int r48 = sample_rate >= 46050;
+    if ( format == WAV_TAPE_FORMAT_FSK && loader_size > FSK_LDR_OFF_DELAY ) {
+        for ( int i = 0; i < 7; i++ ) {
+            if ( g_fsk_delay[r48][i] == loader_body[FSK_LDR_OFF_DELAY] ) return i;
+        }
+    } else if ( format == WAV_TAPE_FORMAT_SLOW && loader_size > SLOW_LDR_OFF_DELAY ) {
+        for ( int i = 0; i < 5; i++ ) {
+            if ( g_slow_delay[r48][i] == loader_body[SLOW_LDR_OFF_DELAY] ) return i;
+        }
+    }
+    return -1;
+}
+
+/** @brief TurboCopy: součin počet pulzů tónu x S (tiky CTC0), změřeno v emulátoru 3 495 030 až 3 497 152. */
+#define TC_TONE_PRODUCT       3495500.0
+/** @brief TurboCopy: délka tiku CTC0 v us (1 108 405 Hz). */
+#define TC_TICK_US            ( 1e6 / 1108405.0 )
+/** @brief TurboCopy: nejvyšší odchylka S odhadnutého z počtu pulzů od S(a/b) v tikách. */
+#define TC_S_TOL              2.0
+/** @brief Intercopy V10.2: počet pulzů SHORT tónu před hlavičkou NORMAL. */
+#define IC_TONE_HDR           11000.0
+/** @brief Intercopy V10.2: počet pulzů SHORT tónu před tělem (TURBO za předzavaděčem). */
+#define IC_TONE_BODY          5500.0
+/** @brief Intercopy V10.2: relativní tolerance počtu pulzů tónu (IC_TONE_HDR, IC_TONE_BODY). */
+#define IC_TONE_TOL           0.01
+/** @brief Tolerance průměrné periody tónu ve vzorcích (WAV kvantuje hrany na vzorky). */
+#define WRITER_PERIOD_TOL_SAMPLES 1.5
+
+/**
+ * @brief Intercopy V10.2: čtecí bod rp a perioda SHORT v T-stavech podle rychlosti.
+ *
+ * Zdroj: disassembly Intercopy 10.2 a záznamy hran v emulátoru (rp 167/77/32/22/17,
+ * SHORT H+L 1664+1755, 832+936, 403+494, 312+442, 273+416 T).
+ */
+static const struct { uint16_t bd; uint8_t rp; uint16_t short_t; } g_ic_speed[] = {
+    { 600, 167, 3419 }, { 1200, 77, 1768 }, { 2400, 32, 897 }, { 2800, 22, 754 }, { 3200, 17, 689 },
+};
+
+
+/**
+ * @brief Najde poměr TurboCopy a/b podle délky tónu.
+ *
+ * TurboCopy V1.2x zapisuje tón tak, že počet pulzů x S je přibližně stálý
+ * (TC_TONE_PRODUCT), S = 71 + floor(480·b/a). Z počtu pulzů se odhadne S
+ * a vybere poměr (a, b z 1..9, 1/2 <= a/b <= 3, základní tvar) s nejbližším S.
+ * Přijme se, když S sedí do TC_S_TOL a průměrná perioda tónu na S tiků
+ * v rámci WRITER_PERIOD_TOL_SAMPLES vzorku.
+ *
+ * @param pulses Počet pulzů tónu (pulz = 2 půlvlny).
+ * @param half_us Průměrná půlvlna tónu (us).
+ * @param sample_rate Vzorkovací frekvence WAV.
+ * @param[out] out_a Čitatel. @param[out] out_b Jmenovatel.
+ * @return 1 = tón odpovídá TurboCopy, 0 = ne.
+ */
+static int tc_ratio_from_tone ( uint32_t pulses, double half_us, uint32_t sample_rate,
+                                uint8_t *out_a, uint8_t *out_b ) {
+    if ( pulses < 1000 || half_us <= 0.0 || sample_rate == 0 ) return 0;
+    double s_est = TC_TONE_PRODUCT / ( double ) pulses;
+    double best = 1e9;
+    unsigned ba = 0, bb = 0, bs = 0;
+    for ( unsigned a = 1; a <= 9; a++ ) {
+        for ( unsigned b = 1; b <= 9; b++ ) {
+            if ( 2 * a < b || a > 3 * b ) continue;
+            unsigned g = a, h = b;
+            while ( h ) { unsigned t = g % h; g = h; h = t; }
+            if ( g != 1 ) continue;                 /* jen základní tvar */
+            unsigned s = 71 + ( 480 * b ) / a;
+            double d = fabs ( ( double ) s - s_est );
+            if ( d < best ) { best = d; ba = a; bb = b; bs = s; }
+        }
+    }
+    if ( best > TC_S_TOL ) return 0;
+    double tol_us = WRITER_PERIOD_TOL_SAMPLES * 1e6 / ( double ) sample_rate;
+    if ( fabs ( 2.0 * half_us - bs * TC_TICK_US ) > tol_us ) return 0;
+    *out_a = ( uint8_t ) ba;
+    *out_b = ( uint8_t ) bb;
+    return 1;
+}
+
+
+/**
+ * @brief Délka tónu v pulzech od začátku leaderu po první LONG (tapemark).
+ *
+ * Detektor leaderu může tón s asymetrickými půlvlnami rozdělit na úseky
+ * (Intercopy 2400 a 3200 Bd při 44,1 kHz), počet pulzů leaderu pak není délka
+ * tónu. Tady se počítají půlvlny od leader->start_index, dokud nepřijde půlvlna
+ * delší než 1,5x průměrná půlvlna leaderu.
+ *
+ * @param seq Sekvence pulzů.
+ * @param leader Leader na začátku tónu.
+ * @param[out] out_half_us Průměrná půlvlna přes celý tón (us).
+ * @return Počet pulzů tónu (půlvlny / 2).
+ */
+static uint32_t tone_pulses ( const st_WAV_PULSE_SEQUENCE *seq, const st_WAV_LEADER_INFO *leader, double *out_half_us ) {
+    double limit = 1.5 * leader->avg_period_us;
+    uint32_t i = leader->start_index;
+    double sum = 0.0;
+    while ( i < seq->count && seq->pulses[i].duration_us <= limit ) {
+        sum += seq->pulses[i].duration_us;
+        i++;
+    }
+    uint32_t halves = i - leader->start_index;
+    *out_half_us = halves ? sum / halves : 0.0;
+    return halves / 2;
+}
+
+
+/**
+ * @brief Rychlost Intercopy NORMAL podle tónu hlavičky (11000 pulzů) a periody SHORT.
+ *
+ * @param pulses Počet pulzů tónu hlavičky.
+ * @param half_us Průměrná půlvlna tónu (us).
+ * @param sample_rate Vzorkovací frekvence WAV.
+ * @return bd (600, 2400, 2800, 3200), 0 = neodpovídá Intercopy. 1200 se nevrací:
+ *         perioda Intercopy 1200 (498,5 us) se v rámci tolerance shoduje se záznamem
+ *         ROM s krátkými tóny 11000/5500 (518 us), blok 0x40 zůstává.
+ */
+static uint16_t ic_normal_bd_from_tone ( uint32_t pulses, double half_us, uint32_t sample_rate ) {
+    if ( sample_rate == 0 || fabs ( pulses / IC_TONE_HDR - 1.0 ) > IC_TONE_TOL ) return 0;
+    /* nejbližší perioda SHORT (2800 a 3200 Bd se liší jen o 18 us), pak tolerance */
+    double tol_us = WRITER_PERIOD_TOL_SAMPLES * 1e6 / ( double ) sample_rate;
+    double best = 1e9;
+    uint16_t bd = 0;
+    for ( size_t i = 0; i < sizeof ( g_ic_speed ) / sizeof ( g_ic_speed[0] ); i++ ) {
+        double d = fabs ( 2.0 * half_us - g_ic_speed[i].short_t / 3.546895 );
+        if ( d < best ) { best = d; bd = g_ic_speed[i].bd; }
+    }
+    if ( best > tol_us || bd == 1200 ) return 0;
+    return bd;
+}
+
+
+/**
+ * @brief Rychlost Intercopy podle čtecího bodu rp (tabulka g_ic_speed).
+ * @param rp Čtecí bod (u TURBO bajt 4Bh předzavaděče - 5, u FAST IPL bajt 19h hlavičky $BB).
+ * @return bd, nebo 0 pro hodnotu mimo tabulku.
+ */
+static uint16_t ic_bd_from_rp ( int rp ) {
+    for ( size_t i = 0; i < sizeof ( g_ic_speed ) / sizeof ( g_ic_speed[0] ); i++ ) {
+        if ( g_ic_speed[i].rp == rp ) return g_ic_speed[i].bd;
+    }
+    return 0;
+}
 
 /** @name DIRECT loader body offsety (360B) */
 /** @{ */
 #define DIRECT_LDR_OFF_EXEC    12   /**< offset fexec (2B LE) */
 #define DIRECT_LDR_OFF_FROM    34   /**< offset fstrt (2B LE) */
+#define DIRECT_LDR_OFF_CHK    342   /**< offset XOR těla (1 B), mzcmt_direct.c DIRECT_LOADER_OFF_CHECKSUM */
 /** @} */
+
+
+/** @brief Délka generické části těla předzavaděče TurboCopy (B). */
+#define TURBOCOPY_LOADER_GENERIC_SIZE  75
+
+/**
+ * @brief Generická část těla předzavaděče TurboCopy V1.2x (prvních 75 B).
+ *
+ * Zdroj: cmttool: cmttool_turbo.c:107-118.
+ * Intercopy při zápisu patchuje jen offsety 0x4B a 0x4C (za touto částí).
+ * Ověřeno na 8 předzavaděčích v tstdata (tc-loader-all, ic-turbo) a na
+ * výstupu mzf2tmz.
+ */
+static const uint8_t g_turbocopy_loader_generic[TURBOCOPY_LOADER_GENERIC_SIZE] = {
+    0x3e, 0x08, 0xd3, 0xce, 0xe5, 0x21, 0x00, 0x00, 0xd3, 0xe4, 0x7e, 0xd3, 0xe0, 0x77, 0x23, 0x7c,
+    0xfe, 0x10, 0x20, 0xf4, 0x3a, 0x4b, 0xd4, 0x32, 0x4b, 0x0a, 0x3a, 0x4c, 0xd4, 0x32, 0x12, 0x05,
+    0x21, 0x4d, 0xd4, 0x11, 0x02, 0x11, 0x01, 0x0d, 0x00, 0xed, 0xb0, 0xe1, 0x7c, 0xfe, 0xd4, 0x28,
+    0x12, 0x2a, 0x04, 0x11, 0xd9, 0x21, 0x00, 0x12, 0x22, 0x04, 0x11, 0xcd, 0x2a, 0x00, 0xd3, 0xe4,
+    0xc3, 0x9a, 0xe9, 0xcd, 0x2a, 0x00, 0xd3, 0xe4, 0xc3, 0x24, 0x01
+};
 
 
 /**
  * @brief Extrahuje uživatelské parametry z dekódovaného loader body.
  *
- * Loader body obsahuje patchované hodnoty: fsize, fstrt, fexec.
- * Offset fsize je společný (5), offsety fstrt a fexec se liší
- * podle formátu.
+ * Loader body obsahuje patchované hodnoty: fsize, fstrt, fexec a XOR
+ * všech bajtů těla (zavaděč ho po načtení porovná). Offset fsize je
+ * společný (5), offsety fstrt, fexec a XOR se liší podle formátu.
  *
  * @param loader_body Dekódovaný loader body.
  * @param loader_size Velikost loader body v bajtech.
@@ -167,7 +383,9 @@ static en_WAV_ANALYZER_ERROR result_add_file (
  * @param[out] out_fsize Uživatelská velikost dat.
  * @param[out] out_fstrt Uživatelská startovní adresa.
  * @param[out] out_fexec Uživatelská exec adresa.
- * @return WAV_ANALYZER_OK při úspěchu, WAV_ANALYZER_ERROR_INVALID_PARAM při chybě.
+ * @param[out] out_checksum XOR všech bajtů těla uložený v zavaděči.
+ * @return WAV_ANALYZER_OK při úspěchu, WAV_ANALYZER_ERROR_INVALID_PARAM při chybě
+ *         (jiný formát, nebo loader body kratší než některý offset).
  */
 static en_WAV_ANALYZER_ERROR extract_user_params (
     const uint8_t *loader_body,
@@ -175,22 +393,26 @@ static en_WAV_ANALYZER_ERROR extract_user_params (
     en_WAV_TAPE_FORMAT format,
     uint16_t *out_fsize,
     uint16_t *out_fstrt,
-    uint16_t *out_fexec
+    uint16_t *out_fexec,
+    uint8_t *out_checksum
 ) {
-    uint32_t off_from, off_exec;
+    uint32_t off_from, off_exec, off_chk;
 
     switch ( format ) {
         case WAV_TAPE_FORMAT_FSK:
             off_from = FSK_LDR_OFF_FROM;
             off_exec = FSK_LDR_OFF_EXEC;
+            off_chk = FSK_LDR_OFF_CHK;
             break;
         case WAV_TAPE_FORMAT_SLOW:
             off_from = SLOW_LDR_OFF_FROM;
             off_exec = SLOW_LDR_OFF_EXEC;
+            off_chk = SLOW_LDR_OFF_CHK;
             break;
         case WAV_TAPE_FORMAT_DIRECT:
             off_from = DIRECT_LDR_OFF_FROM;
             off_exec = DIRECT_LDR_OFF_EXEC;
+            off_chk = DIRECT_LDR_OFF_CHK;
             break;
         default:
             return WAV_ANALYZER_ERROR_INVALID_PARAM;
@@ -199,7 +421,8 @@ static en_WAV_ANALYZER_ERROR extract_user_params (
     /* kontrola rozsahu */
     if ( LOADER_BODY_OFF_SIZE + 2 > loader_size ||
          off_from + 2 > loader_size ||
-         off_exec + 2 > loader_size ) {
+         off_exec + 2 > loader_size ||
+         off_chk + 1 > loader_size ) {
         return WAV_ANALYZER_ERROR_INVALID_PARAM;
     }
 
@@ -212,6 +435,7 @@ static en_WAV_ANALYZER_ERROR extract_user_params (
     *out_fsize = endianity_bswap16_LE ( fsize );
     *out_fstrt = endianity_bswap16_LE ( fstrt );
     *out_fexec = endianity_bswap16_LE ( fexec );
+    *out_checksum = loader_body[off_chk];
 
     return WAV_ANALYZER_OK;
 }
@@ -231,6 +455,11 @@ static en_WAV_ANALYZER_ERROR extract_user_params (
  * extrahuje uživatelské parametry, pak najde Cast 3 a dekóduje
  * data příslušným dekodérem.
  *
+ * Tělo ověří XOR všech bajtů proti hodnotě v zavaděči:
+ * shoda = WAV_CRC_OK; neshoda, nebo méně dekódovaných bajtů než fsize
+ * (tělo se ořízne) = WAV_CRC_ERROR. Soubor se vrátí v obou případech.
+ * XOR nepozná sudý počet stejně poškozených bajtů (stejně jako zavaděč na Z80).
+ *
  * @param seq Sekvence pulzů.
  * @param preloader_raw Surová data preloader hlavičky (128B).
  * @param search_from_pulse Pozice za preloader hlavičkou.
@@ -238,6 +467,8 @@ static en_WAV_ANALYZER_ERROR extract_user_params (
  * @param[out] out_mzf Výstupní MZF soubor (volající uvolní přes mzf_free).
  * @param[out] out_body_result Výsledek dekódování uživatelských dat.
  * @param[out] out_consumed_until Pozice za posledním zpracovaným pulzem.
+ * @param[out] out_fsl_speed Úroveň rychlosti FSK/SLOW podle zavaděče
+ *             (fsl_speed_from_loader, -1 = nezjištěná; DIRECT -1). Může být NULL.
  * @return WAV_ANALYZER_OK při úspěchu, jinak chybový kód.
  */
 static en_WAV_ANALYZER_ERROR decode_nonstandard_tape_mzf (
@@ -247,7 +478,8 @@ static en_WAV_ANALYZER_ERROR decode_nonstandard_tape_mzf (
     en_WAV_TAPE_FORMAT format,
     st_MZF **out_mzf,
     st_WAV_DECODE_RESULT *out_body_result,
-    uint32_t *out_consumed_until
+    uint32_t *out_consumed_until,
+    int *out_fsl_speed
 ) {
     if ( !seq || !preloader_raw || !out_mzf ) {
         return WAV_ANALYZER_ERROR_INVALID_PARAM;
@@ -255,6 +487,7 @@ static en_WAV_ANALYZER_ERROR decode_nonstandard_tape_mzf (
 
     *out_mzf = NULL;
     if ( out_consumed_until ) *out_consumed_until = 0;
+    if ( out_fsl_speed ) *out_fsl_speed = -1;
 
     /* === 1. Extrakce loader_body_size z preloader cmnt[1..2] (LE) === */
 
@@ -323,8 +556,12 @@ static en_WAV_ANALYZER_ERROR decode_nonstandard_tape_mzf (
     /* === 4. Extrakce uživatelských parametrů z loader body === */
 
     uint16_t user_fsize, user_fstrt, user_fexec;
+    uint8_t user_checksum;
     err = extract_user_params ( loader_body, loader_body_size, format,
-                                &user_fsize, &user_fstrt, &user_fexec );
+                                &user_fsize, &user_fstrt, &user_fexec, &user_checksum );
+    if ( out_fsl_speed ) {
+        *out_fsl_speed = fsl_speed_from_loader ( loader_body, loader_body_size, format, seq->sample_rate );
+    }
     free ( loader_body );
 
     if ( err != WAV_ANALYZER_OK ) {
@@ -418,10 +655,12 @@ static en_WAV_ANALYZER_ERROR decode_nonstandard_tape_mzf (
         }
         out_body_result->data_size = actual_size;
         /*
-         * FSK/SLOW/DIRECT nemají checksum v signálu (je v Z80 loaderu),
-         * proto CRC neověřujeme.
+         * XOR těla nese zavaděč (offset *_LDR_OFF_CHK): shoda = OK,
+         * neshoda nebo méně dat než fsize = ERROR (neúplné tělo se dřív tiše ořízlo)
          */
-        out_body_result->crc_status = WAV_CRC_NOT_AVAILABLE;
+        uint8_t x = 0;
+        for ( uint32_t i = 0; i < actual_size; i++ ) x ^= body_copy[i];
+        out_body_result->crc_status = ( actual_size == user_fsize && x == user_checksum ) ? WAV_CRC_OK : WAV_CRC_ERROR;
         out_body_result->pulse_start = after_loader;
         out_body_result->pulse_end = data_consumed;
         out_body_result->is_header = 0;
@@ -523,8 +762,24 @@ static en_WAV_ANALYZER_ERROR process_leader (
                  */
                 uint32_t consumed_until = 0;
                 uint32_t bsd_recovery = WAV_RECOVERY_NONE;
+                int fsl_speed = -1;                          /* FSK/SLOW: úroveň ze zavaděče */
+                en_WAV_WRITER writer = WAV_WRITER_UNKNOWN;   /* rozpoznaný zapisovač */
+                uint8_t tc_a = 0, tc_b = 0;                  /* TurboCopy: poměr a/b */
+                uint16_t ic_bd = 0;                          /* Intercopy: rychlost v Bd */
+                st_WAV_BSD_INFO bsd_info = { 0, 0, 0 };   /* kusy, chyby CRC, kopie */
                 st_WAV_LEADER_INFO turbo_data_leader;
                 memset ( &turbo_data_leader, 0, sizeof ( turbo_data_leader ) );
+
+                /*
+                 * Předzavaděč TurboCopy na $D400 musí mít i generickou část těla
+                 * (prvních TURBOCOPY_LOADER_GENERIC_SIZE B); jinak jde o obyčejný
+                 * program a zůstane předběžný formát
+                 */
+                if ( refined == WAV_TAPE_FORMAT_TURBO && mzf->header.fstrt == 0xD400
+                     && ( !body_res.data || body_res.data_size < TURBOCOPY_LOADER_GENERIC_SIZE
+                          || memcmp ( body_res.data, g_turbocopy_loader_generic, TURBOCOPY_LOADER_GENERIC_SIZE ) != 0 ) ) {
+                    refined = format;
+                }
 
                 if ( refined == WAV_TAPE_FORMAT_TURBO ) {
                     if ( mzf->header.fsize > 0 && mzf->header.fstrt == 0xD400 ) {
@@ -568,6 +823,21 @@ static en_WAV_ANALYZER_ERROR process_leader (
                         /* aktualizujeme speed na TURBO hodnoty */
                         if ( err == WAV_ANALYZER_OK && turbo_data_leader.pulse_count > 0 ) {
                             speed = wav_classify_speed_class ( turbo_data_leader.avg_period_us );
+
+                            /*
+                             * Zapisovač podle datového tónu (před přepisem průměru níže):
+                             * Intercopy V10.2 píše tón těla 5500 SHORT a na 4Bh čtecí bod + 5,
+                             * TurboCopy tón s počtem x S = TC_TONE_PRODUCT.
+                             */
+                            uint32_t dp = turbo_data_leader.pulse_count / 2;
+                            uint16_t bd = ( saved_body_size > 0x4B ) ? ic_bd_from_rp ( ( int ) saved_body[0x4B] - 5 ) : 0;
+                            if ( bd && fabs ( dp / IC_TONE_BODY - 1.0 ) <= IC_TONE_TOL ) {
+                                writer = WAV_WRITER_INTERCOPY;
+                                ic_bd = bd;
+                            } else if ( tc_ratio_from_tone ( dp, turbo_data_leader.avg_period_us, seq->sample_rate,
+                                                             &tc_a, &tc_b ) ) {
+                                writer = WAV_WRITER_TURBOCOPY;
+                            }
 
                             /*
                              * Spocteme rychlostni pomer z speed_val v preloader body.
@@ -638,6 +908,14 @@ static en_WAV_ANALYZER_ERROR process_leader (
                         speed = wav_classify_speed_class ( fastipl_data_leader.avg_period_us );
                         turbo_data_leader = fastipl_data_leader;
                     }
+                    /*
+                     * Intercopy V10.2 (zavaděč V07): na 27h-28h hlavičky $BB je LD (HL),$01
+                     * (36h 01h, u V02 97h), na 19h čtecí bod rp z tabulky rychlostí.
+                     */
+                    if ( err == WAV_ANALYZER_OK && bb_raw && bb_raw[0x27] == 0x36 && bb_raw[0x28] == 0x01 ) {
+                        ic_bd = ic_bd_from_rp ( bb_raw[0x19] );
+                        if ( ic_bd ) writer = WAV_WRITER_INTERCOPY;
+                    }
 
                     free ( bb_raw );
                     hdr_res.data = NULL;
@@ -656,7 +934,7 @@ static en_WAV_ANALYZER_ERROR process_leader (
                               seq, leader, &saved_header, pulse_end,
                               config->recover_bsd,
                               &mzf, &body_res, &consumed_until,
-                              &bsd_recovery
+                              &bsd_recovery, &bsd_info
                           );
 
                     free ( hdr_res.data );
@@ -690,23 +968,50 @@ static en_WAV_ANALYZER_ERROR process_leader (
                      * Cast 1 = preloader hlavička (právě dekódovaná, fsize=0)
                      * Cast 2 = loader body v NORMAL FM
                      * Cast 3 = uživatelská data v FSK/SLOW/DIRECT
+                     *
+                     * Předzavaděč se signaturou v cmnt má fsize 0. Při fsize > 0
+                     * stojí klasifikace jen na velikosti těla a adrese $D400:
+                     * když část 3 dekódovat nejde, zůstane dekódovaný záznam
+                     * NORMAL (obyčejný program na $D400). Se signaturou je selhání chyba dekódování
+                     * (useknutý záznam se nesmí tvářit jako platný soubor).
                      */
-                    uint8_t *preloader_raw = hdr_res.data;
-                    uint32_t pulse_end = hdr_res.pulse_end;
-                    hdr_res.data = NULL;
+                    int size_only = mzf && mzf->header.fsize != 0;
+                    st_MZF *ns_mzf = NULL;
+                    st_WAV_DECODE_RESULT ns_body;
+                    uint32_t ns_consumed = 0;
+                    memset ( &ns_body, 0, sizeof ( ns_body ) );
 
-                    mzf_free ( mzf );
-                    mzf = NULL;
-                    free ( body_res.data ); body_res.data = NULL;
-                    memset ( &hdr_res, 0, sizeof ( hdr_res ) );
-                    memset ( &body_res, 0, sizeof ( body_res ) );
-
-                    err = decode_nonstandard_tape_mzf (
-                              seq, preloader_raw, pulse_end, refined,
-                              &mzf, &body_res, &consumed_until
+                    en_WAV_ANALYZER_ERROR ns_err = decode_nonstandard_tape_mzf (
+                              seq, hdr_res.data, hdr_res.pulse_end, refined,
+                              &ns_mzf, &ns_body, &ns_consumed, &fsl_speed
                           );
 
-                    free ( preloader_raw );
+                    if ( ns_err == WAV_ANALYZER_OK && ns_mzf ) {
+                        mzf_free ( mzf );
+                        mzf = ns_mzf;
+                        free ( hdr_res.data );
+                        free ( body_res.data );
+                        memset ( &hdr_res, 0, sizeof ( hdr_res ) );
+                        body_res = ns_body;
+                        consumed_until = ns_consumed;
+                    } else if ( !size_only ) {
+                        mzf_free ( ns_mzf );
+                        free ( ns_body.data );
+                        mzf_free ( mzf );
+                        mzf = NULL;
+                        err = ns_err;
+                    } else {
+                        mzf_free ( ns_mzf );
+                        free ( ns_body.data );
+                        if ( config->verbose ) {
+                            fprintf ( stderr, "  %s data not decoded (%s), keeping the NORMAL record\n",
+                                      wav_tape_format_name ( refined ), wav_analyzer_error_string ( ns_err ) );
+                        }
+                        refined = format;
+                        consumed_until = body_res.pulse_end > 0
+                                         ? body_res.pulse_end
+                                         : hdr_res.pulse_end;
+                    }
                 } else {
                     /*
                      * Zadny redispatch - format zustava NORMAL/CPM-CMT/atd.
@@ -742,6 +1047,25 @@ static en_WAV_ANALYZER_ERROR process_leader (
                     file_result.header_leader_pulse = leader->start_index;
                     file_result.consumed_until_pulse = consumed_until;
                     file_result.recovery_status = bsd_recovery;
+                    file_result.bsd_chunks = bsd_info.chunks;
+                    file_result.bsd_crc_errors = bsd_info.crc_errors;
+                    file_result.bsd_from_copy = bsd_info.from_copy;
+                    if ( refined == WAV_TAPE_FORMAT_FSK || refined == WAV_TAPE_FORMAT_SLOW ) {
+                        file_result.fsl_speed = fsl_speed;
+                    }
+                    if ( refined == WAV_TAPE_FORMAT_NORMAL && writer == WAV_WRITER_UNKNOWN ) {
+                        double th_us = 0.0;
+                        uint32_t hp = tone_pulses ( seq, leader, &th_us );
+                        if ( tc_ratio_from_tone ( hp, th_us, seq->sample_rate, &tc_a, &tc_b ) ) {
+                            writer = WAV_WRITER_TURBOCOPY;
+                        } else if ( ( ic_bd = ic_normal_bd_from_tone ( hp, th_us, seq->sample_rate ) ) != 0 ) {
+                            writer = WAV_WRITER_INTERCOPY;
+                        }
+                    }
+                    file_result.writer = writer;
+                    file_result.tc_a = tc_a;
+                    file_result.tc_b = tc_b;
+                    file_result.ic_bd = ic_bd;
                     if ( bsd_recovery != WAV_RECOVERY_NONE && mzf ) {
                         file_result.recovered_bytes = mzf->body_size;
                         file_result.expected_bytes = 0; /* u BSD neznáme */
@@ -756,7 +1080,8 @@ static en_WAV_ANALYZER_ERROR process_leader (
                         fprintf ( stderr, "  Decoded: format=%s, header CRC=%s, body CRC=%s, body_size=%u%s\n",
                                   wav_tape_format_name ( refined ),
                                   ( hdr_res.crc_status == WAV_CRC_OK ) ? "OK" : "ERROR",
-                                  ( body_res.crc_status == WAV_CRC_OK ) ? "OK" : "ERROR",
+                                  ( body_res.crc_status == WAV_CRC_OK ) ? "OK"
+                                  : ( body_res.crc_status == WAV_CRC_NOT_AVAILABLE ? "N/A" : "ERROR" ),
                                   mzf->body_size,
                                   file_result.copy2_used ? " (Copy2)" : "" );
                     }
@@ -845,7 +1170,10 @@ static en_WAV_ANALYZER_ERROR process_leader (
                 memset ( &file_result, 0, sizeof ( file_result ) );
                 file_result.tap_data = tap_data;
                 file_result.tap_data_size = tap_size;
-                file_result.format = WAV_TAPE_FORMAT_ZX_SPECTRUM;
+                /* pilot mimo standardní rychlost (2168 T = 619,4 us, +-5 %) = SINCLAIR s vlastním
+                 * časováním (blok 0x11), např. Intercopy SINCLAIR 900 Bd (pilot 930 us) */
+                file_result.format = ( fabs ( leader->avg_period_us / ZX_STD_PILOT_US - 1.0 ) > ZX_STD_PILOT_TOL )
+                                     ? WAV_TAPE_FORMAT_SINCLAIR : WAV_TAPE_FORMAT_ZX_SPECTRUM;
                 file_result.header_crc = crc;
                 file_result.body_crc = WAV_CRC_NOT_AVAILABLE;
                 file_result.leader = *leader;
@@ -858,8 +1186,8 @@ static en_WAV_ANALYZER_ERROR process_leader (
                 }
 
                 if ( config->verbose ) {
-                    fprintf ( stderr, "  Decoded: format=ZX SPECTRUM, flag=0x%02X, size=%u, CRC=%s\n",
-                              tap_data[0], tap_size,
+                    fprintf ( stderr, "  Decoded: format=%s, flag=0x%02X, size=%u, CRC=%s\n",
+                              wav_tape_format_name ( file_result.format ), tap_data[0], tap_size,
                               ( crc == WAV_CRC_OK ) ? "OK" : "ERROR" );
                 }
             } else {
@@ -966,6 +1294,57 @@ static en_WAV_ANALYZER_ERROR pulses_to_direct_recording (
     *out_used_bits_last = used;
 
     return WAV_ANALYZER_OK;
+}
+
+
+/**
+ * @brief Zjistí, zda pulz leží uvnitř dekódovaného záznamu CPM-TAPE.
+ * @param r Výsledek analýzy. @param pulse Index pulzu.
+ * @return 1 = uvnitř [header_leader_pulse, consumed_until_pulse) některého souboru CPM-TAPE.
+ */
+static int in_cpmtape_record ( const st_WAV_ANALYZER_RESULT *r, uint32_t pulse ) {
+    for ( uint32_t i = 0; i < r->file_count; i++ ) {
+        const st_WAV_ANALYZER_FILE_RESULT *f = &r->files[i];
+        if ( f->format == WAV_TAPE_FORMAT_CPM_TAPE && pulse >= f->header_leader_pulse && pulse < f->consumed_until_pulse ) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+
+/**
+ * @brief Pozice souboru na pásce pro řazení.
+ * @param f Soubor. @return header_leader_pulse, u souborů bez něj (ZX, SINCLAIR) leader.start_index.
+ */
+static uint32_t file_position ( const st_WAV_ANALYZER_FILE_RESULT *f ) {
+    return f->header_leader_pulse ? f->header_leader_pulse : f->leader.start_index;
+}
+
+
+/**
+ * @brief Seřadí soubory podle pozice na pásce (stabilně), jen když jsou mezi nimi záznamy CPM-TAPE.
+ *
+ * Záznamy CPM-TAPE se hledají před leadery FM (krok 4b), v poli jsou proto
+ * první. Bez nich zůstává pořadí, v jakém je dekodéry našly.
+ *
+ * @param r Výsledek analýzy (pořadí souborů se mění).
+ */
+static void sort_files_by_position ( st_WAV_ANALYZER_RESULT *r ) {
+    int any = 0;
+    for ( uint32_t i = 0; i < r->file_count; i++ ) {
+        if ( r->files[i].format == WAV_TAPE_FORMAT_CPM_TAPE ) any = 1;
+    }
+    if ( !any ) return;
+    for ( uint32_t i = 1; i < r->file_count; i++ ) {
+        st_WAV_ANALYZER_FILE_RESULT t = r->files[i];
+        uint32_t k = i;
+        while ( k > 0 && file_position ( &r->files[k - 1] ) > file_position ( &t ) ) {
+            r->files[k] = r->files[k - 1];
+            k--;
+        }
+        r->files[k] = t;
+    }
 }
 
 
@@ -1130,6 +1509,8 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
     en_WAV_ERROR wav_err;
     st_WAV_SIMPLE_HEADER *sh = wav_simple_header_new_from_handler ( h, &wav_err );
     if ( !sh ) {
+        /* konkrétní důvod z knihovny wav (dřív se zahodil) */
+        fprintf ( stderr, "WAV header: %s\n", wav_error_string ( wav_err ) );
         return WAV_ANALYZER_ERROR_WAV_FORMAT;
     }
 
@@ -1198,6 +1579,85 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
                   out_result->leaders.count );
     }
 
+    /*
+     * === 4b. CPM-TAPE (Manchester) před průchody FM ===
+     *
+     * Pilot "011" (pulzy 2:1:1:2 půlek bitu) standardní detektor leaderu
+     * nepozná; dekodér hledá pilot sám a rozpozná variantu Pezik/Intercopy.
+     * Hledá se před leadery FM: úsek bajtů 00h v záznamu CPM vypadá jako
+     * leader NORMAL a dekodér FM by si přivlastnil úsek až do dalšího
+     * souboru. Leadery uvnitř záznamů CPM krok 5 přeskočí.
+     * Po chybě dekódování (poškozený záznam) se hledá dál od místa chyby.
+     */
+    {
+        uint32_t cpmtape_search = 0;
+
+        while ( cpmtape_search < pulse_seq.count ) {
+            st_MZF *mzf = NULL;
+            st_WAV_DECODE_RESULT hdr_res, body_res;
+            memset ( &hdr_res, 0, sizeof ( hdr_res ) );
+            memset ( &body_res, 0, sizeof ( body_res ) );
+            uint32_t consumed_until = 0;
+            st_WAV_CPMTAPE_INFO cinfo;
+
+            err = wav_decode_cpmtape_decode_mzf (
+                      &pulse_seq, cpmtape_search,
+                      &mzf, &hdr_res, &body_res, &consumed_until, &cinfo
+                  );
+
+            if ( err == WAV_ANALYZER_ERROR_NO_LEADER ) {
+                /* žádný další pilot CPM-TAPE */
+                free ( hdr_res.data );
+                free ( body_res.data );
+                break;
+            }
+            if ( err != WAV_ANALYZER_OK || !mzf ) {
+                /* poškozený záznam: hledat dál za místem chyby */
+                if ( config->verbose ) {
+                    fprintf ( stderr, "CPM-TAPE record at pulse #%u not decoded: %s\n", cpmtape_search,
+                              wav_analyzer_error_string ( err ) );
+                }
+                free ( hdr_res.data );
+                free ( body_res.data );
+                cpmtape_search = ( consumed_until > cpmtape_search ) ? consumed_until : cpmtape_search + 1;
+                continue;
+            }
+
+            if ( config->verbose ) {
+                fprintf ( stderr, "CPM-TAPE decoded: %s %u Bd, half-bit %.1f us, pilot %u/%u, header CRC=%s, "
+                                  "body CRC=%s, body_size=%u\n",
+                          cinfo.variant == WAV_CPMTAPE_INTERCOPY ? "Intercopy" : "Pezik", cinfo.bd, cinfo.half_us,
+                          cinfo.pilot_header, cinfo.pilot_body,
+                          ( hdr_res.crc_status == WAV_CRC_OK ) ? "OK" : "ERROR",
+                          ( body_res.crc_status == WAV_CRC_OK ) ? "OK"
+                          : ( body_res.crc_status == WAV_CRC_NOT_AVAILABLE ? "N/A" : "ERROR" ),
+                          mzf->body_size );
+            }
+
+            st_WAV_ANALYZER_FILE_RESULT file_result;
+            memset ( &file_result, 0, sizeof ( file_result ) );
+            file_result.mzf = mzf;
+            file_result.format = WAV_TAPE_FORMAT_CPM_TAPE;
+            file_result.header_crc = hdr_res.crc_status;
+            file_result.body_crc = body_res.crc_status;
+            file_result.speed_class = WAV_SPEED_CLASS_FAST;
+            file_result.consumed_until_pulse = consumed_until;
+            file_result.header_leader_pulse = cinfo.header_start_pulse;   /* začátek záznamu */
+            file_result.cpmtape_variant = ( uint8_t ) cinfo.variant;
+            file_result.cpmtape_bd = cinfo.bd;
+
+            if ( result_add_file ( out_result, &file_result ) != WAV_ANALYZER_OK ) {
+                mzf_free ( mzf );
+            }
+
+            free ( hdr_res.data );
+            free ( body_res.data );
+
+            cpmtape_search = ( consumed_until > cpmtape_search ) ? consumed_until : cpmtape_search + 1;
+        }
+        err = WAV_ANALYZER_OK;
+    }
+
     /* === 5. Pro každý leader: klasifikace + dekódování === */
 
     /*
@@ -1221,7 +1681,15 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
             }
             continue;
         }
+        if ( in_cpmtape_record ( out_result, out_result->leaders.leaders[i].start_index ) ) {
+            if ( config->verbose ) {
+                fprintf ( stderr, "Leader at pulse #%u: skipped (inside a CPM-TAPE record)\n",
+                          out_result->leaders.leaders[i].start_index );
+            }
+            continue;
+        }
 
+        uint32_t files_before = out_result->file_count;
         uint32_t leader_consumed = 0;
         err = process_leader ( &pulse_seq, &out_result->leaders.leaders[i],
                                config, out_result, &leader_consumed );
@@ -1237,7 +1705,7 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
         if ( leader_consumed > skip_until_pulse ) {
             skip_until_pulse = leader_consumed;
         }
-        if ( out_result->file_count > 0 ) {
+        if ( out_result->file_count > files_before ) {
             uint32_t cu = out_result->files[out_result->file_count - 1].consumed_until_pulse;
             if ( cu > skip_until_pulse ) {
                 skip_until_pulse = cu;
@@ -1258,6 +1726,7 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
         /* sestavime pokryte oblasti z dekodovanych souboru */
         uint32_t covered_end = 0;
         for ( uint32_t i = 0; i < out_result->file_count; i++ ) {
+            if ( out_result->files[i].format == WAV_TAPE_FORMAT_CPM_TAPE ) continue;   /* CPM se hledá zvlášť (krok 4b) */
             uint32_t ce = out_result->files[i].consumed_until_pulse;
             if ( ce > covered_end ) covered_end = ce;
         }
@@ -1291,7 +1760,8 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
 
                 if ( herr == WAV_ANALYZER_OK &&
                      uncov_hist.modulation == WAV_MODULATION_FM &&
-                     uncov_hist.peak_count >= 2 ) {
+                     uncov_hist.peak_count >= 2 &&
+                     !in_cpmtape_record ( out_result, hist_start ) ) {
                     /*
                      * Nasli jsme FM signal. Vytvorime synteticky leader
                      * s prumerem z prvniho peaku (SHORT) a zavolame
@@ -1334,7 +1804,8 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
                                       wav_tape_format_name ( last->format ),
                                       last->mzf ? last->mzf->body_size : 0,
                                       last->header_crc == WAV_CRC_OK ? "OK" : "ERR",
-                                      last->body_crc == WAV_CRC_OK ? "OK" : "ERR" );
+                                      last->body_crc == WAV_CRC_OK ? "OK"
+                                      : ( last->body_crc == WAV_CRC_NOT_AVAILABLE ? "N/A" : "ERR" ) );
                         }
                     }
                 }
@@ -1344,83 +1815,8 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
         }
     }
 
-    /*
-     * === 6. Dodatecny pruchod: CPM-TAPE detekce ===
-     *
-     * CPM-TAPE pilot ("011" sekvence) neni detekovatelny standardnim
-     * leader detektorem (variace T/2 a 3T/2 = 200%).
-     * Pouzivame vlastni sync detekci, ktera hleda velmi dlouhe pulzy
-     * predchazene charakteristickym pilotem.
-     */
-    {
-        uint32_t cpmtape_search = 0;
-
-        while ( cpmtape_search < pulse_seq.count ) {
-            st_MZF *mzf = NULL;
-            st_WAV_DECODE_RESULT hdr_res, body_res;
-            memset ( &hdr_res, 0, sizeof ( hdr_res ) );
-            memset ( &body_res, 0, sizeof ( body_res ) );
-            uint32_t consumed_until = 0;
-
-            err = wav_decode_cpmtape_decode_mzf (
-                      &pulse_seq, cpmtape_search,
-                      &mzf, &hdr_res, &body_res, &consumed_until
-                  );
-
-            if ( err != WAV_ANALYZER_OK || !mzf ) {
-                /* zadny dalsi CPM-TAPE blok */
-                free ( hdr_res.data );
-                free ( body_res.data );
-                break;
-            }
-
-            /* kontrola prekryvu s jiz dekodovanymi soubory */
-            int overlap = 0;
-            for ( uint32_t j = 0; j < out_result->file_count; j++ ) {
-                uint32_t existing_start = out_result->files[j].leader.start_index;
-                uint32_t existing_end = out_result->files[j].consumed_until_pulse;
-                if ( existing_end == 0 ) continue;
-
-                if ( hdr_res.pulse_start < existing_end &&
-                     consumed_until > existing_start ) {
-                    overlap = 1;
-                    break;
-                }
-            }
-
-            if ( overlap ) {
-                mzf_free ( mzf );
-            } else {
-                st_WAV_ANALYZER_FILE_RESULT file_result;
-                memset ( &file_result, 0, sizeof ( file_result ) );
-                file_result.mzf = mzf;
-                file_result.format = WAV_TAPE_FORMAT_CPM_TAPE;
-                file_result.header_crc = hdr_res.crc_status;
-                file_result.body_crc = body_res.crc_status;
-                file_result.speed_class = WAV_SPEED_CLASS_FAST;
-                file_result.consumed_until_pulse = consumed_until;
-
-                err = result_add_file ( out_result, &file_result );
-                if ( err != WAV_ANALYZER_OK ) {
-                    mzf_free ( mzf );
-                }
-
-                if ( config->verbose ) {
-                    fprintf ( stderr, "CPM-TAPE decoded: header CRC=%s, body CRC=%s, body_size=%u\n",
-                              ( hdr_res.crc_status == WAV_CRC_OK ) ? "OK" : "ERROR",
-                              ( body_res.crc_status == WAV_CRC_OK ) ? "OK" : "ERROR",
-                              mzf->body_size );
-                }
-            }
-
-            free ( hdr_res.data );
-            free ( body_res.data );
-
-            cpmtape_search = ( consumed_until > cpmtape_search )
-                             ? consumed_until
-                             : cpmtape_search + 1;
-        }
-    }
+    /* seřadit soubory podle pozice na pásce (záznamy CPM-TAPE se hledají před FM, krok 4b) */
+    sort_files_by_position ( out_result );
 
     /* === 7. Sběr neidentifikovaných bloků (raw blocks) === */
     if ( config->keep_unknown ) {
@@ -1507,6 +1903,10 @@ void wav_analyzer_print_summary (
 
         fprintf ( stream, "\n--- File #%u ---\n", i + 1 );
         fprintf ( stream, "Format: %s\n", wav_tape_format_name ( f->format ) );
+        if ( f->format == WAV_TAPE_FORMAT_CPM_TAPE && f->cpmtape_variant != WAV_CPMTAPE_NONE ) {
+            fprintf ( stream, "CPM-TAPE: %s, %u Bd\n", f->cpmtape_variant == WAV_CPMTAPE_INTERCOPY ? "Intercopy" : "Pezik TAPE.COM",
+                      f->cpmtape_bd );
+        }
         fprintf ( stream, "Start: %.3f sec, Duration: %.3f sec\n",
                   f->start_time_sec, f->duration_sec );
         fprintf ( stream, "Speed class: %s\n", wav_speed_class_name ( f->speed_class ) );
@@ -1573,6 +1973,11 @@ void wav_analyzer_print_summary (
             fprintf ( stream, "Body CRC: %s\n",
                       ( f->body_crc == WAV_CRC_OK ) ? "OK" :
                       ( f->body_crc == WAV_CRC_ERROR ) ? "ERROR" : "N/A" );
+            if ( f->format == WAV_TAPE_FORMAT_BSD ) {
+                /* CRC každého kusu, kusy z kopie */
+                fprintf ( stream, "BSD chunks: %u, CRC errors: %u, from copy: %u\n", f->bsd_chunks,
+                          f->bsd_crc_errors, f->bsd_from_copy );
+            }
 
             fprintf ( stream, "MZF type: 0x%02X\n", f->mzf->header.ftype );
             fprintf ( stream, "MZF size: %u bytes\n", f->mzf->header.fsize );

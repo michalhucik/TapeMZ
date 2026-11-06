@@ -1,14 +1,14 @@
 /**
  * @file   cmt_stream.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Sjednocující wrapper nad dvěma typy CMT streamů (bitstream a vstream).
  *
  * Poskytuje polymorfní rozhraní — volající nemusí znát konkrétní typ
  * streamu a může používat společné funkce (get_size, get_rate, destroy...).
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -165,7 +165,7 @@ extern "C" {
     extern int cmt_stream_save_wav ( st_CMT_STREAM *stream, uint32_t rate, char *filename );
 
     /** @brief Verze knihovny cmt_stream. */
-#define CMT_STREAM_VERSION "2.0.0"
+#define CMT_STREAM_VERSION "2.0.1"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny cmt_stream.

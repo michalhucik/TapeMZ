@@ -1,7 +1,7 @@
 /**
  * @file   wav_classify.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.2.0
  * @brief  Vrstva 3 analyzéru - klasifikace formátu kazetového záznamu.
  *
  * Dvoustupňová detekce formátu:
@@ -13,10 +13,10 @@
  * Stupeň B - z obsahu hlavičky (format variant):
  *   Po dekódování hlavičky jako NORMAL FM se testují signatury:
  *   - header[0] == 0xBB -> FASTIPL
- *   - NIPSOFT signatura v komentáři -> TURBO
+ *   - předzavaděč TurboCopy na $D400 (90 B, signatura "[turbo]" v cmnt) -> TURBO
  *   - typ=0x04, fsize=0, fstrt=0, fexec=0 -> BSD
  *
- * Tabulkový přístup z wavdec.c, rozšířený o MZ-80B.
+ * Tabulkový přístup z wavdec.c. MZ-80B se automaticky nerozpoznává.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -59,10 +59,11 @@ extern "C" {
      * Tabulkový přístup (z wavdec.c):
      *   < 70 us -> DIRECT
      *   70-155 us -> FAST (CPM, FSK vyšší rychlosti)
-     *   155-220 us -> MEDIUM (SINCLAIR, MZ-80B 1800 Bd)
+     *   155-220 us -> MEDIUM (SINCLAIR; MZ-80B 1800 Bd by sem patřil, autodetekce není)
      *   220-500 us -> NORMAL (1200 Bd, TURBO, FASTIPL, BSD, SLOW)
-     *   500-800 us -> ZX (ZX Spectrum nativni format)
-     *   > 800 us -> ERROR
+     *   500-1100 us -> ZX (nativní formát ZX Spectra; pilot 2168 T = 619 us
+     *                  při 3,5 MHz, Intercopy SINCLAIR 900 Bd 930 us)
+     *   > 1100 us -> ERROR
      *
      * @param avg_period_us Průměrná půl-perioda leader tónu (us).
      * @return Rychlostní třída.
@@ -93,7 +94,8 @@ extern "C" {
      *
      * Po dekódování hlavičky jako NORMAL FM testuje signatury:
      * - header[0] == 0xBB -> FASTIPL
-     * - NIPSOFT signatura v cmnt -> TURBO
+     * - fstrt = fexec = $D400, fsize 90 a cmnt[0..6] = 5B 96 A5 9D 9A B7 5D -> TURBO
+     *   (jiný program na $D400 zůstane u předběžného formátu)
      * - turbo_loader vzor + cmnt[3..4]=0xD400 + cmnt[1..2]=191 -> FSK
      * - turbo_loader vzor + cmnt[3..4]=0xD400 + cmnt[1..2]=249 -> SLOW
      * - turbo_loader vzor + cmnt[3..4]=0xD400 + cmnt[1..2]=360 -> DIRECT

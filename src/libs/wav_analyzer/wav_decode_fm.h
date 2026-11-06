@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_fm.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.3.0
  * @brief  Vrstva 4a analyzéru - FM dekodér pro NORMAL/SINCLAIR/CPM/MZ-80B.
  *
  * Dekóduje data z FM modulovaného signálu (obdélníkové pulzy).
@@ -18,7 +18,7 @@
  *   - 1 stop bit (LONG)
  * - CRC: 2 bajty (16-bit popcount, big-endian)
  *
- * Bitový práh: leader_avg * 1.5 (z wavdec.c)
+ * Bitový práh: leader_avg * 1.6 (WAV_ANALYZER_FM_THRESHOLD_FACTOR; wavdec.c měl 1.5)
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -127,6 +127,41 @@ extern "C" {
 
 
     /**
+     * @brief Najde tapemark podle celých period a přeskočí synchronizaci.
+     *
+     * Od dec->pos postupuje po dvojicích půlvln a průměr dvojice porovnává
+     * s dec->threshold_us: hledá aspoň min_long dlouhých period a hned za
+     * nimi aspoň min_short krátkých. Za krátkými přeskočí nejvýš 2 dlouhé
+     * periody (synchronizace 2L). Na rozdíl od wav_decode_fm_find_tapemark()
+     * nevadí asymetrické půlvlny, které se po kvantizaci překrývají
+     * (Intercopy 2800/3200 Bd).
+     *
+     * @param dec Kontext dekodéru (pos = začátek hledání, threshold_us = práh
+     *        průměru půlvlny). Nesmí být NULL.
+     * @param min_long Minimální počet dlouhých period tapemarku.
+     * @param min_short Minimální počet krátkých period tapemarku.
+     * @param max_long Nejvyšší počet dlouhých period tapemarku (0 = bez meze).
+     *        Delší běh (např. LTM 40 cizí hlavičky místo STM 20) je chyba,
+     *        hledání nepokračuje.
+     * @param max_skip Nejvýš tolik period smí ležet mezi dec->pos a začátkem
+     *        tapemarku (0 = bez meze). Váže tapemark na konec leaderu.
+     * @return WAV_ANALYZER_OK při nalezení,
+     *         WAV_ANALYZER_ERROR_DECODE_TAPEMARK při nenalezení (do konce
+     *         sekvence nebo do max_skip) a při běhu delším než max_long.
+     *
+     * @post Při úspěchu dec->pos ukazuje na první půlvlnu dat (za synchronizací),
+     *       ve stejné fázi dvojic jako vstupní dec->pos.
+     */
+    extern en_WAV_ANALYZER_ERROR wav_decode_fm_find_tapemark_period (
+        st_WAV_FM_DECODER *dec,
+        uint32_t min_long,
+        uint32_t min_short,
+        uint32_t max_long,
+        uint32_t max_skip
+    );
+
+
+    /**
      * @brief Přečte jeden bit z FM signálu.
      *
      * Přečte jeden pulz (půl-periodu) a porovná s prahem.
@@ -209,10 +244,52 @@ extern "C" {
 
 
     /**
+     * @brief Najde a přečte 2. kopii sekce (Copy2) za oddělovačem SHORT.
+     *
+     * ROM (a BASIC 1Z-016 u kusů BSD) zapisuje kopii hned za
+     * 256 SHORT, bez tónu a tapemarku. Hledá se v okně od začátku 1. kopie
+     * (2x nominální délka sekce + rezerva) běh SHORT délky oddělovače, za
+     * ním start bit a blok s checksumem. Kandidát s chybou CRC se přeskočí
+     * a zkusí se další běh v okně (šum v 1. kopii umí vytvořit falešný
+     * dlouhý běh SHORT). Běh SHORT delší než oddělovač (tón další části)
+     * hledání ukončí.
+     *
+     * @param seq Sekvence pulzů.
+     * @param section_start První datová půlvlna 1. kopie sekce (za start bitem).
+     * @param threshold_us Práh SHORT/LONG v mikrosekundách.
+     * @param expected_size Velikost dat sekce v bajtech (bez checksumu).
+     * @param[out] out_data Data 2. kopie s CRC OK (alokována, uvolní volající),
+     *             jinak NULL.
+     * @param[out] out_crc_status WAV_CRC_OK (kopie s platným checksumem),
+     *             WAV_CRC_ERROR (kopie strukturálně nalezena, ale checksum
+     *             nesedí; data se nevracejí), WAV_CRC_NOT_AVAILABLE (nenalezena).
+     * @param[out] out_crc_stored Uložený checksum. Může být NULL.
+     * @param[out] out_crc_computed Vypočtený checksum. Může být NULL.
+     * @param[out] out_end_pos Pozice za checksumem 2. kopie (i při WAV_CRC_ERROR,
+     *             aby se oddělovač nehlásil jako leader). Může být NULL.
+     * @return WAV_ANALYZER_OK, když byla kopie nalezena (CRC viz out_crc_status);
+     *         WAV_ANALYZER_ERROR_NO_LEADER, když v okně není žádný oddělovač
+     *         s čitelnou kopií; WAV_ANALYZER_ERROR_ALLOC; WAV_ANALYZER_ERROR_INVALID_PARAM.
+     */
+    extern en_WAV_ANALYZER_ERROR wav_decode_fm_try_copy2 (
+        const st_WAV_PULSE_SEQUENCE *seq,
+        uint32_t section_start,
+        double threshold_us,
+        uint32_t expected_size,
+        uint8_t **out_data,
+        en_WAV_CRC_STATUS *out_crc_status,
+        uint16_t *out_crc_stored,
+        uint16_t *out_crc_computed,
+        uint32_t *out_end_pos
+    );
+
+    /**
      * @brief Dekóduje kompletní MZF soubor z FM signálu.
      *
      * Provede kompletní dekódování jednoho MZF souboru:
-     * 1. Detekce tapemarku hlavičky (LTM)
+     * 1. Detekce tapemarku hlavičky (LTM); po půlvlnách, při neúspěchu
+     *    po celých periodách (wav_decode_fm_find_tapemark_period(), nesouměrné
+     *    půlvlny), stejně u STM v kroku 6 (nejvýš 30 dlouhých period)
      * 2. Přečtení 1 sync bitu (LONG)
      * 3. Dekódování 128B hlavičky
      * 4. Verifikace CRC hlavičky
@@ -221,6 +298,11 @@ extern "C" {
      * 7. Přečtení 1 sync bitu (LONG)
      * 8. Dekódování těla (velikost z fsize v hlavičce)
      * 9. Verifikace CRC těla
+     *
+     * Za hlavičkou i tělem hledá druhou kopii (Copy2, ROM ji zapisuje hned
+     * za 256 SHORT, bez tónu a tapemarku). Při chybě CRC 1. kopie a CRC OK
+     * 2. kopie nahradí data a nastaví copy2_used. Kandidát bez platného CRC
+     * data nikdy nenahradí.
      *
      * @param seq Sekvence pulzů. Nesmí být NULL.
      * @param leader Informace o leader tónu hlavičky. Nesmí být NULL.
@@ -231,6 +313,12 @@ extern "C" {
      * @return WAV_ANALYZER_OK při úspěchu, jinak chybový kód.
      *
      * @post Při úspěchu *out_mzf ukazuje na dekódovaný MZF soubor.
+     * @post pulse_end hlavičky i těla je konec 2. kopie, když se strukturně
+     *       našla (i s chybou CRC), jinak konec 1. kopie. Orchestrátor podle
+     *       něj pokračuje (consumed_until, hledání části TURBO), takže se
+     *       2. kopie nehlásí jako další leader.
+     * @post Při fsize 0 se tělo nečte ani neověřuje: out_body_result má
+     *       crc_status WAV_CRC_NOT_AVAILABLE, ostatní pole nezměněná.
      */
     extern en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
         const st_WAV_PULSE_SEQUENCE *seq,

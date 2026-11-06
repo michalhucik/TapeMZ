@@ -1,7 +1,7 @@
 /**
  * @file   wav_preprocess.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Implementace vrstvy 0 - předspracování WAV signálu.
  *
  * Obsahuje implementace DC offset korekce, IIR high-pass filtru,
@@ -87,42 +87,11 @@ en_WAV_ANALYZER_ERROR wav_preprocess_load_samples (
     for ( uint32_t i = 0; i < total_samples; i++ ) {
         uint8_t *sample_ptr = raw + ( ( uint32_t ) i * sh->block_size ) + ch_offset;
 
-        switch ( sh->bits_per_sample ) {
-            case 8:
-            {
-                /* 8-bit PCM je unsigned: 0..255, stred 128 */
-                buffer[i] = ( ( double ) sample_ptr[0] - 128.0 ) / 128.0;
-                break;
-            }
-            case 16:
-            {
-                int16_t s16;
-                memcpy ( &s16, sample_ptr, sizeof ( s16 ) );
-                s16 = ( int16_t ) endianity_bswap16_LE ( ( uint16_t ) s16 );
-                buffer[i] = ( double ) s16 / 32768.0;
-                break;
-            }
-            case 24:
-            {
-                int32_t s24 = ( int32_t ) sample_ptr[0]
-                            | ( ( int32_t ) sample_ptr[1] << 8 )
-                            | ( ( int32_t ) sample_ptr[2] << 16 );
-                if ( s24 & 0x800000 ) s24 |= ( int32_t ) 0xFF000000;
-                buffer[i] = ( double ) s24 / 8388608.0;
-                break;
-            }
-            case 32:
-            {
-                int32_t s32;
-                memcpy ( &s32, sample_ptr, sizeof ( s32 ) );
-                s32 = ( int32_t ) endianity_bswap32_LE ( ( uint32_t ) s32 );
-                buffer[i] = ( double ) s32 / 2147483648.0;
-                break;
-            }
-            default:
-                free ( raw );
-                free ( buffer );
-                return WAV_ANALYZER_ERROR_INVALID_PARAM;
+        /* jediný převod vzorků v knihovně wav (PCM 8-64 bit, IEEE float) */
+        if ( wav_decode_sample ( sh, sample_ptr, &buffer[i] ) != WAV_OK ) {
+            free ( raw );
+            free ( buffer );
+            return WAV_ANALYZER_ERROR_INVALID_PARAM;
         }
     }
 
@@ -175,8 +144,8 @@ en_WAV_ANALYZER_ERROR wav_preprocess_highpass (
      * 1-pólový IIR high-pass filtr:
      * y[n] = alpha * (y[n-1] + x[n] - x[n-1])
      *
-     * Odstraňuje nízkofrekvenční složky pod cca 100 Hz
-     * (závisí na alpha a vzorkovací frekvenci).
+     * Mezní frekvence fc = (1 - alpha) * fs / (2 * pi * alpha); výchozí
+     * alpha 0.997 dává asi 21 Hz při 44,1 kHz (alpha nezávisí na fs).
      */
     double prev_x = buffer[0];
     double prev_y = buffer[0];

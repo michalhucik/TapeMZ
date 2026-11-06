@@ -1,13 +1,20 @@
 /**
  * @file   mzcmt_bsd.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
- * @brief  BSD/BRD koder pro kazetovy zaznam Sharp MZ (chunkovany BASIC datovy format).
+ * @version 1.1.1
+ * @brief  BSD/BRD kodér TMZ v1.0 (chunkovaný datový soubor BASICu), jen pro TAPEMZ-V1-LEGACY.
  *
- * Knihovna implementuje kodovani BSD/BRD zaznamu pro Sharp MZ. Format se
- * pouziva pro BASIC prikazy SAVE DATA / PRINT# (BSD, ftype 0x03) a pro
- * automaticke cteni po spusteni programu (BRD, ftype 0x04). Oba typy
- * pouzivaji stejny chunkovany zaznam na pasce.
+ * @warning Výstup tohoto kodéru je struktura TMZ v1.0: tón (SGAP) jen
+ * před prvním kusem, kusy bez kopie a bez pauz. BASIC 1Z-016 takový záznam
+ * za prvním kusem nepřečte (ověřeno v emulátoru). Player ho nepoužívá:
+ * blok 0x45 přehrává profilem BASIC-1Z016. Kodér zůstává jen jako
+ * generátor profilu TAPEMZ-V1-LEGACY formátu bsd (zpětná kompatibilita
+ * bloků 0x46 vzniklých převodem v1.0).
+ *
+ * Datový soubor BASICu: BASIC 1Z-016 ho zapisuje příkazy WOPEN#/PRINT#
+ * s ftype 0x04 (ROM monitoru tento typ jmenuje BRD); typ 0x03 ROM jmenuje
+ * BSD (Owner's Manual MZ-800, tabulka typů v ROM). Oba typy mají
+ * stejný chunkovaný záznam na pásce.
  *
  * Na rozdil od standardniho MZF zaznamu, kde hlavicka obsahuje fsize
  * urcujici delku tela, u BSD/BRD je fsize=0, fstrt=0, fexec=0 a data
@@ -15,8 +22,9 @@
  * datoveho payloadu. Chunky jsou na pasce ulozeny jako samostatne body
  * bloky s krátkym tapemarkem a vlastnim checksumem.
  *
- * Kodovani pouziva standardni NORMAL FM modulaci (1 bit na pulz,
- * MSB first, stop bit za kazdym bajtem) - shodnou s ROM rutinou.
+ * Kódování používá NORMAL FM modulaci (1 bit na pulz, MSB first, start
+ * bit LONG před každým bajtem). Pulzy jsou symetrické hodnoty v1.0
+ * (MZ-800 249/498 µs), ne časování ROM ani BASICu.
  *
  * @par Struktura BSD/BRD signalu:
  * @verbatim
@@ -47,8 +55,7 @@
  * odesilany big-endian (horni bajt prvni). Shodny s ROM algoritmem.
  *
  * @par Referencni implementace:
- * - docs/detailne-prozkoumat/cmttool/src/libs/cmttool/cmttool.c (BSD detekce)
- * - docs/existing-mzformats.md (sekce 3a. BSD/BRD)
+ * - cmttool: cmttool.c (BSD detekce)
  * - src/libs/mztape/mztape.c (referencni NORMAL FM implementace)
  *
  * @par Licence:
@@ -265,6 +272,18 @@ extern "C" {
      */
     extern uint16_t mzcmt_bsd_compute_checksum ( const uint8_t *data, uint16_t size );
 
+    /**
+     * @brief Délky půlvln pulzní sady při rychlosti 1:1.
+     *
+     * Hodnoty vnitřní tabulky pulzů (výstup v1.0) pro převod bloků v1.0
+     * na TMZ v1.1 (tmz_profile, profil TAPEMZ-V1-LEGACY).
+     *
+     * @param pulseset Pulzní sada.
+     * @param[out] out LONG H, LONG L, SHORT H, SHORT L v sekundách.
+     * @return EXIT_SUCCESS, nebo EXIT_FAILURE (out je NULL, neplatná sada).
+     */
+    extern int mzcmt_bsd_get_pulse_lengths ( en_MZCMT_BSD_PULSESET pulseset, double out[4] );
+
 
     /** @brief Uzivatelsky alokator - umoznuje nahradit vychozi malloc/calloc/free. */
     typedef struct st_MZCMT_BSD_ALLOCATOR {
@@ -291,7 +310,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny mzcmt_bsd. */
-#define MZCMT_BSD_VERSION "1.0.0"
+#define MZCMT_BSD_VERSION "1.1.1"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny mzcmt_bsd.

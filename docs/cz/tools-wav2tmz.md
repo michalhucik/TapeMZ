@@ -7,7 +7,8 @@ Implicitně provádí pouze analýzu a výpis nalezených bloků (bez ukládán�
 S volbou `-o` nebo `--output-format` extrahuje MZF soubory nebo TMZ archiv.
 
 Automaticky detekuje formát záznamu: NORMAL, TURBO, FASTIPL, BSD,
-CPM-CMT, CPM-TAPE, MZ-80B, FSK, SLOW, DIRECT, ZX Spectrum.
+CPM-CMT, CPM-TAPE, FSK, SLOW, DIRECT, ZX Spectrum. MZ-80B se automaticky
+nerozpoznává.
 
 ## Použití
 
@@ -24,10 +25,10 @@ wav2tmz vstup.wav [-o vystup] [volby]
 | `--append-tmz` | - | vypnuto | Připojit bloky do existujícího TMZ (bez toho je existující TMZ chyba) |
 | `--overwrite-mzf` | - | vypnuto | Přepsat existující MZF soubory (bez toho je existující MZF chyba) |
 | `--schmitt` | - | vypnuto | Použít Schmitt trigger místo zero-crossing |
-| `--tolerance` | 0.02-0.35 | 0.10 | Tolerance detekce leader tónu |
+| `--tolerance` | 0.02-0.35 | 0.20 | Tolerance detekce leader tónu |
 | `--preprocess` | - | zapnuto | Zapnout preprocessing signálu |
 | `--no-preprocess` | - | - | Vypnout preprocessing (DC offset, HP filtr, normalizace) |
-| `--histogram` | - | vypnuto | Vypsat histogram délek pulzů |
+| `--histogram` | - | vypnuto | Jen vypíše radu použít `--verbose`; histogram délek pulzů vypisuje `--verbose` |
 | `--verbose`, `-v` | - | vypnuto | Podrobný výstup (reálná rychlost Bd, přibližná rychlost, pulzní sada) |
 | `--channel` | L, R | L | Výběr kanálu ze sterea |
 | `--invert` | - | vypnuto | Invertovat polaritu signálu |
@@ -118,21 +119,48 @@ a budoucí --recover-body, --recover-header).
 jako žádný známý formát, se uloží jako TZX blok 0x15 (Direct Recording).
 Použitelné pro zachování celého obsahu kazety.
 
+## Vstupní WAV
+
+wav2tmz čte WAV v PCM (8, 16, 24, 32 a 64 bit), v IEEE float (32 a 64 bit)
+i ve formátu WAVE_FORMAT_EXTENSIBLE se SubFormat PCM nebo IEEE float, mono
+i stereo (`--channel`). Jiné kódování (A-law, mu-law, komprimované) skončí
+chybou s důvodem.
+
 ## Výstupní formáty
 
 ### Režim MZF (výchozí)
 
 Pro každý dekódovaný soubor se vytvoří samostatný MZF soubor.
-ZX Spectrum bloky se v tomto režimu přeskakují (použijte TMZ formát).
+ZX Spectrum bloky a bloky bez dat MZF (např. SINCLAIR) se v tomto režimu
+přeskakují s varováním (použijte TMZ formát). Pokud se neuloží žádný soubor,
+program skončí kódem 1.
 
 ### Režim TMZ
 
 Všechny dekódované bloky se uloží do jednoho TMZ souboru:
+- Záznam TurboCopy V1.2x (pozná se podle délky tónu: počet pulzů x S je stálý)
+  -> blok 0x46 s profilem `TC-1.21`, poměr a/b TurboCopy (všech 34 poměrů 1/2 až 3/1),
+  `loader=Y` s předzavaděčem, `loader=N` bez něj
+- Záznam Intercopy V10.2 -> blok 0x46: NORMAL 600/2400/2800/3200 (tón hlavičky 11000
+  pulzů) -> `IC-10.2-NORMAL`, TURBO (tón těla 5500, čtecí bod předzavaděče) ->
+  `IC-10.2-TURBO`, FAST IPL se zavaděčem V07 (Intercopy v7 až V10.2; časování starších
+  verzí neověřeno) -> `IC-10.2-FASTIPL`, vždy s rychlostí `bd`
 - NORMAL 1:1 -> blok 0x40 (MZ Standard Data)
-- NORMAL jiná rychlost -> blok 0x41 (MZ Turbo Data, format=NORMAL)
-- TURBO/FASTIPL/FSK/SLOW/DIRECT/CPM-CMT/CPM-TAPE -> blok 0x41
-- BSD -> blok 0x45 (MZ BASIC Data)
-- ZX Spectrum -> blok 0x10 (Standard Speed Data)
+- NORMAL jiná rychlost -> blok 0x41 (MZ Turbo Data, format=NORMAL); když je odhad
+  rychlosti od nejbližší rychlosti bloku 0x41 dál než 5 % a zároveň dál, než je
+  rozlišení vzorkování (1 vzorek na půlvlnu), vypíše se varování
+- TURBO/FASTIPL bez rozpoznaného zapisovače, FSK/SLOW/DIRECT/CPM-CMT -> blok 0x41; u FSK a SLOW se úroveň
+  rychlosti určí z bajtu zpoždění v zavaděči (nepozná-li se, zapíše se 0 s varováním)
+- CPM-TAPE -> blok 0x46: varianta Intercopy (koncový bit za checksumem) -> profil `IC-10.2-CPM`,
+  jinak `PEZIK-2.0A` s rychlostí 2400 nebo 3200 podle délky bitu. Rychlost Intercopy
+  (1500, 2400, 2800, 3200, 3600 Bd) se určí podle délky bitu a zapíše jako `bd`
+- BSD -> blok 0x46 s profilem `BASIC-1Z016` (časování BASICu 1Z-016; tón, kopie a pauzy
+  zdroje se nezachovají). Soubor s víc než 254 kusy nejde uložit (chyba).
+  CRC se ověřuje u každého kusu; při chybě se použije kopie kusu, souhrn vypíše
+  `BSD chunks: N, CRC errors: E, from copy: C`.
+- ZX Spectrum -> blok 0x10 (Standard Speed Data); pilot mimo standardní rychlost
+  (619 µs +- 5 %, např. Intercopy SINCLAIR 900 Bd s pilotem 930 µs) -> blok 0x11
+  (Turbo Speed Data) s naměřeným časováním
 - Neidentifikované (s --keep-unknown) -> blok 0x15 (Direct Recording)
 
 Soubor začíná blokem 0x30 (Text Description) s metadaty o zdrojovém WAV.
@@ -175,10 +203,10 @@ Dekódování se Schmitt triggerem (zašuměná nahrávka):
 wav2tmz noisy_tape.wav --schmitt --tolerance 0.15 -o output.mzf
 ```
 
-Podrobná analýza s histogramem:
+Podrobná analýza s histogramem délek pulzů (vypisuje ho `--verbose`):
 
 ```
-wav2tmz recording.wav --verbose --histogram
+wav2tmz recording.wav --verbose
 ```
 
 Dekódování pravého kanálu s invertovanou polaritou:

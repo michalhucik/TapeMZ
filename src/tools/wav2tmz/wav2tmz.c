@@ -1,7 +1,7 @@
 /**
  * @file   wav2tmz.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.6.0
+ * @version 2.11.1
  * @brief  Konverzni utilita WAV -> MZF/TMZ - dekodovani Sharp MZ kazetovych nahravek.
  *
  * Analyzuje WAV soubor obsahujici nahravku magnetofonove kazety
@@ -22,7 +22,7 @@
  * - --append-tmz               : pridat bloky do existujiciho TMZ souboru
  * - --overwrite-mzf                : prepsat existujici vystupni soubory
  * - --schmitt                  : pouzit Schmitt trigger misto zero-crossing
- * - --tolerance <N>            : tolerance detekce leaderu (0.02-0.35, vychozi 0.10)
+ * - --tolerance <N>            : tolerance detekce leaderu (0.02-0.35, výchozí 0.20)
  * - --preprocess               : zapnout preprocessing (zpetna kompatibilita)
  * - --no-preprocess            : vypnout preprocessing (DC offset + HP filtr + normalizace)
  * - --histogram                : vypsat histogram delek pulzu
@@ -73,13 +73,14 @@
 #include "libs/endianity/endianity.h"
 #include "libs/tmz/tmz.h"
 #include "libs/tmz/tmz_blocks.h"
+#include "libs/tmz/tmz_profile.h"
 #include "libs/tzx/tzx.h"
 #include "libs/cmtspeed/cmtspeed.h"
 #include "libs/wav_analyzer/wav_analyzer.h"
 
 
 /** @brief Verze programu wav2tmz. */
-#define WAV2TMZ_VERSION "2.7.0"
+#define WAV2TMZ_VERSION "2.11.1"
 
 
 /** @brief Znakova sada pro zobrazeni nazvu souboru (nastaveno z --charset). */
@@ -148,7 +149,7 @@ static void print_usage ( const char *prog_name ) {
               "\n"
               "Analysis options:\n"
               "  --schmitt                 Use Schmitt trigger instead of zero-crossing\n"
-              "  --tolerance <N>           Leader detection tolerance (0.02-0.35, default 0.10)\n"
+              "  --tolerance <N>           Leader detection tolerance (0.02-0.35, default 0.20)\n"
               "  --no-preprocess           Disable preprocessing (DC offset + HP filter + normalize)\n"
               "  --preprocess              Enable preprocessing (default, for backward compatibility)\n"
               "  --histogram               Print pulse histogram\n"
@@ -342,6 +343,16 @@ static en_CMTSPEED wav_format_to_speed ( en_WAV_TAPE_FORMAT fmt ) {
 /** @brief Tolerancni okno pro detekci 1:1 rychlosti (+-15 %). */
 #define SPEED_1_1_TOLERANCE     0.15
 
+/**
+ * @brief Nejmenší relativní odchylka odhadu rychlosti NORMAL (bez zapisovače) od nejbližší
+ *        en_CMTSPEED, nad kterou wav2tmz varuje.
+ *
+ * Skutečný práh je větší z této hodnoty a rozlišení vzorkování (1 vzorek na půlvlnu
+ * leaderu): při 44,1 kHz má půlvlna 2:1 asi 5 vzorků a odhad z průměru se liší
+ * o desítky procent, aniž by rychlost byla nevyjádřitelná.
+ */
+#define SPEED_APPROX_WARN       0.05
+
 
 /**
  * @brief Odhadne rychlostni pomer z prumerne pul-periody leaderu.
@@ -408,6 +419,8 @@ static st_TZX_BLOCK* create_block_standard ( const st_WAV_ANALYZER_FILE_RESULT *
  * Pouziva se pro nestandardni formaty: TURBO, FASTIPL, SINCLAIR,
  * CPM-CMT, CPM-TAPE, FSK, SLOW, DIRECT. Vsechna volitelna casovaci
  * pole jsou nastavena na 0 (= pouzit vychozi hodnoty pro dany format).
+ * U FSK a SLOW nese pole speed úroveň rychlosti z file_result->fsl_speed;
+ * nezjištěnou úroveň (-1) zapíše jako 0 a vypíše varování na stderr.
  *
  * @param file_result Vysledek dekodovani jednoho souboru. Nesmi byt NULL.
  * @return Novy alokovany TMZ blok, nebo NULL pri chybe.
@@ -438,6 +451,15 @@ static st_TZX_BLOCK* create_block_turbo ( const st_WAV_ANALYZER_FILE_RESULT *fil
          */
         params.speed = ( uint8_t ) estimate_speed_from_leader (
                                        file_result->leader.avg_period_us );
+    } else if ( file_result->format == WAV_TAPE_FORMAT_FSK || file_result->format == WAV_TAPE_FORMAT_SLOW ) {
+        /* FSK/SLOW: pole speed nese úroveň rychlosti, určenou z bajtu zpoždění v zavaděči */
+        if ( file_result->fsl_speed >= 0 ) {
+            params.speed = ( uint8_t ) file_result->fsl_speed;
+        } else {
+            params.speed = 0;
+            fprintf ( stderr, "Warning: %s speed level not recognized from the loader, level 0 written\n",
+                      wav_tape_format_name ( file_result->format ) );
+        }
     } else {
         params.speed = ( uint8_t ) wav_format_to_speed ( file_result->format );
     }
@@ -454,7 +476,7 @@ static st_TZX_BLOCK* create_block_turbo ( const st_WAV_ANALYZER_FILE_RESULT *fil
          ( file_result->format == WAV_TAPE_FORMAT_NORMAL ||
            file_result->format == WAV_TAPE_FORMAT_MZ80B ) ) {
         params.speed = ( uint8_t ) CMTSPEED_NONE;
-        /* us*100 konvence: seconds = value / 1e7, tj. value = us * 10 */
+        /* jednotka 0,1 us: seconds = value / 1e7, tj. value = us * 10 */
         uint16_t short_val = ( uint16_t ) round ( file_result->short_pulse_us * 10.0 );
         uint16_t long_val = ( uint16_t ) round ( file_result->long_pulse_us * 10.0 );
         params.long_high = long_val;
@@ -472,17 +494,18 @@ static st_TZX_BLOCK* create_block_turbo ( const st_WAV_ANALYZER_FILE_RESULT *fil
 
 
 /**
- * @brief Vytvori TMZ blok 0x45 (MZ BASIC Data) z dekodovaneho BSD souboru.
+ * @brief Vytvoří blok 0x46 profilu BASIC-1Z016 z dekódovaného souboru BSD.
  *
- * Prevede ploche datove telo MZF (z dekoderu) zpet na chunkovany format
- * vyzadovany blokem 0x45: kazdy chunk ma 2B ID (LE) + 256B dat.
- * Posledni chunk dostane ID=0xFFFF (terminacni marker) a nese posledni
- * porci dat - to odpovida chovani realneho hardwaru (MZ-800 BASIC),
- * kde terminacni chunk take nese data a dekoder je zahrnuje do body.
+ * Převede ploché datové tělo MZF (z dekodéru) zpět na kusy: každý kus má
+ * 2 B ID (LE) + 256 B dat. Poslední kus dostane ID=0xFFFF a nese poslední
+ * porci dat (tak zapisuje BASIC 1Z-016). Blok sestaví
+ * profil BASIC-1Z016 s výchozí pauzou; struktura zdroje (tón, kopie) se
+ * nezachová.
  *
- * @param file_result Vysledek dekodovani jednoho BSD souboru. Nesmi byt NULL.
- * @return Novy alokovany TMZ blok, nebo NULL pri chybe.
- *         Volajici musi uvolnit data po appendu do TMZ souboru.
+ * @param file_result Výsledek dekódování jednoho souboru BSD. Nesmí být NULL.
+ * @return Nový alokovaný blok, nebo NULL při chybě (víc než 254 kusů nebo chyba
+ *         profilu; důvod vypíše na stderr).
+ *         Volající musí uvolnit data po appendu do TMZ souboru.
  *
  * @note Alokuje docasny buffer pro chunky, ktery je uvolnen pred navratem.
  */
@@ -533,14 +556,20 @@ static st_TZX_BLOCK* create_block_bsd ( const st_WAV_ANALYZER_FILE_RESULT *file_
     bsd_header.fstrt = 0;
     bsd_header.fexec = 0;
 
-    st_TZX_BLOCK *block = tmz_block_create_mz_basic_data (
-        wav_format_to_machine ( file_result->format ),
-        wav_format_to_pulseset ( file_result->format ),
-        DEFAULT_PAUSE_MS,
-        &bsd_header,
-        chunks,
-        total_chunks
-    );
+    st_TMZ_PROFILE_ARGS a;
+    tmz_profile_args_init ( &a );
+    a.pause_ms = DEFAULT_PAUSE_MS;
+    en_TMZ_PROFILE_ERROR pe;
+    st_TZX_BLOCK *block = tmz_profile_build_block ( "BASIC-1Z016", &a, &bsd_header, chunks,
+                                                    chunks_size, &pe );
+    if ( !block ) {
+        if ( total_chunks > 254 ) {
+            fprintf ( stderr, "Error: BSD file with %u chunks cannot be stored (BASIC-1Z016 allows 254)\n",
+                      ( unsigned ) total_chunks );
+        } else {
+            fprintf ( stderr, "Error: profile BASIC-1Z016: %s\n", tmz_profile_error_string ( pe ) );
+        }
+    }
 
     free ( chunks );
     return block;
@@ -688,21 +717,93 @@ static st_TZX_BLOCK* create_block_sinclair ( const st_WAV_ANALYZER_FILE_RESULT *
 
 
 /**
+ * @brief Vytvoří blok 0x46 záznamu CPM-TAPE podle rozpoznané varianty.
+ *
+ * Intercopy -> profil IC-10.2-CPM (1500, 2400, 2800, 3200, 3600), Pezik ->
+ * PEZIK-2.0A (2400/3200), obojí s rychlostí z dekodéru, pauza výchozí profilu. Hlavička a tělo jdou do bloku beze
+ * změny (checksum generuje player z dat).
+ *
+ * @param file_result Výsledek dekódování (format CPM_TAPE, mzf). Nesmí být NULL.
+ * @return Nový blok (uvolní volající), nebo NULL při chybě profilu (vypíše důvod,
+ *         např. tělo Pezik nad 16 KB).
+ */
+static st_TZX_BLOCK* create_block_cpmtape ( const st_WAV_ANALYZER_FILE_RESULT *file_result ) {
+    st_TMZ_PROFILE_ARGS a;
+    tmz_profile_args_init ( &a );
+    const char *id = ( file_result->cpmtape_variant == WAV_CPMTAPE_INTERCOPY ) ? "IC-10.2-CPM" : "PEZIK-2.0A";
+    a.bd = file_result->cpmtape_bd ? file_result->cpmtape_bd : 2400;
+    en_TMZ_PROFILE_ERROR pe;
+    const st_MZF *m = file_result->mzf;
+    st_TZX_BLOCK *b = tmz_profile_build_block ( id, &a, &m->header, m->body, m->body_size, &pe );
+    if ( !b ) fprintf ( stderr, "Error: profile %s: %s\n", id, tmz_profile_error_string ( pe ) );
+    return b;
+}
+
+
+/**
+ * @brief Blok 0x46 profilem zapisovače, který analyzér rozpoznal.
+ *
+ * TurboCopy (format NORMAL = Loader N, TURBO = Loader Y) -> TC-1.21 s poměrem
+ * a/b (tc_a, tc_b); Intercopy NORMAL / TURBO / FAST IPL -> IC-10.2-NORMAL /
+ * -TURBO / -FASTIPL s bd. Ostatní případy (writer UNKNOWN, jiný formát) blok
+ * nevytvoří a o bloku rozhodne formát jako dřív.
+ *
+ * @param file_result Výsledek dekódování. Nesmí být NULL.
+ * @param[out] out_block Nový blok (NULL při chybě profilu, chyba vypsána na stderr).
+ * @return 1 = případ patří profilu (blok v *out_block), 0 = nepatří.
+ */
+static int create_block_writer ( const st_WAV_ANALYZER_FILE_RESULT *file_result, st_TZX_BLOCK **out_block ) {
+    const char *id = NULL;
+    st_TMZ_PROFILE_ARGS a;
+    tmz_profile_args_init ( &a );
+    a.pause_ms = DEFAULT_PAUSE_MS;
+    en_WAV_TAPE_FORMAT f = file_result->format;
+    if ( file_result->writer == WAV_WRITER_TURBOCOPY && ( f == WAV_TAPE_FORMAT_NORMAL || f == WAV_TAPE_FORMAT_TURBO ) ) {
+        id = "TC-1.21";
+        a.tc_a = file_result->tc_a;
+        a.tc_b = file_result->tc_b;
+        a.loader = ( f == WAV_TAPE_FORMAT_TURBO );
+    } else if ( file_result->writer == WAV_WRITER_INTERCOPY ) {
+        if ( f == WAV_TAPE_FORMAT_NORMAL ) id = "IC-10.2-NORMAL";
+        else if ( f == WAV_TAPE_FORMAT_TURBO ) id = "IC-10.2-TURBO";
+        else if ( f == WAV_TAPE_FORMAT_FASTIPL ) id = "IC-10.2-FASTIPL";
+        a.bd = file_result->ic_bd;
+    }
+    if ( !id ) return 0;
+    en_TMZ_PROFILE_ERROR pe;
+    const st_MZF *m = file_result->mzf;
+    *out_block = tmz_profile_build_block ( id, &a, &m->header, m->body, m->body_size, &pe );
+    if ( !*out_block ) fprintf ( stderr, "Error: profile %s: %s\n", id, tmz_profile_error_string ( pe ) );
+    return 1;
+}
+
+
+/**
  * @brief Vytvori TMZ blok z dekodovaneho souboru podle jeho formatu.
  *
  * Mapovani formatu na TMZ bloky:
  *   - NORMAL, MZ-80B        -> blok 0x40 (MZ Standard Data)
- *   - TURBO, FASTIPL, CPM-CMT, CPM-TAPE, FSK, SLOW, DIRECT
+ *   - TURBO, FASTIPL, CPM-CMT, FSK, SLOW, DIRECT
  *                            -> blok 0x41 (MZ Turbo Data)
- *   - BSD                    -> blok 0x45 (MZ BASIC Data)
+ *   - CPM-TAPE               -> blok 0x46 (IC-10.2-CPM / PEZIK-2.0A)
+ *   - BSD                    -> blok 0x46 (BASIC-1Z016)
  *   - ZX_SPECTRUM            -> blok 0x10 (Standard Speed Data)
  *   - SINCLAIR               -> blok 0x11 (Turbo Speed Data)
  *
+ * Před tímto mapováním create_block_writer() zapíše rozpoznaný zapisovač
+ * TurboCopy / Intercopy jako blok 0x46 (TC-1.21, IC-10.2-*).
+ *
  * @param file_result Vysledek dekodovani jednoho souboru. Nesmi byt NULL.
+ * @param sample_rate Vzorkovací frekvence WAV v Hz (rozlišení pro varování o rychlosti
+ *                    NORMAL); 0 = neznámá, platí jen SPEED_APPROX_WARN.
  * @return Novy alokovany TMZ blok, nebo NULL pri chybe.
  *         Volajici musi uvolnit data po appendu do TMZ souboru.
+ * @note Vedlejší efekt: varování na stderr (nevyjádřitelná rychlost), nemění výsledek.
  */
-static st_TZX_BLOCK* create_tmz_block_from_result ( const st_WAV_ANALYZER_FILE_RESULT *file_result ) {
+static st_TZX_BLOCK* create_tmz_block_from_result ( const st_WAV_ANALYZER_FILE_RESULT *file_result,
+                                                    uint32_t sample_rate ) {
+    st_TZX_BLOCK *pb = NULL;
+    if ( create_block_writer ( file_result, &pb ) ) return pb;
     switch ( file_result->format ) {
         /* ZX Spectrum -> blok 0x10 (Standard Speed Data) */
         case WAV_TAPE_FORMAT_ZX_SPECTRUM:
@@ -725,6 +826,21 @@ static st_TZX_BLOCK* create_tmz_block_from_result ( const st_WAV_ANALYZER_FILE_R
 
             en_CMTSPEED speed = estimate_speed_from_leader (
                                     file_result->leader.avg_period_us );
+            /* zapisovač neznámý a rychlost daleko od en_CMTSPEED: blok 0x41 ji vyjádří jen přibližně */
+            if ( speed != CMTSPEED_1_1 && file_result->leader.avg_period_us > 0.0 ) {
+                double ratio = NORMAL_1200BD_SHORT_US / file_result->leader.avg_period_us;
+                double div = cmtspeed_get_divisor ( speed );
+                double tol = SPEED_APPROX_WARN;
+                if ( sample_rate > 0 ) {
+                    double res = 1e6 / ( sample_rate * file_result->leader.avg_period_us );
+                    if ( res > tol ) tol = res;
+                }
+                if ( div > 0.0 && fabs ( ratio / div - 1.0 ) > tol ) {
+                    fprintf ( stderr, "Warning: NORMAL speed estimate %.2fx differs from nearest %s by %.0f %%, %s written\n",
+                              ratio, cmtspeed_get_ratiotxt ( speed ), fabs ( ratio / div - 1.0 ) * 100.0,
+                              cmtspeed_get_ratiotxt ( speed ) );
+                }
+            }
             if ( speed == CMTSPEED_1_1 ) {
                 /* kategorie 1: standardni 1200 Bd -> blok 0x40 */
                 return create_block_standard ( file_result );
@@ -738,11 +854,14 @@ static st_TZX_BLOCK* create_tmz_block_from_result ( const st_WAV_ANALYZER_FILE_R
         case WAV_TAPE_FORMAT_BSD:
             return create_block_bsd ( file_result );
 
+        /* CPM-TAPE -> blok 0x46 podle varianty */
+        case WAV_TAPE_FORMAT_CPM_TAPE:
+            return create_block_cpmtape ( file_result );
+
         /* nestandardni formaty (kategorie 3, 4, mimo) -> blok 0x41 */
         case WAV_TAPE_FORMAT_TURBO:
         case WAV_TAPE_FORMAT_FASTIPL:
         case WAV_TAPE_FORMAT_CPM_CMT:
-        case WAV_TAPE_FORMAT_CPM_TAPE:
         case WAV_TAPE_FORMAT_FSK:
         case WAV_TAPE_FORMAT_SLOW:
         case WAV_TAPE_FORMAT_DIRECT:
@@ -795,7 +914,7 @@ static void format_description_text ( const char *input_path,
  *
  * TMZ soubor obsahuje:
  * 1. Text Description (blok 0x30) s metadaty o zdrojovem WAV souboru
- * 2. Pro kazdy dekodovany soubor odpovidajici datovy blok (0x40/0x41/0x45)
+ * 2. Pro kazdy dekodovany soubor odpovidajici datovy blok (0x40/0x41/0x46)
  *
  * @param result Vysledek analyzy WAV souboru. Nesmi byt NULL.
  * @param input_path Cesta k vstupnimu WAV souboru (pro metadata).
@@ -944,7 +1063,7 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
                 }
             }
 
-            st_TZX_BLOCK *block = create_tmz_block_from_result ( file_result );
+            st_TZX_BLOCK *block = create_tmz_block_from_result ( file_result, result->sample_rate );
             if ( !block ) {
                 fprintf ( stderr, "Error: failed to create TMZ block for file %u (%s)\n",
                           fi, wav_tape_format_name ( file_result->format ) );
@@ -962,6 +1081,14 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
             }
 
             free ( block );
+        }
+    }
+
+    /* blok 0x46 (CPM-TAPE, BSD) vyžaduje formát v1.1; připojení k souboru v1.0 verzi zvýší (jako mzf2tmz) */
+    for ( uint32_t bi = 0; bi < tmz_file->block_count; bi++ ) {
+        if ( tmz_file->blocks[bi].id == TMZ_BLOCK_ID_MZ_FILE && tmz_file->header.ver_major == 1
+             && tmz_file->header.ver_minor < 1 ) {
+            tmz_file->header.ver_minor = 1;
         }
     }
 
@@ -1046,7 +1173,9 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
  *
  * @param argc Pocet argumentu prikazove radky.
  * @param argv Pole argumentu prikazove radky.
- * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
+ * @return EXIT_SUCCESS při úspěchu, EXIT_FAILURE při chybě. V režimu MZF je
+ *         chyba i to, že analyzer našel bloky, ale žádný nešlo uložit
+ *         (bloky bez dat MZF, např. SINCLAIR).
  */
 int main ( int argc, char *argv[] ) {
     if ( argc < 2 ) {
@@ -1287,6 +1416,7 @@ int main ( int argc, char *argv[] ) {
     } else {
         /* MZF vystup: kazdy soubor zvlast */
         exit_code = EXIT_SUCCESS;
+        uint32_t saved = 0;   /* uložené soubory MZF */
 
         for ( uint32_t i = 0; i < result.file_count; i++ ) {
             char out_name[512];
@@ -1315,6 +1445,7 @@ int main ( int argc, char *argv[] ) {
                 }
 
                 if ( save_mzf ( result.files[i].mzf, out_name ) == EXIT_SUCCESS ) {
+                    saved++;
                     fprintf ( stdout, "Saved: %s (%s, %u bytes%s)\n",
                               out_name,
                               wav_tape_format_name ( result.files[i].format ),
@@ -1323,7 +1454,17 @@ int main ( int argc, char *argv[] ) {
                 } else {
                     exit_code = EXIT_FAILURE;
                 }
+            } else {
+                /* blok bez dat MZF (např. SINCLAIR): dřív se tiše zahodil */
+                fprintf ( stderr, "Warning: skipping block #%u (%s, no MZF data; use --output-format tmz)\n",
+                          i + 1, wav_tape_format_name ( result.files[i].format ) );
             }
+        }
+
+        /* analyzer něco našel, ale nic se neuložilo: neúspěch */
+        if ( result.file_count > 0 && saved == 0 && exit_code == EXIT_SUCCESS ) {
+            fprintf ( stderr, "Error: no MZF file saved (all blocks skipped)\n" );
+            exit_code = EXIT_FAILURE;
         }
     }
 

@@ -1,12 +1,12 @@
 /**
  * @file   wav_preprocess.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Vrstva 0 analyzéru - předspracování WAV signálu.
  *
  * Poskytuje funkce pro přípravu signálu před extrakcí pulzů:
  *   - DC offset korekce (odečtení průměru)
- *   - vysokofrekvenční filtr (1-pólový IIR, ~100 Hz)
+ *   - vysokofrekvenční filtr (1-pólový IIR, alpha 0.997: asi 21 Hz při 44,1 kHz)
  *   - peak normalizace na rozsah [-1.0, 1.0]
  *   - výběr kanálu ze sterea
  *
@@ -55,8 +55,8 @@ extern "C" {
      * @brief Načte vzorky z WAV souboru do float bufferu.
      *
      * Přečte vzorky z vybraného kanálu a uloží je jako normalizované
-     * float hodnoty v rozsahu [-1.0, 1.0] (normalizace provedena
-     * wav knihovnou).
+     * hodnoty (převod wav_decode_sample() knihovny wav: PCM 8 až 64 bit
+     * v rozsahu [-1.0, 1.0], IEEE float 32/64 beze změny).
      *
      * @param h Otevřený handler s WAV daty. Nesmí být NULL.
      * @param sh Parsovaná WAV hlavička. Nesmí být NULL.

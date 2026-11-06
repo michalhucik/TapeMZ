@@ -1,7 +1,7 @@
 /**
  * @file   tmzedit.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.4.0
+ * @version 1.7.1
  * @brief  Editor a spravce TZX/TMZ tape souboru.
  *
  * Nastroj pro manipulaci s bloky v TZX/TMZ souborech:
@@ -95,10 +95,11 @@
 #include "libs/mzf/mzf_tools.h"
 #include "libs/cmtspeed/cmtspeed.h"
 #include "libs/endianity/endianity.h"
+#include "libs/mzcmt_turbo/mzcmt_turbo.h"
 
 
 /** @brief Verze programu tmzedit. */
-#define TMZEDIT_VERSION "1.6.0"
+#define TMZEDIT_VERSION "1.7.1"
 
 
 /** @brief Znakova sada pro zobrazeni nazvu souboru (nastaveno z --charset). */
@@ -194,7 +195,7 @@ static const char* mzf_ftype_name ( uint8_t ftype ) {
         case 0x01: return "OBJ (machine code)";
         case 0x02: return "BTX (BASIC text)";
         case 0x03: return "BSD (BASIC data)";
-        case 0x04: return "BRD (BASIC read-after-run)";
+        case 0x04: return "BRD (BASIC data, WOPEN#)";   /* zapisuje WOPEN# BASICu 1Z-016 */
         case 0x05: return "RB (read and branch)";
         default: return "Unknown";
     }
@@ -1110,6 +1111,72 @@ static int cmd_archive_info ( int argc, char *argv[] ) {
 
 
 /**
+ * @brief Zkontroluje blok 0x45 (MZ BASIC Data) pro validate.
+ *
+ * Chyby: blok nejde naparsovat, žádný kus, ID kusu i (kromě posledního)
+ * různé od i, poslední ID různé od FFFFh, stroj nebo pulzní sada mimo
+ * rozsah. Varování: ftype jiný než 03h/04h, fsize/fstrt/fexec různé od 0,
+ * víc než 254 kusů (player blok nepřehraje, BASIC-1Z016 dovolí 254).
+ *
+ * @param b Blok 0x45 (data se nemění, parsuje se kopie).
+ * @param index Index bloku (do výpisu).
+ * @param[in,out] errors Počítadlo chyb.
+ * @param[in,out] warnings Počítadlo varování.
+ */
+static void validate_basic_block ( const st_TZX_BLOCK *b, uint32_t index, int *errors, int *warnings ) {
+    uint8_t *copy = malloc ( b->length ? b->length : 1 );
+    if ( !copy ) {
+        printf ( "  ERROR: block [%u] 0x45: out of memory\n", index );
+        ( *errors )++;
+        return;
+    }
+    memcpy ( copy, b->data, b->length );
+    st_TZX_BLOCK bc = *b;
+    bc.data = copy;
+    uint8_t *chunks = NULL;
+    en_TZX_ERROR err;
+    st_TMZ_MZ_BASIC_DATA *d = tmz_block_parse_mz_basic_data ( &bc, &chunks, &err );
+    if ( !d ) {
+        printf ( "  ERROR: block [%u] 0x45: cannot parse (%s)\n", index, tzx_error_string ( err ) );
+        ( *errors )++;
+        free ( copy );
+        return;
+    }
+    if ( d->chunk_count == 0 ) {
+        printf ( "  ERROR: block [%u] 0x45: no chunks\n", index );
+        ( *errors )++;
+    }
+    for ( uint32_t k = 0; k < d->chunk_count; k++ ) {
+        uint16_t id = ( uint16_t ) ( chunks[k * TMZ_BASIC_CHUNK_SIZE] | ( chunks[k * TMZ_BASIC_CHUNK_SIZE + 1] << 8 ) );
+        if ( k + 1 < d->chunk_count && id != k ) {
+            printf ( "  ERROR: block [%u] 0x45: chunk %u has ID %04X, expected %04X\n", index, k, id, k );
+            ( *errors )++;
+        } else if ( k + 1 == d->chunk_count && id != TMZ_BASIC_LAST_CHUNK_ID ) {
+            printf ( "  ERROR: block [%u] 0x45: last chunk ID %04X, expected FFFF\n", index, id );
+            ( *errors )++;
+        }
+    }
+    if ( d->machine >= TMZ_MACHINE_COUNT || d->pulseset >= TMZ_PULSESET_COUNT ) {
+        printf ( "  ERROR: block [%u] 0x45: invalid machine %u or pulse set %u\n", index, d->machine, d->pulseset );
+        ( *errors )++;
+    }
+    if ( d->mzf_header.ftype != MZF_FTYPE_BSD && d->mzf_header.ftype != MZF_FTYPE_BRD ) {
+        printf ( "  WARNING: block [%u] 0x45: MZF ftype 0x%02X is not 03h or 04h\n", index, d->mzf_header.ftype );
+        ( *warnings )++;
+    }
+    if ( d->mzf_header.fsize || d->mzf_header.fstrt || d->mzf_header.fexec ) {
+        printf ( "  WARNING: block [%u] 0x45: MZF fsize/fstrt/fexec are not 0\n", index );
+        ( *warnings )++;
+    }
+    if ( d->chunk_count > 254 ) {
+        printf ( "  WARNING: block [%u] 0x45: more than 254 chunks: not playable (BASIC-1Z016)\n", index );
+        ( *warnings )++;
+    }
+    free ( copy );
+}
+
+
+/**
  * @brief Validuje integritu TZX/TMZ souboru.
  *
  * Kontroluje:
@@ -1118,6 +1185,7 @@ static int cmd_archive_info ( int argc, char *argv[] ) {
  * - Parovanost Group Start / Group End
  * - Parovanost Loop Start / Loop End
  * - MZF hlavicky v MZ blocich (ftype, fsize vs body_size)
+ * - blok 0x45: kusy, ID, stroj a pulzní sadu (validate_basic_block)
  *
  * @param argc Pocet argumentu (za subcommand).
  * @param argv Argumenty.
@@ -1226,6 +1294,9 @@ static int cmd_validate ( int argc, char *argv[] ) {
                 free ( copy );
             }
         }
+
+        /* MZ BASIC Data (0x45) - kusy a ID */
+        if ( b->id == TMZ_BLOCK_ID_MZ_BASIC_DATA ) validate_basic_block ( b, i, &errors, &warnings );
     }
 
     /* neuzavrene skupiny/smycky */
@@ -1262,7 +1333,8 @@ static int cmd_validate ( int argc, char *argv[] ) {
  * @brief Naparsuje retezec na hodnotu en_TMZ_FORMAT.
  *
  * Rozpoznava: "normal", "turbo", "fastipl", "sinclair", "fsk",
- * "slow", "direct", "cpm-tape".
+ * "slow", "direct", "cpm-tape". Prikaz set "sinclair" a "cpm-tape"
+ * pro blok 0x41 odmitne (SINCLAIR = TZX blok 0x11, CPM-TAPE = blok 0x46).
  *
  * @param str Vstupni retezec.
  * @param[out] format Vystupni hodnota.
@@ -1473,10 +1545,10 @@ static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
  * @param fsk_speed FSK rychlostni uroven 0-6 (nebo -1 pokud nerelevantni).
  * @param slow_speed SLOW rychlostni uroven 0-4 (nebo -1 pokud nerelevantni).
  * @param has_pulse 1 pokud byly zadany custom pulse hodnoty.
- * @param p_lh Long pulse HIGH (us*100, ignorovano pokud has_pulse == 0).
- * @param p_ll Long pulse LOW (us*100, ignorovano pokud has_pulse == 0).
- * @param p_sh Short pulse HIGH (us*100, ignorovano pokud has_pulse == 0).
- * @param p_sl Short pulse LOW (us*100, ignorovano pokud has_pulse == 0).
+ * @param p_lh Long pulse HIGH (0,1 us, ignorovano pokud has_pulse == 0).
+ * @param p_ll Long pulse LOW (0,1 us, ignorovano pokud has_pulse == 0).
+ * @param p_sh Short pulse HIGH (0,1 us, ignorovano pokud has_pulse == 0).
+ * @param p_sl Short pulse LOW (0,1 us, ignorovano pokud has_pulse == 0).
  * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
  */
 static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
@@ -1551,6 +1623,16 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
     int existing_custom_pulses = ( turbo->long_high || turbo->long_low ||
                                    turbo->short_high || turbo->short_low );
     int final_has_custom = has_pulse || ( speed < 0 && existing_custom_pulses );
+
+    /* TURBO bez vlastních pulzů: rychlost musí umět profil TurboCopy (jinak by blok nešel přehrát) */
+    if ( new_format == TMZ_FORMAT_TURBO && !final_has_custom &&
+         !mzcmt_turbo_speed_is_supported ( MZCMT_TURBO_PROFILE_TURBOCOPY_V12X, ( en_CMTSPEED ) new_speed_byte ) ) {
+        fprintf ( stderr, "Error: speed %s is not supported by TURBO format (TurboCopy ratios: 1:1, 2:1, 3:2, 7:3, 8:3, 9:7, 3:1)\n",
+                  cmtspeed_get_ratiotxt ( ( en_CMTSPEED ) new_speed_byte ) );
+        free ( copy );
+        return EXIT_FAILURE;
+    }
+
     if ( !final_has_custom &&
          new_format == TMZ_FORMAT_NORMAL && new_speed_byte == ( uint8_t ) CMTSPEED_1_1 ) {
         /* konverze zpet na blok 0x40 */
@@ -1711,6 +1793,18 @@ static int cmd_set ( int argc, char *argv[] ) {
                 fprintf ( stderr, "Error: unknown format '%s'\n", argv[i] );
                 return EXIT_FAILURE;
             }
+            /* CPM-TAPE se zapisuje jako blok 0x46 (profil PEZIK-2.0A) */
+            if ( f == TMZ_FORMAT_CPM_TAPE ) {
+                fprintf ( stderr, "Error: CPM-TAPE is written as block 0x46; use mzf2tmz --format cpm-tape "
+                                  "or --profile PEZIK-2.0A / IC-10.2-CPM\n" );
+                return EXIT_FAILURE;
+            }
+            /* SINCLAIR je ZX záznam: ukládá se jako TZX blok 0x10/0x11, blok 0x41 SINCLAIR player nepřehraje */
+            if ( f == TMZ_FORMAT_SINCLAIR ) {
+                fprintf ( stderr, "Error: SINCLAIR is stored as TZX block 0x11 (wav2tmz writes it); "
+                                  "use --sinclair-speed on block 0x11\n" );
+                return EXIT_FAILURE;
+            }
             format = ( int ) f;
         } else if ( strcmp ( argv[i], "--speed" ) == 0 && i + 1 < argc ) {
             en_CMTSPEED s;
@@ -1736,10 +1830,10 @@ static int cmd_set ( int argc, char *argv[] ) {
             }
             slow_speed = ( int ) val;
         } else if ( strcmp ( argv[i], "--pulse" ) == 0 && i + 1 < argc ) {
-            /* format: long_h/long_l,short_h/short_l (hodnoty v us*100) */
+            /* format: long_h/long_l,short_h/short_l (hodnoty v 0,1 us) */
             unsigned lh, ll, sh, sl;
             if ( sscanf ( argv[++i], "%u/%u,%u/%u", &lh, &ll, &sh, &sl ) != 4 ) {
-                fprintf ( stderr, "Error: --pulse format: <long_h/long_l,short_h/short_l> (us*100 values)\n" );
+                fprintf ( stderr, "Error: --pulse format: <long_h/long_l,short_h/short_l> (values in 0.1 us)\n" );
                 return EXIT_FAILURE;
             }
             if ( lh > 65535 || ll > 65535 || sh > 65535 || sl > 65535 ) {
@@ -1770,15 +1864,15 @@ static int cmd_set ( int argc, char *argv[] ) {
     if ( !input || !idx_str || ( format < 0 && speed < 0 && fsk_speed < 0 && slow_speed < 0 && sinclair_speed < 0 && !has_pulse ) ) {
         fprintf ( stderr, "Usage: tmzedit set <file> <index> [options] [-o <output>]\n\n" );
         fprintf ( stderr, "Options:\n" );
-        fprintf ( stderr, "  --format <fmt>       Recording format: normal, turbo, fastipl, sinclair,\n" );
-        fprintf ( stderr, "                       fsk, slow, direct, cpm-tape\n" );
+        fprintf ( stderr, "  --format <fmt>       Recording format: normal, turbo, fastipl, fsk, slow,\n" );
+        fprintf ( stderr, "                       direct (SINCLAIR is TZX block 0x11, see --sinclair-speed)\n" );
         fprintf ( stderr, "  --speed <ratio>      Speed ratio: 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3,\n" );
         fprintf ( stderr, "                       8:3, 9:7, 25:14 (not valid for FSK/SLOW/SINCLAIR)\n" );
         fprintf ( stderr, "  --fsk-speed <level>  FSK speed level: 0-6 (only with --format fsk)\n" );
         fprintf ( stderr, "  --slow-speed <level> SLOW speed level: 0-4 (only with --format slow)\n" );
         fprintf ( stderr, "  --sinclair-speed <Bd> SINCLAIR speed: 1381, 1772, 2074, 2487\n" );
         fprintf ( stderr, "                       (only for block 0x11 Turbo Speed Data)\n" );
-        fprintf ( stderr, "  --pulse <l_h/l_l,s_h/s_l>  Custom pulse widths (us*100 values)\n" );
+        fprintf ( stderr, "  --pulse <l_h/l_l,s_h/s_l>  Custom pulse widths in 0.1 us (e.g. 4980/4980,2490/2490)\n" );
         fprintf ( stderr, "                       Sets speed=0 and custom pulse mode on block 0x41\n\n" );
         fprintf ( stderr, "Block 0x40: --format and --speed (converts to 0x41 if non-standard)\n" );
         fprintf ( stderr, "Block 0x41: --format and --speed/--fsk-speed/--slow-speed/--pulse\n" );

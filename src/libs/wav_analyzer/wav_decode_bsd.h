@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_bsd.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.0
+ * @version 1.2.0
  * @brief  Vrstva 4d analyzeru - BSD dekoder (chunkovany BASIC datovy format).
  *
  * Dekoduje BSD/BRD format z WAV signalu. BSD signal se sklada z:
@@ -19,6 +19,11 @@
  * - Posledni chunk: 0xFFFF (ukoncujici marker)
  *
  * Vsechny chunky pouzivaji standardni NORMAL FM modulaci.
+ *
+ * BASIC 1Z-016 (změřeno v emulátoru) zapisuje před
+ * každý kus vlastní tón a za kus kopii za oddělovačem 256 S. Dekodér ověří
+ * CRC každého kusu a při chybě použije kopii s platným checksumem
+ * (wav_decode_fm_try_copy2); nahrávky bez kopií se čtou stejně.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -68,6 +73,18 @@ extern "C" {
 
 
     /**
+     * @brief Údaje o dekódovaném souboru BSD.
+     *
+     * @invariant crc_errors + from_copy <= chunks
+     */
+    typedef struct st_WAV_BSD_INFO {
+        uint32_t chunks;      /**< počet přečtených kusů */
+        uint32_t crc_errors;  /**< kusy bez platné kopie (chyba CRC v 1. kopii i v kopii, nebo kopie chybí) */
+        uint32_t from_copy;   /**< kusy, jejichž data jsou z kopie (1. kopie s chybou CRC, kopie OK) */
+    } st_WAV_BSD_INFO;
+
+
+    /**
      * @brief Dekoduje kompletni MZF soubor z BSD signalu.
      *
      * Predpoklada, ze FM dekoder jiz dekodoval hlavicku
@@ -88,12 +105,15 @@ extern "C" {
      *        (recovery mod), 0 = pri chybe vratit chybu a zahodit vse.
      * @param[out] out_mzf Vystupni MZF struktura (volajici uvolni pres mzf_free).
      *             Nesmi byt NULL.
-     * @param[out] out_body_result Vysledek dekodovani tela (posledni chunk).
-     *             Muze byt NULL.
+     * @param[out] out_body_result Výsledek dekódování těla: crc_status WAV_CRC_ERROR,
+     *             když některý kus nemá platnou kopii (crc_stored/crc_computed
+     *             prvního takového kusu), jinak WAV_CRC_OK. Může být NULL.
      * @param[out] out_consumed_until Pozice za poslednim zpracovanym pulzem.
      *             Muze byt NULL.
      * @param[out] out_recovery_status Stav obnovy (bitove OR z en_WAV_RECOVERY_STATUS).
      *             Muze byt NULL. Nastaveno i bez allow_partial (informacni).
+     * @param[out] out_info Počty kusů, chyb CRC a použitých kopií.
+     *             Může být NULL; při chybě vynulované.
      * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
      *
      * @pre FM dekoder jiz dekodoval hlavicku a klasifikator urcil
@@ -109,7 +129,8 @@ extern "C" {
         st_MZF **out_mzf,
         st_WAV_DECODE_RESULT *out_body_result,
         uint32_t *out_consumed_until,
-        uint32_t *out_recovery_status
+        uint32_t *out_recovery_status,
+        st_WAV_BSD_INFO *out_info
     );
 
 

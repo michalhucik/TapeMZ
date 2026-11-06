@@ -1,7 +1,7 @@
 /**
  * @file   wav_leader.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.2.0
  * @brief  Vrstva 2 analyzéru - detekce leader tónů v sekvenci pulzů.
  *
  * Leader tón je dlouhá sekvence pulzů přibližně konstantní délky,
@@ -74,10 +74,50 @@ extern "C" {
 
 
     /**
+     * @brief Najde leader tón podle celých period (dvojic sousedních půlvln).
+     *
+     * Stejný kontrakt jako wav_leader_detect(), ale s průměrem běhu se
+     * porovnává součet každých dvou sousedních půlvln (perioda), ne
+     * jednotlivá půlvlna. Asymetrické pulzy s jitterem kvantizace
+     * (Intercopy 2800/3200 Bd při 44100 Hz: půlvlny 3 až 6 vzorků kolem
+     * průměru 4,3) mají periody stálé, takže leader najde i tam, kde
+     * wav_leader_detect() běh pořád nuluje. Počty a statistiky
+     * ve výsledku jsou v půlvlnách jako u wav_leader_detect().
+     *
+     * Používá se jen v tělech FASTIPL a TURBO: globální náhrada by ve
+     * skutečných nahrávkách násobila falešné leadery (měřeno).
+     *
+     * @param seq Sekvence pulzů. Nesmí být NULL.
+     * @param from_index Index pulzu, od kterého začít hledání.
+     * @param min_pulses Minimální počet půlvln leaderu.
+     * @param tolerance Relativní tolerance periody (0.02-0.35).
+     * @param[out] out_leader Výstupní informace o leaderu. Nesmí být NULL.
+     * @return WAV_ANALYZER_OK pokud nalezen leader,
+     *         WAV_ANALYZER_ERROR_NO_LEADER pokud nenalezen,
+     *         WAV_ANALYZER_ERROR_INVALID_PARAM při neplatném vstupu.
+     *
+     * @pre seq->count > 0, seq->pulses != NULL
+     * @post Při úspěchu out_leader obsahuje platné statistiky.
+     */
+    extern en_WAV_ANALYZER_ERROR wav_leader_detect_period (
+        const st_WAV_PULSE_SEQUENCE *seq,
+        uint32_t from_index,
+        uint32_t min_pulses,
+        double tolerance,
+        st_WAV_LEADER_INFO *out_leader
+    );
+
+
+    /**
      * @brief Najde všechny leader tóny v sekvenci pulzů.
      *
      * Opakovaně volá wav_leader_detect() od konce předchozího
-     * leaderu dokud nejsou prohledány všechny pulzy.
+     * leaderu dokud nejsou prohledány všechny pulzy. Na každém místě zkusí
+     * i wav_leader_detect_period(); leader po periodách s aspoň
+     * 2 * min_pulses půlvlnami se použije, když leader po půlvlnách chybí,
+     * začíná až za ním, nebo začíná na stejném místě a je nejvýš poloviční
+     * (tón s nesouměrnými půlvlnami, např. generátor Intercopy NORMAL
+     * 2800/3200 podle kódu programu).
      *
      * @param seq Sekvence pulzů. Nesmí být NULL.
      * @param min_pulses Minimální počet pulzů pro detekci leaderu.

@@ -21,6 +21,7 @@ tmzinfo <file.tmz|file.tzx>
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
 | `--charset` | eu, jp, utf8-eu, utf8-jp | eu | Sharp MZ character set for filename display (see below) |
+| `--lint` | - | - | Check MZ File blocks (0x46): read-point margins and match with the profile registry; exit code 1 on a warning |
 | `--version` | - | - | Show program version |
 | `--lib-versions` | - | - | Show library versions |
 
@@ -61,14 +62,16 @@ All information is printed to standard output.
 - Format version (e.g. 1.0 for TMZ, 1.20 for TZX)
 - Total block count
 
-### MZ Blocks (0x40-0x45)
+### MZ Blocks (0x40-0x46)
 
 - **0x40 MZ Standard Data** - target machine, pulse set, pause, MZF header (name, type, size, addresses)
-- **0x41 MZ Turbo Data** - format (NORMAL/TURBO/FASTIPL/FSK/SLOW/DIRECT/CPM-TAPE), speed or custom pulseset (with pulse widths in us and estimated Bd), MZF header
+- **0x41 MZ Turbo Data** - format (NORMAL/TURBO/FASTIPL/FSK/SLOW/DIRECT/CPM-TAPE), speed or custom pulseset (with pulse widths in us and estimated Bd), MZF header; for CPM-TAPE the level and the speed it is played at after conversion to `PEZIK-2.0A`
+- **0x46 MZ File** - for a Manchester part (CPM-TAPE) the bit halves for 0 and 1, pilot (count and pattern), sync, flag, checksum, end bits, carry, number of contexts and pause
 - **0x42 MZ Extra Body** - format, speed, pause, body size
 - **0x43 MZ Machine Info** - machine, CPU clock, ROM version
 - **0x44 MZ Loader** - loader type (TURBO/FASTIPL/FSK/SLOW/DIRECT), speed, size, MZF header
-- **0x45 MZ BASIC Data** - machine, pulse set, chunk count, MZF header
+- **0x45 MZ BASIC Data** - machine, pulse set, chunk count, MZF header, the profile the player plays it as (`Played as: BASIC-1Z016`)
+- **0x46 MZ File** (TMZ v1.1) - writer profile and its arguments, MZF header, parts: role, family, data size, time base, pulses, tone, tapemark, checksum, trailer, copies, context count, pause, STOP, reader routine and N. With `--lint` also the read-point margins of parts with a READER (at least 10 us) and a comparison with the block the profile registry builds from the same MZF
 
 ### TZX Blocks
 

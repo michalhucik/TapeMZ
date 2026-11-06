@@ -2,19 +2,23 @@
  * @file   test_cpm_roundtrip.c
  * @brief  Round-trip test: MZF -> CPM WAV -> wav_analyzer -> MZF
  *
- * Testovaci program:
- * 1. Vytvori testovaci MZF v pameti (telo obsahuje vsechny hodnoty 0x00-0xFF)
- * 2. Zakoduje ho jako CPM signal pres mztape (standardni FM, 2:1 rychlost,
- *    cmt.com pulzni sada) - identicky postup jako Intercopy V10.2
- * 3. Ulozi do WAV souboru
- * 4. Nacte WAV zpet a dekoduje pres wav_analyzer (FM dekoder)
- * 5. Porovna originalni a dekodovana data
+ * Testovací program:
+ * 1. Vytvoří testovací MZF v paměti (tělo obsahuje všechny hodnoty 0x00-0xFF)
+ * 2. Zakóduje ho jako CPM signál přes mztape (standardní FM, 2:1 rychlost,
+ *    cmt.com pulzní sada)
+ * 3. Uloží do WAV souboru
+ * 4. Načte WAV zpět a dekóduje přes wav_analyzer (FM dekodér)
+ * 5. Porovná originální a dekódovaná data
  *
- * CPM format dle Intercopy V10.2:
- * - Standardni FM kodovani (8 bitu MSB first + 1 stop bit = 9 pulzu/bajt)
+ * Formát CPM-CMT podle CP/M CMT.COM (SOKODI), rodina A:
+ * - standardní FM kódování (1 LONG před bajtem + 8 bitů MSB first = 9 pulzů/bajt)
  * - 2x rychlost (CMTSPEED_2_1_CPM, divisor 2.0)
- * - CPM-specificke pulzni konstanty z programu cmt.com
- * - Stejna ramcova struktura jako NORMAL (GAP, tapemark, data, CRC)
+ * - CPM-specifické pulzní konstanty z programu cmt.com
+ * - rámcová struktura jako NORMAL (GAP, tapemark, data, CRC)
+ *
+ * Intercopy V10.2 režim CPM tento formát NEzapisuje - používá Manchester
+ * (rodina Pezik TAPE). Test
+ * ověřuje jen shodu kodéru a dekodéru TapeMZ, ne shodu s CMT.COM.
  */
 
 #include <stdio.h>

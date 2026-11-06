@@ -1,8 +1,9 @@
 # bsd2dat - Export BSD/BRD dat z TMZ
 
-Exportuje data z bloků 0x45 (MZ BASIC Data) v TMZ souboru
-do binárního souboru. Podporuje dva režimy exportu:
-solid (výchozí) a chunks.
+Exportuje data datových souborů BASICu z TMZ souboru do binárního
+souboru. Čte bloky 0x45 (MZ BASIC Data, TMZ v1.0) i bloky 0x46 s částmi
+kusů BSD (profil `BASIC-1Z016`, který zapisuje dat2bsd a wav2tmz).
+Podporuje dva režimy exportu: solid (výchozí) a chunks.
 
 ## Použití
 
@@ -49,19 +50,20 @@ Režimy konverze:
 
 ### Režimy exportu
 
-**Solid (výchozí)** - spojí data ze všech datových chunků (kromě terminačního)
-do jednoho binárního souboru. Každý chunk přispívá 256 bajtů dat,
-poslední chunk může obsahovat padding nulami.
+**Solid (výchozí)** - spojí data ze všech kusů včetně posledního (ID 0xFFFF
+nese data jako ostatní) do jednoho binárního souboru. Každý kus přispívá
+256 bajtů dat, poslední kus může obsahovat padding nulami.
 
-Pojmenování výstupu:
+Pojmenování výstupu (bez `--output` leží výstup vedle vstupního souboru,
+ne v aktuálním adresáři):
 - Jeden blok s `--output`: použije se přesný název
 - Jeden blok bez `--output`: vstup.dat
-- Více bloků s `--output`: output_001.dat, output_002.dat, ...
+- Více bloků s `--output`: output_001.dat, output_002.dat, ... (v adresáři `--output`)
 - Více bloků bez `--output`: vstup_001.dat, vstup_002.dat, ...
 
 **Chunks (--chunks)** - vytvoří adresář a do něj uloží každý chunk
 jako samostatný soubor pojmenovaný `prefix_NNNN.dat`, kde NNNN
-je hexadecimální ID chunku. Včetně terminačního chunku (FFFF).
+je hexadecimální ID kusu, včetně posledního kusu (FFFF).
 
 Pojmenování adresáře:
 - Jeden blok s `--output`: použije se přesný název
@@ -81,11 +83,12 @@ Příklad výstupu `--list`:
 ```
 === tape.tmz ===
 
-File type: TMZ, Version: 1.0, Blocks: 2
+File type: TMZ, Version: 1.1, Blocks: 2
 
-BSD blocks (1):
+BSD blocks (2):
 
-  [  1] 0x45 MZ BASIC Data  "SAVEGAME"  type=0x03 (BSD (BASIC data))  chunks=4  data=1024 bytes
+  [  0] 0x45 MZ BASIC Data  "OLDDATA"  type=0x03 (BSD (BASIC data))  chunks=2  data=512 bytes
+  [  1] 0x46 MZ File  "SAVEGAME"  type=0x04 (BRD (BASIC data, WOPEN#))  chunks=4  data=1024 bytes
 ```
 
 Export BSD dat do jednoho souboru:
@@ -110,8 +113,7 @@ Výsledek: adresář `tape_chunks/` obsahující:
 - tape_0000.dat (256 B)
 - tape_0001.dat (256 B)
 - tape_0002.dat (256 B)
-- tape_0003.dat (256 B)
-- tape_FFFF.dat (256 B, terminator)
+- tape_FFFF.dat (256 B, poslední kus)
 
 Export chunků s vlastním adresářem:
 

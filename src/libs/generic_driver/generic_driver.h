@@ -1,7 +1,7 @@
 /**
  * @file   generic_driver.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Univerzální I/O abstrakce pro práci s datovými bloky (soubory, paměťové buffery).
  *
  * Virtualizuje datovou vrstvu — nadřazená vrstva používá vždy stejné API
@@ -23,7 +23,7 @@
  *                                          (vyžaduje GENERIC_DRIVER_MEMORY_CB)
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -325,7 +325,7 @@ extern "C" {
     }
 
     /** @brief Verze knihovny generic_driver. */
-#define GENERIC_DRIVER_VERSION "2.0.0"
+#define GENERIC_DRIVER_VERSION "2.0.1"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny generic_driver.

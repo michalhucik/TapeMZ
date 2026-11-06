@@ -2,7 +2,7 @@
  * @file   test_ic_wav.c
  * @brief  Genericky integracni test: WAV -> wav_analyzer -> MZF verifikace
  *
- * Universalni testovaci program pro overeni dekodovani realnych nahravek.
+ * Universalni testovaci program pro ověření dekódování nahrávek (WAV).
  * Parametry z prikazove radky urcuji:
  * - vstupni WAV soubor
  * - referencni MZF soubor (pro porovnani body dat)

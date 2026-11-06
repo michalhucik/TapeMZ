@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_fsk.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  Vrstva 4e3 analyzeru - FSK dekoder (Frequency Shift Keying).
  *
  * Dekoduje FSK signal z WAV nahravky. FSK je format pouzivany programem

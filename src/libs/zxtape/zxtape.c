@@ -1,7 +1,7 @@
 /**
  * @file   zxtape.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Implementace konverze ZX Spectrum TAP bloků na CMT audio streamy.
  *
  * Obsahuje generování pilot/sync/data pulzů, bitstream a vstream path,
@@ -9,7 +9,7 @@
  * Pulzní konstanty naměřeny z programu Intercopy na MZ-800.
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)

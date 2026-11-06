@@ -1,28 +1,32 @@
 /**
  * @file   dat2bsd.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.1
- * @brief  Import binarniho souboru do TMZ jako BSD/BRD blok 0x45.
+ * @version 1.1.0
+ * @brief  Import binárního souboru do TMZ jako datový soubor BASICu (blok 0x46, BASIC-1Z016).
  *
- * Nacte libovolny binarni soubor, rozreze ho na 256B chunky
- * s inkrementujicimi ID (0x0000, 0x0001, ...) a terminacnim
- * chunkem 0xFFFF, sestavi MZF hlavicku (ftype=0x03/0x04, fsize=0)
- * a vytvori TMZ soubor s blokem 0x45 (MZ BASIC Data).
+ * Načte libovolný binární soubor, rozřeže ho na kusy po 256 B
+ * s rostoucími ID (0x0000, 0x0001, ...); poslední kus má ID 0xFFFF
+ * a nese zbytek dat (jako BASIC 1Z-016). Sestaví MZF hlavičku
+ * (ftype 0x04 nebo 0x03, fsize/fstrt/fexec 0) a vytvoří TMZ soubor
+ * s blokem 0x46 profilu BASIC-1Z016 (časování BASICu 1Z-016 změřené
+ * v emulátoru).
  *
- * @par Pouziti:
+ * @par Použití:
  * @code
  *   dat2bsd input.dat output.tmz [volby]
  * @endcode
  *
  * @par Volby:
- * - --name <nazev>      : nazev souboru v MZF hlavicce (vychozi: odvozeno ze vstupu)
- * - --ftype <typ>       : bsd (0x03) nebo brd (0x04) (vychozi: bsd)
- * - --machine <typ>     : generic, mz700, mz800, mz1500, mz80b (vychozi: mz800)
- * - --pulseset <sada>   : 700, 800, 80b, auto (vychozi: auto z machine)
- * - --speed <rychlost>  : 1:1, 2:1, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14 (vychozi: 1:1)
- * - --pause <ms>        : pauza po bloku v ms (vychozi: 1000)
+ * - --name <název>      : název souboru v MZF hlavičce (výchozí: odvozeno ze vstupu)
+ * - --ftype <typ>       : brd (0x04, zapisuje WOPEN# BASICu 1Z-016) nebo bsd (0x03) (výchozí: brd)
+ * - --machine <typ>     : generic, mz700, mz800, mz1500, mz80b (výchozí: mz800), jen do PROFILE_ARGS
+ * - --pause <ms>        : pauza za posledním kusem v ms (výchozí: 1000)
  * - --version           : zobrazit verzi programu
  * - --lib-versions      : zobrazit verze knihoven
+ *
+ * Volby --speed a --pulseset (v1.0) jsou chyba: profil BASIC-1Z016 má
+ * pevné časování. Nejvýš 254 kusů
+ * (65 024 B dat, blok 0x46 má nejvýš 255 částí).
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -49,6 +53,7 @@
 
 #include "libs/tmz/tmz.h"
 #include "libs/tmz/tmz_blocks.h"
+#include "libs/tmz/tmz_profile.h"
 #include "libs/tzx/tzx.h"
 #include "libs/mzf/mzf.h"
 #include "libs/mzf/mzf_tools.h"
@@ -57,16 +62,15 @@
 
 
 /** @brief Verze programu dat2bsd. */
-#define DAT2BSD_VERSION "1.0.1"
+#define DAT2BSD_VERSION "1.1.0"
 
 
 /**
- * @brief Maximalni pocet datovych chunku (bez terminacniho).
+ * @brief Nejvíc kusů včetně posledního (ID 0xFFFF).
  *
- * BSD/BRD chunky maji 16-bit ID (0x0000..0xFFFE), coz dava max 65535 chunku.
- * Omezujeme na 65534, protoze 0xFFFF je rezervovano pro terminacni chunk.
+ * Blok 0x46 má nejvýš 255 částí: hlavička a 254 kusů (profil BASIC-1Z016).
  */
-#define MAX_DATA_CHUNKS  65534
+#define MAX_CHUNKS  254
 
 
 /**
@@ -87,42 +91,6 @@ static const char* machine_name ( en_TMZ_MACHINE machine ) {
 
 
 /**
- * @brief Vrati textovy nazev pulzni sady.
- * @param pulseset Hodnota en_TMZ_PULSESET.
- * @return Staticky retezec s nazvem.
- */
-static const char* pulseset_name ( en_TMZ_PULSESET pulseset ) {
-    switch ( pulseset ) {
-        case TMZ_PULSESET_700: return "MZ-700/80K/80A";
-        case TMZ_PULSESET_800: return "MZ-800/1500";
-        case TMZ_PULSESET_80B: return "MZ-80B";
-        default:               return "Unknown";
-    }
-}
-
-
-/**
- * @brief Automaticky urci pulzni sadu podle ciloveho stroje.
- *
- * MZ-700/80K/80A -> TMZ_PULSESET_700,
- * MZ-800/1500    -> TMZ_PULSESET_800,
- * MZ-80B         -> TMZ_PULSESET_80B,
- * Generic        -> TMZ_PULSESET_700 (vychozi).
- *
- * @param machine Cilovy stroj.
- * @return Odpovidajici pulzni sada.
- */
-static en_TMZ_PULSESET pulseset_from_machine ( en_TMZ_MACHINE machine ) {
-    switch ( machine ) {
-        case TMZ_MACHINE_MZ800:  return TMZ_PULSESET_800;
-        case TMZ_MACHINE_MZ1500: return TMZ_PULSESET_800;
-        case TMZ_MACHINE_MZ80B:  return TMZ_PULSESET_80B;
-        default:                 return TMZ_PULSESET_700;
-    }
-}
-
-
-/**
  * @brief Naparsuje retezec na hodnotu en_TMZ_MACHINE.
  *
  * Rozpoznava: "generic", "mz700", "mz800", "mz1500", "mz80b".
@@ -138,49 +106,6 @@ static int parse_machine ( const char *str, en_TMZ_MACHINE *machine ) {
     if ( strcasecmp ( str, "mz800" ) == 0 )   { *machine = TMZ_MACHINE_MZ800;   return 0; }
     if ( strcasecmp ( str, "mz1500" ) == 0 )  { *machine = TMZ_MACHINE_MZ1500;  return 0; }
     if ( strcasecmp ( str, "mz80b" ) == 0 )   { *machine = TMZ_MACHINE_MZ80B;   return 0; }
-    return -1;
-}
-
-
-/**
- * @brief Naparsuje retezec na hodnotu en_TMZ_PULSESET.
- *
- * Rozpoznava: "700", "800", "80b", "auto".
- * "auto" nastavi pulseset na TMZ_PULSESET_COUNT jako signal pro autodetekci.
- *
- * @param str Vstupni retezec.
- * @param[out] pulseset Vystupni hodnota.
- * @return 0 pri uspechu, -1 pokud retezec neodpovida zadne sade.
- */
-static int parse_pulseset ( const char *str, en_TMZ_PULSESET *pulseset ) {
-    if ( strcasecmp ( str, "700" ) == 0 )  { *pulseset = TMZ_PULSESET_700; return 0; }
-    if ( strcasecmp ( str, "800" ) == 0 )  { *pulseset = TMZ_PULSESET_800; return 0; }
-    if ( strcasecmp ( str, "80b" ) == 0 )  { *pulseset = TMZ_PULSESET_80B; return 0; }
-    if ( strcasecmp ( str, "auto" ) == 0 ) { *pulseset = TMZ_PULSESET_COUNT; return 0; }
-    return -1;
-}
-
-
-/**
- * @brief Naparsuje retezec na hodnotu en_CMTSPEED.
- *
- * Rozpoznava: "1:1", "2:1", "2:1cpm", "3:1", "3:2", "7:3", "8:3", "9:7", "25:14".
- * Porovnani je case-insensitive.
- *
- * @param str Vstupni retezec.
- * @param[out] speed Vystupni hodnota.
- * @return 0 pri uspechu, -1 pokud retezec neodpovida zadne rychlosti.
- */
-static int parse_speed ( const char *str, en_CMTSPEED *speed ) {
-    if ( strcmp ( str, "1:1" ) == 0 )    { *speed = CMTSPEED_1_1;    return 0; }
-    if ( strcmp ( str, "2:1" ) == 0 )    { *speed = CMTSPEED_2_1;    return 0; }
-    if ( strcasecmp ( str, "2:1cpm" ) == 0 ) { *speed = CMTSPEED_2_1_CPM; return 0; }
-    if ( strcmp ( str, "3:1" ) == 0 )    { *speed = CMTSPEED_3_1;    return 0; }
-    if ( strcmp ( str, "3:2" ) == 0 )    { *speed = CMTSPEED_3_2;    return 0; }
-    if ( strcmp ( str, "7:3" ) == 0 )    { *speed = CMTSPEED_7_3;    return 0; }
-    if ( strcmp ( str, "8:3" ) == 0 )    { *speed = CMTSPEED_8_3;    return 0; }
-    if ( strcmp ( str, "9:7" ) == 0 )    { *speed = CMTSPEED_9_7;    return 0; }
-    if ( strcmp ( str, "25:14" ) == 0 )  { *speed = CMTSPEED_25_14;  return 0; }
     return -1;
 }
 
@@ -232,18 +157,18 @@ static void print_lib_versions ( void ) {
  */
 static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "Usage: %s <input.dat> <output.tmz> [options]\n\n", prog_name );
-    fprintf ( stderr, "Imports a binary file into TMZ as BSD/BRD block 0x45.\n\n" );
+    fprintf ( stderr, "Imports a binary file into TMZ as a BASIC data file (block 0x46,\n" );
+    fprintf ( stderr, "profile BASIC-1Z016: BASIC 1Z-016 timing measured in the emulator).\n\n" );
     fprintf ( stderr, "The input file is split into 256-byte chunks with sequential IDs\n" );
-    fprintf ( stderr, "(0x0000, 0x0001, ...) and a termination chunk (ID=0xFFFF).\n\n" );
+    fprintf ( stderr, "(0x0000, 0x0001, ...); the last chunk has ID 0xFFFF and carries the\n" );
+    fprintf ( stderr, "rest of the data. At most 254 chunks (65024 bytes).\n\n" );
     fprintf ( stderr, "Options:\n" );
     fprintf ( stderr, "  --name <name>       Filename in MZF header (default: from input)\n" );
-    fprintf ( stderr, "  --ftype <type>      File type: bsd (0x03) or brd (0x04) (default: bsd)\n" );
+    fprintf ( stderr, "  --ftype <type>      File type: brd (0x04, written by BASIC WOPEN#) or\n" );
+    fprintf ( stderr, "                      bsd (0x03) (default: brd)\n" );
     fprintf ( stderr, "  --machine <type>    Target machine: generic, mz700, mz800, mz1500, mz80b\n" );
-    fprintf ( stderr, "                      (default: mz800)\n" );
-    fprintf ( stderr, "  --pulseset <set>    Pulse set: 700, 800, 80b, auto (default: auto)\n" );
-    fprintf ( stderr, "  --speed <ratio>     Speed ratio: 1:1, 2:1, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14\n" );
-    fprintf ( stderr, "                      (default: 1:1)\n" );
-    fprintf ( stderr, "  --pause <ms>        Pause after block in ms (default: 1000)\n" );
+    fprintf ( stderr, "                      (default: mz800, stored in PROFILE_ARGS only)\n" );
+    fprintf ( stderr, "  --pause <ms>        Pause after the last chunk in ms (default: 1000)\n" );
     fprintf ( stderr, "  --version           Show program version\n" );
     fprintf ( stderr, "  --lib-versions      Show library versions\n" );
 }
@@ -305,19 +230,17 @@ static int load_binary_file ( const char *path, uint8_t **out_data, size_t *out_
  * @brief Sestavi pole BSD/BRD chunku z raw dat.
  *
  * Rozreze vstupni data na 256B bloky s 2B chunk ID (LE).
- * Posledni chunk dostane ID=0xFFFF (terminacni marker) a nese
- * posledni porci dat (pripadne doplnenou nulami). To odpovida
- * chovani realneho hardwaru (MZ-800 BASIC), kde terminacni chunk
- * take nese data a BSD dekoder je zahrnuje do body.
+ * Poslední kus dostane ID=0xFFFF a nese poslední porci dat (doplněnou
+ * nulami). Tak zapisuje BASIC 1Z-016; BSD dekodér
+ * jeho data zahrnuje do těla.
  *
- * Pokud data_size == 0, vytvori se jediny chunk (terminacni,
- * nulova data).
+ * Pokud data_size == 0, vytvoří se jediný kus (ID 0xFFFF, nulová data).
  *
- * @param data Vstupni binarni data (muze byt NULL pri data_size==0).
- * @param data_size Velikost vstupnich dat v bajtech.
- * @param[out] out_chunks Vystupni pole chunku (chunk_count * 258B).
- * @param[out] out_chunk_count Pocet chunku (vcetne terminacniho).
- * @return 0 pri uspechu, -1 pri chybe (alokace, prilis velky soubor).
+ * @param data Vstupní binární data (může být NULL při data_size==0).
+ * @param data_size Velikost vstupních dat v bajtech.
+ * @param[out] out_chunks Výstupní pole kusů (chunk_count * 258 B).
+ * @param[out] out_chunk_count Počet kusů (včetně posledního).
+ * @return 0 při úspěchu, -1 při chybě (alokace, víc než MAX_CHUNKS kusů; hlášku vypíše).
  *
  * @post Pri uspechu volajici vlastni *out_chunks a musi ho uvolnit pres free().
  */
@@ -332,10 +255,9 @@ static int build_chunks ( const uint8_t *data, size_t data_size,
         total_chunks = (uint32_t) ( ( data_size + TMZ_BASIC_CHUNK_DATA_SIZE - 1 ) / TMZ_BASIC_CHUNK_DATA_SIZE );
     }
 
-    if ( total_chunks > MAX_DATA_CHUNKS + 1 ) {
-        fprintf ( stderr, "Error: input file too large (%zu bytes, max %u chunks * 256 = %u bytes)\n",
-                  data_size, (unsigned) ( MAX_DATA_CHUNKS + 1 ),
-                  (unsigned) ( ( MAX_DATA_CHUNKS + 1 ) * TMZ_BASIC_CHUNK_DATA_SIZE ) );
+    if ( total_chunks > MAX_CHUNKS ) {
+        fprintf ( stderr, "Error: input file too large (%zu bytes, max %u chunks * 256 = %u bytes, profile BASIC-1Z016)\n",
+                  data_size, (unsigned) MAX_CHUNKS, (unsigned) ( MAX_CHUNKS * TMZ_BASIC_CHUNK_DATA_SIZE ) );
         return -1;
     }
 
@@ -373,11 +295,11 @@ static int build_chunks ( const uint8_t *data, size_t data_size,
 
 
 /**
- * @brief Hlavni funkce - import binarniho souboru do TMZ jako blok 0x45.
+ * @brief Hlavní funkce - import binárního souboru do TMZ jako blok 0x46 BASIC-1Z016.
  *
- * Zpracuje argumenty prikazove radky, nacte binarni soubor,
- * rozreze ho na BSD/BRD chunky, sestavi MZF hlavicku
- * a vytvori TMZ soubor s blokem 0x45.
+ * Zpracuje argumenty příkazové řádky, načte binární soubor,
+ * rozřeže ho na kusy, sestaví MZF hlavičku a vytvoří TMZ soubor
+ * s blokem 0x46 (tmz_profile_build_block, profil BASIC-1Z016).
  *
  * @param argc Pocet argumentu.
  * @param argv Pole argumentu.
@@ -406,10 +328,8 @@ int main ( int argc, char *argv[] ) {
     const char *input_file = NULL;
     const char *output_file = NULL;
     const char *mzf_name = NULL;
-    uint8_t ftype = MZF_FTYPE_BSD;
+    uint8_t ftype = MZF_FTYPE_BRD;   /* WOPEN# BASICu 1Z-016 zapisuje 04h */
     en_TMZ_MACHINE machine = TMZ_MACHINE_MZ800;
-    en_TMZ_PULSESET pulseset = TMZ_PULSESET_COUNT; /* auto */
-    en_CMTSPEED speed = CMTSPEED_1_1;
     uint16_t pause_ms = 1000;
 
     /* parsovani argumentu */
@@ -443,24 +363,11 @@ int main ( int argc, char *argv[] ) {
                 fprintf ( stderr, "Error: unknown machine type '%s'\n", argv[i] );
                 return EXIT_FAILURE;
             }
-        } else if ( strcmp ( argv[i], "--pulseset" ) == 0 ) {
-            if ( ++i >= argc ) {
-                fprintf ( stderr, "Error: --pulseset requires a value\n" );
-                return EXIT_FAILURE;
-            }
-            if ( parse_pulseset ( argv[i], &pulseset ) != 0 ) {
-                fprintf ( stderr, "Error: unknown pulseset '%s'\n", argv[i] );
-                return EXIT_FAILURE;
-            }
-        } else if ( strcmp ( argv[i], "--speed" ) == 0 ) {
-            if ( ++i >= argc ) {
-                fprintf ( stderr, "Error: --speed requires a value\n" );
-                return EXIT_FAILURE;
-            }
-            if ( parse_speed ( argv[i], &speed ) != 0 ) {
-                fprintf ( stderr, "Error: unknown speed '%s'\n", argv[i] );
-                return EXIT_FAILURE;
-            }
+        } else if ( strcmp ( argv[i], "--pulseset" ) == 0 || strcmp ( argv[i], "--speed" ) == 0 ) {
+            /* profil BASIC-1Z016 má pevné časování */
+            fprintf ( stderr, "Error: %s is not supported: BSD is written with profile BASIC-1Z016 "
+                      "(BASIC 1Z-016 timing)\n", argv[i] );
+            return EXIT_FAILURE;
         } else if ( strcmp ( argv[i], "--pause" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --pause requires a value\n" );
@@ -491,10 +398,6 @@ int main ( int argc, char *argv[] ) {
         return EXIT_FAILURE;
     }
 
-    /* autodetekce pulzni sady z machine */
-    if ( pulseset == TMZ_PULSESET_COUNT ) {
-        pulseset = pulseset_from_machine ( machine );
-    }
 
     /* nazev souboru pro MZF hlavicku - odvozeni ze vstupu pokud nezadan */
     char auto_name[MZF_FILE_NAME_LENGTH + 1];
@@ -527,16 +430,20 @@ int main ( int argc, char *argv[] ) {
     mzf_header.ftype = ftype;
     mzf_tools_set_fname ( &mzf_header, mzf_name );
 
-    /* vytvoreni TMZ bloku 0x45 */
-    st_TZX_BLOCK *block = tmz_block_create_mz_basic_data (
-        machine, pulseset, pause_ms, &mzf_header, chunks, chunk_count
-    );
+    /* blok 0x46 profilu BASIC-1Z016; tmz_header_init dává verzi souboru 1.1 */
+    st_TMZ_PROFILE_ARGS pa;
+    tmz_profile_args_init ( &pa );
+    pa.pause_ms = pause_ms;
+    pa.machine = ( int ) machine;
+    en_TMZ_PROFILE_ERROR pe;
+    st_TZX_BLOCK *block = tmz_profile_build_block ( "BASIC-1Z016", &pa, &mzf_header, chunks,
+                                                    ( uint32_t ) chunk_count * TMZ_BASIC_CHUNK_SIZE, &pe );
 
     free ( chunks );
     free ( data );
 
     if ( !block ) {
-        fprintf ( stderr, "Error: failed to create TMZ block 0x45\n" );
+        fprintf ( stderr, "Error: profile BASIC-1Z016: %s\n", tmz_profile_error_string ( pe ) );
         return EXIT_FAILURE;
     }
 
@@ -573,12 +480,10 @@ int main ( int argc, char *argv[] ) {
     printf ( "  Filename   : \"%s\"\n", mzf_name );
     printf ( "  File type  : 0x%02X (%s)\n", ftype, ( ftype == MZF_FTYPE_BSD ) ? "BSD" : "BRD" );
     printf ( "  Input size : %zu bytes\n", data_size );
-    printf ( "  Chunks     : %u (%u data + termination)\n", chunk_count, chunk_count - 1 );
+    printf ( "  Chunks     : %u (last ID 0xFFFF)\n", chunk_count );
     printf ( "  Machine    : %s\n", machine_name ( machine ) );
-    printf ( "  Pulseset   : %s\n", pulseset_name ( pulseset ) );
-    printf ( "  Speed      : %s\n", g_cmtspeed_ratio[speed] );
     printf ( "  Pause      : %u ms\n", pause_ms );
-    printf ( "  Block      : 0x45 (MZ BASIC Data)\n" );
+    printf ( "  Block      : 0x46 (MZ File, profile BASIC-1Z016)\n" );
     printf ( "  TMZ size   : %u bytes\n", (unsigned) ( sizeof ( st_TZX_HEADER ) + 1 + block->length ) );
 
     tmz_block_free ( block );

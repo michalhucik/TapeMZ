@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_direct.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  DIRECT koder pro kazetovy zaznam Sharp MZ (primy bitovy zapis).
  *
  * Knihovna implementuje DIRECT modulaci pouzivnou programem mzf2snd (mzftools).
@@ -42,9 +42,9 @@
  * RRCA a OR instrukci do registru C.
  *
  * @par Referencni implementace:
- * - docs/detailne-prozkoumat/mzftools/src/coder.c (direct_encode_data_byte)
- * - docs/detailne-prozkoumat/mzftools/src/formats.c (fsk_body - spolecny frame)
- * - docs/detailne-prozkoumat/mzftools/src/direct.asm (Z80 dekoder)
+ * - mzftools: src/coder.c (direct_encode_data_byte)
+ * - mzftools: src/formats.c (fsk_body - spolecny frame)
+ * - mzftools: src/direct.asm (Z80 dekoder)
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -306,6 +306,11 @@ extern "C" {
      * @param type      Typ vystupniho streamu (bitstream/vstream).
      * @param rate      Vzorkovaci frekvence (Hz).
      * @return Novy stream, nebo NULL pri chybe.
+     *
+     * @note Čitelnost zavaděčem závisí na vzorkovací frekvenci: při 44100 Hz
+     *       prošly v emulátoru všechny úrovně, jinde jen některé
+     *       (měření v emulátoru). Player změřené nečitelné
+     *       kombinace odmítne; tato funkce frekvenci nekontroluje.
      */
     extern st_CMT_STREAM* mzcmt_direct_create_tape_stream (
         const st_MZF_HEADER *original,
@@ -342,7 +347,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny mzcmt_direct. */
-#define MZCMT_DIRECT_VERSION "1.0.0"
+#define MZCMT_DIRECT_VERSION "1.0.1"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny mzcmt_direct.

@@ -1,5 +1,87 @@
 # Changelog
 
+## 2026-11-06
+
+### TMZ v1.1
+
+Versions: tmz v1.11.0, tzx v1.2.0, wav v2.1.0, mzf v2.1.0, cmt_stream v2.0.1, cmtspeed v2.0.1, generic_driver v2.0.1, zxtape v2.0.1, wav_analyzer v1.12.0, mzcmt_fm v1.1.1 (new), mzcmt_manchester v1.0.0 (new), mzcmt_turbo v2.3.0, mzcmt_direct v1.0.1, mzcmt_fsk v1.0.1, mzcmt_slow v1.0.1, mztape v2.2.0, mzcmt_fastipl v1.3.0, mzcmt_bsd v1.1.1, mzf2tmz v1.11.0, tmz2mzf v1.4.1, tmz2wav v1.3.1, tmzinfo v1.7.1, tmzedit v1.7.1, tmzconv v1.1.0, wav2tmz v2.11.1, dat2bsd v1.1.0, bsd2dat v1.2.1, extract_preloader v1.0.1.
+
+- New block 0x46 (MZ File): an MZF file and a list of recording parts,
+  each with its own timing (pulses, tones, tapemarks, context-dependent
+  half-wave lengths, pauses). Files are written as format 1.1. Writer
+  profiles in the registry: ROM-800-NOMINAL, ROM-800-EXACT, TC-1.21
+  (TurboCopy V1.21), IC-10.2-NORMAL/TURBO/FASTIPL/CPM (Intercopy V10.2),
+  UNICMT, PEZIK-2.0A (CP/M TAPE.COM), BASIC-1Z016 (BASIC 1Z-016 data files)
+  and TAPEMZ-V1-LEGACY. Profile timing comes from the programs' code and
+  from emulator recordings; the UNICMT signal structure is not verified yet.
+- TMZ v1.0 blocks (0x40, 0x41, 0x45) are converted to block 0x46 when
+  played; `tmzconv --upgrade` stores the conversion in a file. Output
+  changes against v1.0: 0x40 with the MZ-800 set plays MZ-800 ROM timing,
+  TURBO plays TurboCopy V1.21, FAST IPL 1:1, 2:1, 7:3 and 8:3 plays
+  Intercopy V10.2, CP/M TAPE plays TAPE.COM, 0x45 plays BASIC 1Z-016 and
+  the pause after a block is played.
+- CP/M TAPE (Pezik/MarVan TAPE.COM and Intercopy CPM) in Manchester coding
+  and BASIC data files with a tone, tapemark and copy for every chunk, as
+  the original programs write them. Library mzcmt_cpmtape was replaced by mzcmt_manchester.
+- TURBO (0x41): pulses and read point per TurboCopy V1.2x; 1:1, 2:1, 7:3,
+  8:3 and 3:1 load in the emulator at 44.1 and 48 kHz. Timing the ROM cannot
+  read with a 10 µs margin is an error.
+- mzf2tmz: `--profile` (`--profile list`), `--bd`, `--loader`, `--gap`,
+  MZT import including CMTSPEED headers (UniCMT). tmz2mzf: extraction from
+  block 0x46, export `--mzt` and `--mzt-unicmt`. tmzinfo: block 0x46
+  listing, `--lint`, block 0x35 listing. tmz2wav: plays block 0x46.
+- SINCLAIR (ZX Spectrum protocol) is stored and played as TZX blocks
+  0x10/0x11; `mzf2tmz --format sinclair` and `tmzedit set --format
+  sinclair` for block 0x41 reject it and point to them. tmzedit rejects the cpm-tape
+  format for block 0x41 (`mzf2tmz --format cpm-tape`).
+- wav2tmz: decoding of TURBO at all speeds (also Intercopy 2800/3200 Bd
+  and FAST IPL at 44100 Hz), second copies
+  (Copy2), CP/M TAPE (both polarities, variant and speed), CRC of every BSD
+  chunk using the copy, FSK/SLOW/DIRECT body checksum, WAV EXTENSIBLE,
+  IEEE float and 64-bit PCM. The default `--tolerance` is 0.20.
+- Player: tape stop (Pause 0, block 0x2A), signal level between blocks per
+  TZX 1.20, reserved blocks 0x47-0x4F are skipped with a warning. tmz2wav
+  rejects a signal the read routine could not read at the selected sample
+  rate and returns code 1 for a block that is not played.
+- tzx: the pilot of blocks 0x10/0x11 has `pilot_count` pulses, block 0x35
+  is read with a 16-byte identifier, a truncated file and a major version
+  other than 1 are errors, new function `tzx_generate_block()`.
+- dat2bsd writes block 0x46 BASIC-1Z016 (type 04h, without `--speed` and
+  `--pulseset`), bsd2dat reads blocks 0x45 and 0x46; tmzedit validate
+  checks block 0x45. Type 04h is listed as "BRD (BASIC data, WOPEN#)".
+- Tests without the `tstdata/` directory print SKIP and succeed.
+- Fixes: out-of-bounds reads and crashes on damaged files, TLV and block
+  0x32 buffer bounds, the custom pulse unit (0.1 µs) in help and
+  documentation.
+- wav2tmz recognizes the writer: a TurboCopy V1.2x recording (by the tone length) is
+  stored as block 0x46 `TC-1.21` with the ratio a/b and the preloader choice, an
+  Intercopy V10.2 NORMAL, TURBO and FAST IPL recording as `IC-10.2-NORMAL` / `-TURBO` /
+  `-FASTIPL` with speed `bd` (600 to 3200 Bd).
+- Profile `TC-1.21` supports all 34 TurboCopy ratios (a, b from 1..9, 1/2 to 3/1);
+  `mzf2tmz --profile TC-1.21 --speed 9:4`; `tmz2mzf --mzt-unicmt` writes TC-1.21 without
+  the preloader with a CMTSPEED header from the ratio (1:1 as 1x).
+- wav2tmz: FSK and SLOW speed level from the delay byte in the loader, a ZX recording
+  with a slow pilot (Intercopy SINCLAIR 900 Bd) as block 0x11, the actual Intercopy CPM
+  speed in the summary, the original MZF comment behind the TurboCopy preloader.
+- wav2tmz warns when TMZ cannot express the speed (NORMAL far from the block 0x41
+  speeds, unrecognized FSK/SLOW level).
+- Profile `IC-10.2-CPM` for all Intercopy CPM speeds (1500, 2400, 2800, 3200, 3600 Bd,
+  timing measured in the emulator); wav2tmz recognizes and writes them.
+- Byte 11h of the MZF header is kept unchanged all the way (mzf2tmz, v1.0 and 0x46 blocks,
+  playback, wav2tmz, tmz2mzf, the TurboCopy preloader); before, v1.0 blocks and WAV decoding
+  rewrote it to 0Dh. ROM SAVE writes the byte from memory (e.g. 00h) and copy programs pass
+  the header on as they read it. mzf library: new function `mzf_header_swap_endianity()`.
+  Consequence: mzf2tmz without `--profile` makes a different TMZ from an MZF with 00h at 11h
+  than before (00h instead of 0Dh); a v1.0 block with a byte other than 0Dh plays with it.
+  Files with 0Dh play unchanged.
+- TZX blocks play as on the ZX: the first pulse after a pause (and at the start of
+  playback) makes an edge, so the whole pilot is present; TZX 1.20 would write it at
+  the pause level. Played TZX tapes therefore have one pilot pulse more than before
+  (no effect on loading).
+- wav2tmz decodes Intercopy NORMAL 2800 and 3200 Bd also from a WAV made from TMZ
+  (asymmetric half-waves of the tone and the tapemark are also searched by periods).
+- TMZ -> WAV -> TMZ check on 121 recordings: all tapes byte-identical.
+
 ## 2026-08-15
 
 ### tmzedit v1.6.0, extract_preloader
@@ -189,7 +271,8 @@
 ### tmzedit v1.2.0
 - `--speed` now accepts baudrate values (e.g. `--speed 2800`) in addition
   to ratio format (`--speed 7:3`). Baudrate is mapped to nearest CMTSPEED.
-- FASTIPL speed displayed as baudrate in `convert` and `set` commands.
+- FASTIPL speed displayed as baudrate in `convert` (command does not exist;
+  use tmzconv) and `set` commands.
 
 ### tmzinfo v1.1.0
 - FASTIPL speed displayed as baudrate (e.g. "2800 Bd") instead of
@@ -226,8 +309,6 @@
 - Pulseset MZ-700: symmetric 504/504, 252/252 (previously 464/494, 240/264).
 - Consistent with mzcmt_turbo and mztape vstream pulsesets.
 
-## 2026-04-07#
-
 ### mzcmt_turbo v2.0.1
 - Fix ROM delay: formula changed from `round(82/speed_ratio)` to
   `floor(82/speed_ratio)` (truncation). TurboCopy on Z80 uses
@@ -244,7 +325,7 @@
   values match ROM behavior and are consistent with mzcmt_turbo
   g_pulses_800.
 
-# 2026-04-07
+## 2026-04-07
 
 ### wav_analyzer v1.2.0
 - Support for decoding TurboCopy TURBO recordings (speeds 2:1, 7:3, 8:3, 3:1 etc.).

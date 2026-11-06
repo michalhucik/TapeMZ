@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer_types.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
+ * @version 1.2.1
  * @brief  Společné datové typy, struktury a chybové kódy knihovny wav_analyzer.
  *
  * Definuje základní typy používané všemi vrstvami analyzéru:
@@ -90,9 +90,9 @@ extern "C" {
         WAV_TAPE_FORMAT_NORMAL,         /**< NORMAL FM 1200 Bd (MZ-700/800) */
         WAV_TAPE_FORMAT_MZ80B,          /**< NORMAL FM 1800 Bd (MZ-80B/MZ-2000) */
         WAV_TAPE_FORMAT_SINCLAIR,       /**< SINCLAIR FM 1400 Bd (MZ varianta) */
-        WAV_TAPE_FORMAT_CPM_CMT,        /**< CPM-CMT: NORMAL FM 2400 Bd, ftype=$22 (SOKODI/Intercopy) */
+        WAV_TAPE_FORMAT_CPM_CMT,        /**< CPM-CMT: NORMAL FM 2400 Bd, ftype=$22 (SOKODI CMT.COM, RadSoft) */
         WAV_TAPE_FORMAT_CPM_TAPE,       /**< CPM-TAPE: vlastni format Pezik/MarVan (LSB first, bez stop bitu) */
-        WAV_TAPE_FORMAT_TURBO,          /**< TURBO FM (NIPSOFT signatura) */
+        WAV_TAPE_FORMAT_TURBO,          /**< TURBO FM (předzavaděč TurboCopy, signatura "[turbo]") */
         WAV_TAPE_FORMAT_FASTIPL,        /**< FASTIPL ($BB prefix, V02/V07 loader) */
         WAV_TAPE_FORMAT_BSD,            /**< BSD chunkovany format (typ=0x04) */
         WAV_TAPE_FORMAT_FSK,            /**< FSK - frekvenční klíčování */
@@ -114,8 +114,8 @@ extern "C" {
         WAV_SPEED_CLASS_FAST,           /**< 70-155 us - CPM, FSK (vyšší rychlosti) */
         WAV_SPEED_CLASS_MEDIUM,         /**< 155-220 us - SINCLAIR, MZ-80B 1800 Bd */
         WAV_SPEED_CLASS_NORMAL,         /**< 220-500 us - NORMAL 1200 Bd, TURBO, FASTIPL, BSD */
-        WAV_SPEED_CLASS_ZX,             /**< 500-800 us - ZX Spectrum nativní formát */
-        WAV_SPEED_CLASS_ERROR,          /**< > 800 us - poškozený signál */
+        WAV_SPEED_CLASS_ZX,             /**< 500-1100 us - ZX Spectrum nativní formát (i pomalý pilot Intercopy SINCLAIR 900 Bd) */
+        WAV_SPEED_CLASS_ERROR,          /**< > 1100 us - poškozený signál */
     } en_WAV_SPEED_CLASS;
 
 
@@ -293,8 +293,8 @@ extern "C" {
 
     /** @brief Výchozí tolerance pro detekci leader tónu (20 %).
      *
-     * Reálné nahrávky z magnetofonu mají typický jitter 10-15 %
-     * na délce pulzů (asymetrický duty cycle, rychlostní kolísání).
+     * Nahrávky z magnetofonu mají jitter na délce pulzů (asymetrický
+     * duty cycle, rychlostní kolísání), velikost [neověřeno].
      * Tolerance 20 % spolehlivě detekuje leadery i v degradovaných
      * signálech a nezpůsobuje problémy u syntetických signálů
      * (které mají téměř nulový jitter).
@@ -333,8 +333,8 @@ extern "C" {
     /** @brief Koeficient pro vypocet FM bit-prahu: leader_avg * THRESHOLD_FACTOR.
      *
      * Prah musi lezet bezpecne mezi SHORT a LONG pul-periodami.
-     * Standard FM ma SHORT:LONG pomer ~1:2. Faktor 1.7 je na 85 %
-     * cesty od SHORT k LONG, cimz se vyhneme misklasifikaci
+     * Standard FM ma SHORT:LONG pomer ~1:2. Vyssi faktor posouva prah
+     * blize k LONG, cimz se vyhneme misklasifikaci
      * u asymetrickych pulsetu (napr. CMT.COM kde SHORT-HIGH ~304 us
      * a LONG ~407 us - faktor 1.5 dava 306 us, coz je prilis blizko
      * SHORT-HIGH a zpusobuje chyby pri detekci tapemarku).

@@ -1,7 +1,7 @@
 /**
  * @file   wav_classify.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.2.0
  * @brief  Implementace vrstvy 3 - klasifikace formátu kazetového záznamu.
  *
  * Dvoustupňová detekce:
@@ -41,16 +41,22 @@
 #define SPEED_CLASS_FAST_MAX        155.0
 #define SPEED_CLASS_MEDIUM_MAX      220.0
 #define SPEED_CLASS_NORMAL_MAX      500.0
-#define SPEED_CLASS_ZX_MAX          800.0
+/* ZX: pilot 2168 T (619 us při 3,5 MHz, Intercopy 1400 Bd asi 612 us), Intercopy SINCLAIR 900 Bd 930 us */
+#define SPEED_CLASS_ZX_MAX          1100.0
 
-/** @brief NIPSOFT signatura v TURBO komentáři hlavičky (offset 0x12 od začátku cmnt). */
-static const uint8_t g_nipsoft_signature[] = { 'N', 'I', 'P', 'S', 'O', 'F', 'T' };
+/**
+ * @brief Signatura předzavaděče TurboCopy V1.2x v cmnt[0..6] hlavičky ("[turbo]" v Sharp ASCII).
+ *
+ * Stejné bajty porovnává Intercopy 10.2 na $18CA (hlavička $12..$1E =
+ * 5A 00 00 D4 00 D4 5B 96 A5 9D 9A B7 5D).
+ * Ověřeno na všech předzavaděčích TurboCopy a Intercopy v tstdata.
+ * Dřívější heuristika hledala v komentáři ASCII "NIPSOFT", ten ale
+ * předzavaděč nenese a nese ho řada běžných programů.
+ */
+static const uint8_t g_turbocopy_signature[7] = { 0x5B, 0x96, 0xA5, 0x9D, 0x9A, 0xB7, 0x5D };
 
-/** @brief Délka NIPSOFT signatury. */
-#define NIPSOFT_SIGNATURE_LEN   ( sizeof ( g_nipsoft_signature ) )
-
-/** @brief Offset NIPSOFT signatury v cmnt poli MZF hlavičky. */
-#define NIPSOFT_CMNT_OFFSET     0
+/** @brief Velikost těla předzavaděče TurboCopy V1.2x pro TURBO (B). */
+#define TURBOCOPY_PRELOADER_SIZE   90
 
 
 /**
@@ -79,8 +85,8 @@ static const char *g_speed_class_names[] = {
     [WAV_SPEED_CLASS_FAST]    = "FAST (70-155 us)",
     [WAV_SPEED_CLASS_MEDIUM]  = "MEDIUM (155-220 us)",
     [WAV_SPEED_CLASS_NORMAL]  = "NORMAL (220-500 us)",
-    [WAV_SPEED_CLASS_ZX]      = "ZX (500-800 us)",
-    [WAV_SPEED_CLASS_ERROR]   = "ERROR (>800 us)",
+    [WAV_SPEED_CLASS_ZX]      = "ZX (500-1100 us)",
+    [WAV_SPEED_CLASS_ERROR]   = "ERROR (>1100 us)",
 };
 
 
@@ -126,12 +132,12 @@ en_WAV_TAPE_FORMAT wav_classify_from_leader (
              * pres tridy NORMAL (220+ us), MEDIUM (155-220 us)
              * i FAST (70-155 us).
              *
-             * Konkretni format (TURBO, FASTIPL, CPM-CMT, MZ-80B, BSD,
+             * Konkretni format (TURBO, FASTIPL, CPM-CMT, BSD,
              * FSK, SLOW, DIRECT) se urci az ze stupne B - z obsahu
              * hlavicky po uspesnem FM dekodovani.
              *
              * FM dekoder (wav_decode_fm) adaptivne kalibruje threshold
-             * z leaderu (leader_avg * 1.5), takze funguje pri jakekoli
+             * z leaderu (leader_avg * 1.6, WAV_ANALYZER_FM_THRESHOLD_FACTOR), takze funguje pri jakekoli
              * rychlosti.
              */
             return WAV_TAPE_FORMAT_NORMAL;
@@ -142,33 +148,6 @@ en_WAV_TAPE_FORMAT wav_classify_from_leader (
         default:
             return WAV_TAPE_FORMAT_UNKNOWN;
     }
-}
-
-
-/**
- * @brief Zkontroluje, zda hlavička obsahuje NIPSOFT signaturu.
- *
- * NIPSOFT signatura se nachází v komentáři hlavičky a indikuje
- * TURBO formát (TurboCopy).
- *
- * @param header MZF hlavička.
- * @return 1 pokud signatura nalezena, 0 jinak.
- */
-static int classify_check_nipsoft ( const st_MZF_HEADER *header ) {
-    /*
-     * Prohledáme celé cmnt pole (104 bajtů) pro NIPSOFT signaturu.
-     * Signatura může být na různých pozicích v závislosti na verzi
-     * TurboCopy (v1.0 a v1.2x mají odlišné offsety).
-     */
-    if ( MZF_CMNT_LENGTH < NIPSOFT_SIGNATURE_LEN ) return 0;
-
-    for ( uint32_t i = 0; i <= MZF_CMNT_LENGTH - NIPSOFT_SIGNATURE_LEN; i++ ) {
-        if ( memcmp ( &header->cmnt[i], g_nipsoft_signature, NIPSOFT_SIGNATURE_LEN ) == 0 ) {
-            return 1;
-        }
-    }
-
-    return 0;
 }
 
 
@@ -279,11 +258,6 @@ en_WAV_TAPE_FORMAT wav_classify_from_header (
         return WAV_TAPE_FORMAT_FASTIPL;
     }
 
-    /* test NIPSOFT signatura -> vždy TURBO (NIPSOFT je specifická pro TurboCopy) */
-    if ( classify_check_nipsoft ( header ) ) {
-        return WAV_TAPE_FORMAT_TURBO;
-    }
-
     /*
      * Test turbo-family preloader (sdílený loader_turbo).
      * FSK, SLOW a DIRECT používají stejný preloader jako TURBO,
@@ -299,10 +273,10 @@ en_WAV_TAPE_FORMAT wav_classify_from_header (
 
     /*
      * Test TurboCopy preloader: fstrt=fexec=$D400, fsize <= 500.
-     * TurboCopy TURBO/FSK/SLOW/DIRECT pouziva preloader nahravany
-     * na adresu $D400. Na rozdil od mzftools formatu (fsize=0, loader
-     * v comment poli), TurboCopy ma loader v body (fsize=90..360).
-     * Typ loaderu urcime z velikosti body:
+     * Preloader nahravany na adresu $D400 s loaderem v body (fsize 90..360).
+     * TurboCopy TURBO ma 90 B se signaturou; velikosti ~191/249/360 se
+     * vykladaji jako loader FSK/SLOW/DIRECT (puvod techto preloaderu
+     * [neovereno]). Typ loaderu urcime z velikosti body:
      *   ~90 = TURBO, ~191 = FSK, ~249 = SLOW, ~360 = DIRECT
      */
     if ( header->fstrt == NONSTANDARD_LOADER_FROM &&
@@ -320,16 +294,25 @@ en_WAV_TAPE_FORMAT wav_classify_from_header (
              header->fsize <= FSK_LOADER_BODY_SIZE + 10 ) {
             return WAV_TAPE_FORMAT_FSK;
         }
-        /* ostatni velikosti -> TURBO */
-        return WAV_TAPE_FORMAT_TURBO;
+        /*
+         * TURBO jen se signaturou předzavaděče TurboCopy V1.2x; jiný program
+         * na $D400 je obyčejný záznam (dřív se zahodil)
+         */
+        if ( header->fsize == TURBOCOPY_PRELOADER_SIZE
+             && memcmp ( header->cmnt, g_turbocopy_signature, sizeof ( g_turbocopy_signature ) ) == 0 ) {
+            return WAV_TAPE_FORMAT_TURBO;
+        }
+        return preliminary_format;
     }
 
     /*
-     * Test BSD: typ=0x04 (BRD), fsize=0, fstrt=0, fexec=0.
+     * Test BSD: typ 0x04 (BRD, zapisuje WOPEN# BASICu 1Z-016) nebo 0x03
+     * (BSD, dřívější výchozí typ dat2bsd), fsize=0, fstrt=0,
+     * fexec=0 (soubor z WOPEN# BASICu 1Z-016 má typ 04h).
      * Pozor: fsize, fstrt, fexec jsou v host byte-order
-     * (po mzf_header_items_correction).
+     * (po mzf_header_swap_endianity).
      */
-    if ( header->ftype == MZF_FTYPE_BRD &&
+    if ( ( header->ftype == MZF_FTYPE_BRD || header->ftype == MZF_FTYPE_BSD ) &&
          header->fsize == 0 &&
          header->fstrt == 0 &&
          header->fexec == 0 ) {
@@ -337,9 +320,11 @@ en_WAV_TAPE_FORMAT wav_classify_from_header (
     }
 
     /*
-     * Test CPM-CMT: ftype=$22 (CP/M CMT.COM / Intercopy CPM formát).
+     * Test CPM-CMT: ftype=$22 (CP/M CMT.COM, SOKODI a RadSoft).
      * Identifikace z CMT.COM v.7 (SOKODI 1988): write_header na $0773
      * zapisuje LD (HL),$22 jako ftype.
+     * Intercopy CPM do této kategorie nepatří: zapisuje Manchester
+     * (rodina Pezik TAPE) s původním ftype souboru.
      */
     if ( header->ftype == 0x22 ) {
         return WAV_TAPE_FORMAT_CPM_CMT;

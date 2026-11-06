@@ -1,7 +1,7 @@
 # tmz2mzf - Extraktor MZF souborů z TMZ/TZX
 
-Extrahuje MZF soubory z bloků 0x40 (MZ Standard Data) a 0x41 (MZ Turbo Data)
-v TMZ nebo TZX souborech. Podporuje extrakci všech bloků najednou,
+Extrahuje MZF soubory z bloků 0x40 (MZ Standard Data), 0x41 (MZ Turbo Data)
+a 0x46 (MZ File, TMZ v1.1) v TMZ nebo TZX souborech. Podporuje extrakci všech bloků najednou,
 výběr konkrétního bloku podle indexu a výpis seznamu extrahovatelných bloků.
 
 ## Použití
@@ -19,6 +19,8 @@ tmz2mzf <vstup.tmz|vstup.tzx> [volby]
 | `--list` | - | Vypsat extrahovatelné bloky bez extrakce |
 | `--overwrite` | - | Povolit přepis existujícího výstupního souboru |
 | `--append` | - | Připojit na konec existujícího souboru (multi-MZF) |
+| `--mzt` | - | Všechny MZF do jednoho klasického MZT (výchozí pro `--output *.mzt`) |
+| `--mzt-unicmt` | - | MZT s hlavičkami CMTSPEED pro UniCMT |
 | `--charset` | eu, jp, utf8-eu, utf8-jp | Znaková sada Sharp MZ pro zobrazení názvu souboru (viz níže) |
 | `--version` | - | Zobrazit verzi programu |
 | `--lib-versions` | - | Zobrazit verze použitých knihoven |
@@ -65,6 +67,26 @@ vytvoří nový. Při extrakci více bloků jdou všechny bloky do jednoho soubo
 - Více bloků s `--output`: output_001.mzf, output_002.mzf, ...
 - Více bloků bez `--output`: vstup_001.mzf, vstup_002.mzf, ...
 - `--append`: všechny bloky do jednoho souboru (`--output` nebo odvozeno ze vstupu)
+
+### MZT (`--mzt`, `--mzt-unicmt`)
+
+Obě volby zapíšou všechny bloky s MZF do jednoho souboru MZT (`--output`,
+jinak název vstupu s příponou `.mzt`). Nejdou kombinovat s `--index`,
+`--list` ani `--append`, existující soubor přepíšou jen s `--overwrite`.
+
+- `--mzt` zapíše klasické MZT: soubory MZF za sebou. Časování se ztratí;
+  u bloku, který není záznamem ROM rychlostí 1x (např. TURBO, FASTIPL,
+  rychlost 2:1), program vypíše varování.
+- `--mzt-unicmt` vloží před soubor hlavičku CMTSPEED UniCMT všude, kde se
+  rychlost mění proti předchozímu souboru (výchozí 1x). Rychlost bloku je
+  z jeho profilu: ROM a 0x40 = 1x, 0x41 NORMAL podle rychlosti (2:1 a 3:1
+  dají přesně 2x a 3x UniCMT), `UNICMT` podle hlavičky CMTSPEED, ze které
+  vznikl. První soubor musí být 1x (UniCMT úvodní hlavičku nepřehraje)
+  a všechny bloky musí být záznamem ROM (hlavička + tělo); jinak program
+  skončí chybou a nic nezapíše.
+
+MZT převedené `mzf2tmz` a zpět `tmz2mzf --mzt-unicmt` je bajtově shodné
+s původním (ověřeno na ukázkách UniCMT).
 
 ## Příklady
 

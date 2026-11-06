@@ -1,11 +1,12 @@
 /**
  * @file   tzx.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.2.0
  * @brief  Verejne API knihovny pro format TZX v1.20 - kazetovy archiv ZX Spectrum.
  *
  * Knihovna pro parsovani a generovani audio streamu ze vsech bloku TZX v1.20.
- * Implementuje kompletni sadu audio bloku (0x10-0x19) a ridicich bloku (0x20-0x2B).
+ * Generuje audio bloky 0x10-0x15 a pauzu 0x20; ostatni bloky (0x18, 0x19 a ridici
+ * bloky 0x21-0x2B) parsuje, zvuk z nich negeneruje (ridici bloky zpracuje player).
  *
  * Audio bloky generuji CMT stream (bitstream/vstream) z pulsovych definici.
  * Casovani je v Z80 T-states pri 3.5 MHz, ale lze prepocitat na libovolny
@@ -121,6 +122,13 @@ extern "C" {
 #define TZX_BLOCK_ID_HARDWARE_TYPE    0x33
 /** @brief Uzivatelsky definovany informacni blok */
 #define TZX_BLOCK_ID_CUSTOM_INFO      0x35
+/**
+ * @brief Délka ASCII identifikátoru bloku 0x35 v bajtech.
+ *
+ * TZX spec uvádí CHAR[10] v hexadecimálním zápisu (= 16 B), verze 1.01
+ * opravila délku na 16 B. Za identifikátorem následuje DWORD délka dat.
+ */
+#define TZX_CUSTOM_INFO_ID_LENGTH     16
 /** @brief Spojovaci blok (pro spojeni vice TZX souboru) */
 #define TZX_BLOCK_ID_GLUE             0x5A
 
@@ -515,8 +523,10 @@ extern "C" {
      *
      * @param raw_data Surova data bloku (za ID bajtem).
      * @param raw_length Delka surovych dat.
-     * @param[out] result Vystupni struktura.
-     * @return TZX_OK pri uspechu, jinak chybovy kod.
+     * @param[out] result Vystupni struktura (result->data ukazuje do raw_data).
+     * @return TZX_OK pri uspechu, TZX_ERROR_NULL_INPUT, nebo
+     *         TZX_ERROR_INVALID_BLOCK pro blok kratší než 14 B a pro DWORD
+     *         délku menší než 10 nebo s daty přesahujícími raw_length.
      */
     extern en_TZX_ERROR tzx_parse_csw_recording ( const uint8_t *raw_data, uint32_t raw_length, st_TZX_CSW_RECORDING *result );
 
@@ -533,16 +543,73 @@ extern "C" {
 /** @} */
 
 
+/**
+ * @brief Úroveň signálu po pauze pro tzx_generate_block(): signál je nízko,
+ *        další pulz se zapíše vysoko (vytvoří hranu) a další pauza nezačne
+ *        1 ms vysoko.
+ *
+ * Hodnota parametru level vedle 0 (nízká) a 1 (vysoká). Pro pulzy se chová
+ * jako 1, pro pauzu jako 0.
+ */
+#define TZX_LEVEL_AFTER_PAUSE   2
+
 /** @defgroup tzx_generate Generovani audio streamu
  *  Funkce pro generovani CMT vstreamu z naparsovanych TZX bloku.
  *  Kazda funkce vytvari novy vstream, ktery volajici musi uvolnit.
+ *
+ *  Úroveň signálu podle TZX 1.20 (kap. "Pravidla pro aktuální úroveň
+ *  pulzu"): aktuální úroveň je úroveň dalšího pulzu. Každý pulz se zapíše
+ *  na aktuální úrovni a úroveň se pak otočí. Pauza > 0 při vysoké úrovni
+ *  nejdřív 1 ms vysoko (dokončí hranu posledního pulzu), zbytek nízko; při
+ *  nízké úrovni a po pauze celá nízko. Pause 0 úroveň nemění.
+ *  Po bloku 0x15 je úroveň opakem posledního vzorku (spec 0x15 neuvádí,
+ *  (hypotéza): další blok tak začne hranou).
+ *
+ *  Odchylka od TZX 1.20: po pauze je úroveň TZX_LEVEL_AFTER_PAUSE (signál
+ *  nízko, první pulz dalšího bloku vysoko, tedy s hranou), ne nízká. TZX 1.20
+ *  zapíše první pulz po pauze nízko a ten splyne s pauzou; skutečný záznam
+ *  (Intercopy SINCLAIR v emulátoru) má po mezeře vidět všechny pulzy pilotu.
+ *
+ *  tzx_generate_block() úroveň přebírá a vrací (pro přehrávání po sobě
+ *  jdoucích bloků). Ostatní funkce začínají nízkou úrovní (start
+ *  emulátoru podle TZX 1.20) a výslednou úroveň nevracejí.
  *  @{ */
+
+    /**
+     * @brief Vygeneruje signál audio bloku TZX s úrovní signálu na vstupu a výstupu.
+     *
+     * Podporuje bloky 0x10, 0x11, 0x12, 0x13, 0x14, 0x15 a 0x20. Data bloku
+     * naparsuje příslušnou funkcí tzx_parse_*() a vygeneruje signál podle
+     * pravidel úrovně (viz skupina). Pilot bloků 0x10 a 0x11 má pilot_count
+     * pulzů (půlvln).
+     *
+     * @param block Blok (block->data jako v st_TZX_FILE, bez ID).
+     * @param config Konfigurace generátoru.
+     * @param[in,out] level Aktuální úroveň (0 = nízká, 1 = vysoká,
+     *        TZX_LEVEL_AFTER_PAUSE = nízko po pauze, první pulz vysoko): na
+     *        vstupu úroveň prvního pulzu, na výstupu aktuální úroveň po bloku
+     *        (po pauze TZX_LEVEL_AFTER_PAUSE). Při chybě, u Pause 0 a u bloku
+     *        bez signálu se nemění. Jiná nenulová hodnota se bere jako 1.
+     * @param err Výstupní chybový kód (může být NULL): TZX_OK;
+     *        TZX_ERROR_NULL_INPUT; TZX_ERROR_UNSUPPORTED (jiné ID bloku);
+     *        chyba parseru (TZX_ERROR_INVALID_BLOCK); TZX_ERROR_ALLOC;
+     *        TZX_ERROR_STREAM_CREATE.
+     * @return Nový vstream, nebo NULL: při chybě, nebo u Pause 0 (err TZX_OK,
+     *         příkaz zastavení pásky vyhodnocuje přehrávač). Blok bez signálu
+     *         (0x12 a 0x13 s 0 pulzy, 0x14 bez dat a s pauzou 0) dá vstream
+     *         s 0 vzorky a úroveň nemění.
+     *
+     * @pre level nesmí být NULL (jinak TZX_ERROR_NULL_INPUT).
+     * @post Volající uvolní vrácený vstream přes cmt_vstream_destroy().
+     */
+    extern st_CMT_VSTREAM* tzx_generate_block ( const st_TZX_BLOCK *block, const st_TZX_CONFIG *config, uint8_t *level,
+                                                en_TZX_ERROR *err );
 
     /**
      * @brief Generuje vstream z bloku 0x10 (Standard Speed Data).
      *
-     * Generuje pilot ton (8063/3223 pulzu), sync pulzy a data
-     * se standardnim ROM casovanim.
+     * Generuje pilot ton (8063/3223 pulzu podle flag bajtu), sync pulzy
+     * a data se standardnim ROM casovanim. Začíná nízkou úrovní.
      *
      * @param block Naparsovany blok.
      * @param config Konfigurace generatoru.
@@ -556,8 +623,8 @@ extern "C" {
     /**
      * @brief Generuje vstream z bloku 0x11 (Turbo Speed Data).
      *
-     * Generuje pilot ton, sync pulzy a data s uzivatelsky
-     * definovanym casovanim.
+     * Generuje pilot ton (pilot_count pulzu), sync pulzy a data s uzivatelsky
+     * definovanym casovanim. Začíná nízkou úrovní.
      *
      * @param block Naparsovany blok.
      * @param config Konfigurace generatoru.
@@ -569,32 +636,38 @@ extern "C" {
     extern st_CMT_VSTREAM* tzx_generate_turbo_speed ( const st_TZX_TURBO_SPEED *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err );
 
     /**
-     * @brief Generuje vstream z bloku 0x12 (Pure Tone).
+     * @brief Generuje vstream z bloku 0x12 (Pure Tone). Začíná nízkou úrovní.
      *
      * @param block Naparsovany blok.
      * @param config Konfigurace generatoru.
      * @param err Vystupni chybovy kod (muze byt NULL).
      * @return Novy vstream, nebo NULL pri chybe.
+     *
+     * @post Volající uvolní vrácený vstream přes cmt_vstream_destroy().
      */
     extern st_CMT_VSTREAM* tzx_generate_pure_tone ( const st_TZX_PURE_TONE *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err );
 
     /**
-     * @brief Generuje vstream z bloku 0x13 (Pulse Sequence).
+     * @brief Generuje vstream z bloku 0x13 (Pulse Sequence). Začíná nízkou úrovní.
      *
      * @param block Naparsovany blok.
      * @param config Konfigurace generatoru.
      * @param err Vystupni chybovy kod (muze byt NULL).
      * @return Novy vstream, nebo NULL pri chybe.
+     *
+     * @post Volající uvolní vrácený vstream přes cmt_vstream_destroy().
      */
     extern st_CMT_VSTREAM* tzx_generate_pulse_sequence ( const st_TZX_PULSE_SEQUENCE *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err );
 
     /**
-     * @brief Generuje vstream z bloku 0x14 (Pure Data).
+     * @brief Generuje vstream z bloku 0x14 (Pure Data). Začíná nízkou úrovní.
      *
      * @param block Naparsovany blok.
      * @param config Konfigurace generatoru.
      * @param err Vystupni chybovy kod (muze byt NULL).
      * @return Novy vstream, nebo NULL pri chybe.
+     *
+     * @post Volající uvolní vrácený vstream přes cmt_vstream_destroy().
      */
     extern st_CMT_VSTREAM* tzx_generate_pure_data ( const st_TZX_PURE_DATA *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err );
 
@@ -602,22 +675,27 @@ extern "C" {
      * @brief Generuje vstream z bloku 0x15 (Direct Recording).
      *
      * Kazdy bit vstupnich dat je jeden vzorek signalu (0=low, 1=high).
-     * MSb se prehraje prvni.
+     * MSb se prehraje prvni. Pauza za blokem začíná úrovní opačnou
+     * k poslednímu vzorku (viz skupina).
      *
      * @param block Naparsovany blok.
      * @param config Konfigurace generatoru.
      * @param err Vystupni chybovy kod (muze byt NULL).
      * @return Novy vstream, nebo NULL pri chybe.
+     *
+     * @post Volající uvolní vrácený vstream přes cmt_vstream_destroy().
      */
     extern st_CMT_VSTREAM* tzx_generate_direct_recording ( const st_TZX_DIRECT_RECORDING *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err );
 
     /**
-     * @brief Generuje vstream pauzy (ticha).
+     * @brief Generuje vstream pauzy (ticha) od nízké úrovně (celá pauza nízko).
      *
      * @param pause_ms Doba pauzy v milisekundach.
      * @param config Konfigurace generatoru.
      * @param err Vystupni chybovy kod (muze byt NULL).
-     * @return Novy vstream, nebo NULL pri chybe.
+     * @return Novy vstream, nebo NULL pri chybe a pri pause_ms 0 (err TZX_OK).
+     *
+     * @post Volající uvolní vrácený vstream přes cmt_vstream_destroy().
      */
     extern st_CMT_VSTREAM* tzx_generate_pause ( uint16_t pause_ms, const st_TZX_CONFIG *config, en_TZX_ERROR *err );
 
@@ -703,6 +781,13 @@ extern "C" {
      * Alokuje a vraci novou st_TZX_FILE strukturu na heapu.
      * Rozpozna signaturu "ZXTape!" i "TapeMZ!" a nastavi priznak is_tmz.
      * Volajici musi uvolnit pres tzx_free().
+     *
+     * Konec souboru je platný jen na hranici bloku. Useknutý blok (v délce
+     * nebo v datech) je chyba TZX_ERROR_UNEXPECTED_EOF, délka přetékající
+     * 32bit offset je TZX_ERROR_INVALID_BLOCK. Data bloku se alokují až po
+     * ověření, že je soubor obsahuje. Částečně načtený soubor se nevrací.
+     * Hlavička s major verzí jinou než 1 je TZX_ERROR_INVALID_VERSION
+     * (TZX 1.20 i TMZ 1.0/1.1 mají major 1).
      *
      * @param h   Otevreny handler s TZX/TMZ daty
      * @param err Vystupni chybovy kod (muze byt NULL)
@@ -951,7 +1036,10 @@ extern "C" {
      * @param entries Pole zaznamu.
      * @param count Pocet zaznamu.
      * @param[out] block Vystupni blok (id a data budou naplneny).
-     * @return TZX_OK pri uspechu, chybovy kod jinak.
+     * @return TZX_OK při úspěchu; TZX_ERROR_NULL_INPUT (NULL vstup, count 0,
+     *         text NULL); TZX_ERROR_INVALID_BLOCK, když tělo (počet + záznamy)
+     *         přesáhne 65535 B, které unese WORD délky; TZX_ERROR_ALLOC.
+     *         Při chybě se block nemění.
      *
      * @pre entries != NULL, count > 0, block != NULL
      * @post block->data je vlastneno volajicim (uvolnit pres free)
@@ -989,7 +1077,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny tzx. */
-#define TZX_VERSION "1.0.0"
+#define TZX_VERSION "1.2.0"
 
     /** @brief Verze formátu TZX jako řetězec ("1.20"). */
 #define TZX_FORMAT_VERSION "1.20"

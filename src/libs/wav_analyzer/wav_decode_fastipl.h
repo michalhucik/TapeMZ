@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_fastipl.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.0
+ * @version 1.4.0
  * @brief  Vrstva 4c analyzeru - FASTIPL dekoder ($BB prefix, Intercopy).
  *
  * Dekoduje FASTIPL format z WAV signalu. FASTIPL signal se sklada ze dvou casti:

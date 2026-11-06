@@ -1,7 +1,7 @@
 /**
  * @file   tzx.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.2.0
  * @brief  Implementace TZX knihovny - parsovani bloku a generovani CMT vstreamu.
  *
  * Implementuje parsovani vsech audio bloku TZX v1.20 (0x10-0x15, 0x18, 0x20)
@@ -172,54 +172,69 @@ static inline uint32_t read_le32 ( const uint8_t *p ) {
 
 
 /**
- * @brief Vytvori novy prazdny vstream pro generovani.
- * @param config Konfigurace generatoru.
- * @return Novy vstream, nebo NULL pri chybe.
+ * @brief Vytvoří nový prázdný vstream pro generování.
+ * @param config Konfigurace generátoru.
+ * @param start Počáteční hodnota vstreamu (úroveň prvního pulzu, 0|1).
+ * @return Nový vstream, nebo NULL při chybě.
  */
-static st_CMT_VSTREAM* tzx_create_vstream ( const st_TZX_CONFIG *config ) {
+static st_CMT_VSTREAM* tzx_create_vstream ( const st_TZX_CONFIG *config, int start ) {
     uint32_t rate = config->sample_rate ? config->sample_rate : CMTSTREAM_DEFAULT_RATE;
-    return cmt_vstream_new ( rate, CMT_VSTREAM_BYTELENGTH8, 1, CMT_STREAM_POLARITY_NORMAL );
+    return cmt_vstream_new ( rate, CMT_VSTREAM_BYTELENGTH8, start ? 1 : 0, CMT_STREAM_POLARITY_NORMAL );
 }
 
 
 /**
- * @brief Prida jeden pulz (half-period) do vstreamu.
+ * @brief Normalizuje vstupní úroveň pro pauzu: 0, 1 nebo TZX_LEVEL_AFTER_PAUSE.
+ * @param level Úroveň od volajícího (jiná nenulová hodnota než 1 a
+ *        TZX_LEVEL_AFTER_PAUSE = 1).
+ * @return 0, 1 nebo TZX_LEVEL_AFTER_PAUSE.
+ */
+static inline uint8_t tzx_level_norm ( uint8_t level ) {
+    return ( level == TZX_LEVEL_AFTER_PAUSE ) ? TZX_LEVEL_AFTER_PAUSE : ( level ? 1 : 0 );
+}
+
+
+/**
+ * @brief Přidá jeden pulz (půlvlnu) na aktuální úrovni a úroveň otočí.
  *
- * Prevede T-states na pocet vzorku a zapise do vstreamu.
+ * Převede T-states na počet vzorků (nejméně 1) a zapíše je do vstreamu.
  *
  * @param vs Vstream.
- * @param tstates Delka pulzu v T-states.
- * @param level Uroven signalu (0=low, 1=high).
- * @param config Konfigurace generatoru.
- * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
+ * @param tstates Délka pulzu v T-states.
+ * @param[in,out] level Aktuální úroveň (0|1); po zápisu se otočí.
+ * @param config Konfigurace generátoru.
+ * @return EXIT_SUCCESS při úspěchu, EXIT_FAILURE při chybě zápisu.
  */
-static inline int tzx_add_pulse ( st_CMT_VSTREAM *vs, uint32_t tstates, int level, const st_TZX_CONFIG *config ) {
+static inline int tzx_add_pulse ( st_CMT_VSTREAM *vs, uint32_t tstates, uint8_t *level, const st_TZX_CONFIG *config ) {
     uint32_t rate = config->sample_rate ? config->sample_rate : CMTSTREAM_DEFAULT_RATE;
     uint32_t clock = config->cpu_clock ? config->cpu_clock : TZX_DEFAULT_CPU_CLOCK;
     uint32_t samples = (uint32_t) ( (double) tstates * (double) rate / (double) clock + 0.5 );
     if ( samples == 0 ) samples = 1;
-    return cmt_vstream_add_value ( vs, level, samples );
+    if ( EXIT_FAILURE == cmt_vstream_add_value ( vs, *level, samples ) ) return EXIT_FAILURE;
+    *level ^= 1;
+    return EXIT_SUCCESS;
 }
 
 
 /**
- * @brief Prida datove bajty do vstreamu s danymi pulznimi delkami.
+ * @brief Přidá datové bajty do vstreamu s danými délkami pulzů.
  *
- * Kazdy bajt se koduje od MSb k LSb. Za kazdym bitem nasleduji
- * dva pulzy (full period): prvni s aktualni urovni, druhy s opacnou.
+ * Každý bajt se kóduje od MSb k LSb, každý bit jsou dva pulzy stejné
+ * délky (první na aktuální úrovni, druhý na opačné).
  *
  * @param vs Vstream.
- * @param data Data k zakodovani.
- * @param data_length Pocet bajtu.
- * @param used_bits_last Pouzite bity v poslednim bajtu (1-8).
- * @param zero_tstates Delka half-period bitu ZERO v T-states.
- * @param one_tstates Delka half-period bitu ONE v T-states.
- * @param config Konfigurace generatoru.
- * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
+ * @param data Data k zakódování.
+ * @param data_length Počet bajtů.
+ * @param used_bits_last Použité bity v posledním bajtu (1-8).
+ * @param zero_tstates Délka půlvlny bitu ZERO v T-states.
+ * @param one_tstates Délka půlvlny bitu ONE v T-states.
+ * @param[in,out] level Aktuální úroveň (0|1).
+ * @param config Konfigurace generátoru.
+ * @return EXIT_SUCCESS při úspěchu, EXIT_FAILURE při chybě.
  */
 static int tzx_add_data_bits ( st_CMT_VSTREAM *vs, const uint8_t *data, uint32_t data_length,
                                 uint8_t used_bits_last, uint16_t zero_tstates, uint16_t one_tstates,
-                                const st_TZX_CONFIG *config ) {
+                                uint8_t *level, const st_TZX_CONFIG *config ) {
 
     if ( data_length == 0 ) return EXIT_SUCCESS;
 
@@ -230,9 +245,9 @@ static int tzx_add_data_bits ( st_CMT_VSTREAM *vs, const uint8_t *data, uint32_t
         for ( int b = 0; b < bits; b++ ) {
             uint16_t pulse_len = ( byte & 0x80 ) ? one_tstates : zero_tstates;
 
-            /* full period = 2 half-periods (high + low) */
-            if ( EXIT_FAILURE == tzx_add_pulse ( vs, pulse_len, 1, config ) ) return EXIT_FAILURE;
-            if ( EXIT_FAILURE == tzx_add_pulse ( vs, pulse_len, 0, config ) ) return EXIT_FAILURE;
+            /* celá perioda = 2 půlvlny */
+            if ( EXIT_FAILURE == tzx_add_pulse ( vs, pulse_len, level, config ) ) return EXIT_FAILURE;
+            if ( EXIT_FAILURE == tzx_add_pulse ( vs, pulse_len, level, config ) ) return EXIT_FAILURE;
 
             byte <<= 1;
         }
@@ -243,32 +258,37 @@ static int tzx_add_data_bits ( st_CMT_VSTREAM *vs, const uint8_t *data, uint32_t
 
 
 /**
- * @brief Prida pauzu (ticho) do vstreamu.
+ * @brief Přidá pauzu (ticho) do vstreamu podle TZX 1.20.
  *
- * Pauza je nizka uroven po dany pocet milisekund.
- * Dle specifikace: pred pauzou >= 1ms opacne urovne.
+ * Při vysoké aktuální úrovni (poslední pulz byl nízký) nejdřív 1 ms
+ * vysoko, aby se dokončila hrana posledního pulzu, zbytek nízko. Při
+ * nízké úrovni a po pauze (TZX_LEVEL_AFTER_PAUSE) je celá pauza nízko.
+ * Po pauze je úroveň TZX_LEVEL_AFTER_PAUSE: další pulz vytvoří hranu.
+ * Pause 0 nic nezapíše a úroveň nemění.
  *
  * @param vs Vstream.
- * @param pause_ms Doba pauzy v milisekundach.
- * @param config Konfigurace generatoru.
- * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
+ * @param pause_ms Doba pauzy v milisekundách.
+ * @param[in,out] level Aktuální úroveň (0|1|TZX_LEVEL_AFTER_PAUSE); po pauze > 0
+ *        je TZX_LEVEL_AFTER_PAUSE.
+ * @param config Konfigurace generátoru.
+ * @return EXIT_SUCCESS při úspěchu, EXIT_FAILURE při chybě.
  */
-static int tzx_add_pause_to_vstream ( st_CMT_VSTREAM *vs, uint16_t pause_ms, const st_TZX_CONFIG *config ) {
-    if ( pause_ms == 0 ) return EXIT_SUCCESS;
+static int tzx_add_pause_to_vstream ( st_CMT_VSTREAM *vs, uint16_t pause_ms, uint8_t *level, const st_TZX_CONFIG *config ) {
+    if ( pause_ms == 0 ) return EXIT_SUCCESS;   /* Pause 0 úroveň nemění (TZX 1.20) */
 
     uint32_t rate = config->sample_rate ? config->sample_rate : CMTSTREAM_DEFAULT_RATE;
-
-    /* 1ms na vysoke urovni pred prechodem na nizkou (dle specifikace) */
-    uint32_t edge_samples = rate / 1000;
-    if ( edge_samples == 0 ) edge_samples = 1;
-    if ( EXIT_FAILURE == cmt_vstream_add_value ( vs, 1, edge_samples ) ) return EXIT_FAILURE;
-
-    /* zbytek pauzy na nizke urovni */
-    uint32_t pause_samples = (uint32_t) ( (double)( pause_ms - 1 ) * rate / 1000.0 + 0.5 );
-    if ( pause_samples > 0 ) {
-        if ( EXIT_FAILURE == cmt_vstream_add_value ( vs, 0, pause_samples ) ) return EXIT_FAILURE;
+    uint32_t total = (uint32_t) ( (double) pause_ms * rate / 1000.0 + 0.5 );
+    if ( total == 0 ) total = 1;
+    uint32_t high = 0;
+    if ( *level == 1 ) {
+        /* aktuální úroveň vysoká = poslední pulz byl nízký: 1 ms vysoko dokončí jeho hranu */
+        high = rate / 1000;
+        if ( high == 0 ) high = 1;
+        if ( high > total ) high = total;
+        if ( EXIT_FAILURE == cmt_vstream_add_value ( vs, 1, high ) ) return EXIT_FAILURE;
     }
-
+    if ( total > high && EXIT_FAILURE == cmt_vstream_add_value ( vs, 0, total - high ) ) return EXIT_FAILURE;
+    *level = TZX_LEVEL_AFTER_PAUSE;   /* signál nízko, další pulz vytvoří hranu (jako ZX) */
     return EXIT_SUCCESS;
 }
 
@@ -394,12 +414,18 @@ en_TZX_ERROR tzx_parse_csw_recording ( const uint8_t *raw_data, uint32_t raw_len
     /* prvni 4 bajty jsou DWORD delka bloku (uz zpracovano parserem vys) */
     uint32_t block_len = read_le32 ( raw_data );
 
+    /* DWORD délka pokrývá 10 B hlavičky + data; data musí ležet v raw_length */
+    if ( block_len < 10 || block_len - 10 > raw_length - 0x0E ) {
+        g_tzx_error_cb ( __func__, __LINE__, "Block 0x18 length %u inconsistent with raw data (%u bytes)\n", block_len, raw_length );
+        return TZX_ERROR_INVALID_BLOCK;
+    }
+
     result->pause_ms         = read_le16 ( raw_data + 0x04 );
     result->sample_rate      = read_le24 ( raw_data + 0x06 );
     result->compression_type = raw_data[0x09];
     result->pulse_count      = read_le32 ( raw_data + 0x0A );
     result->data = (uint8_t*) raw_data + 0x0E;
-    result->data_length = ( block_len > 10 ) ? block_len - 10 : 0;
+    result->data_length = block_len - 10;
 
     return TZX_OK;
 }
@@ -419,37 +445,41 @@ en_TZX_ERROR tzx_parse_pause ( const uint8_t *raw_data, uint32_t raw_length, st_
 /*  Generovani audio streamu                                                 */
 /* ========================================================================= */
 
-st_CMT_VSTREAM* tzx_generate_standard_speed ( const st_TZX_STANDARD_SPEED *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+/**
+ * @brief Generátor bloku 0x10 s úrovní signálu.
+ *
+ * Pilot má TZX_PILOT_COUNT_HEADER/DATA pulzů podle flag bajtu (jeden pulz
+ * na iteraci), pak sync, data a pauza.
+ *
+ * @param block Naparsovaný blok. @param config Konfigurace.
+ * @param[in,out] level Aktuální úroveň; mění se jen při úspěchu.
+ * @param err Výstupní chybový kód.
+ * @return Nový vstream, nebo NULL při chybě.
+ */
+static st_CMT_VSTREAM* gen_standard_speed ( const st_TZX_STANDARD_SPEED *block, const st_TZX_CONFIG *config,
+                                            uint8_t *level, en_TZX_ERROR *err ) {
 
-    en_TZX_ERROR local_err = TZX_OK;
-    if ( !err ) err = &local_err;
-
-    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
-
-    st_CMT_VSTREAM *vs = tzx_create_vstream ( config );
+    uint8_t lv = *level ? 1 : 0;
+    st_CMT_VSTREAM *vs = tzx_create_vstream ( config, lv );
     if ( !vs ) { *err = TZX_ERROR_ALLOC; return NULL; }
 
-    /* pocet pilot pulzu podle flag bajtu */
+    /* počet pulzů pilotu podle flag bajtu */
     uint16_t pilot_count = ( block->data_length > 0 && block->data[0] < 128 )
         ? TZX_PILOT_COUNT_HEADER : TZX_PILOT_COUNT_DATA;
 
-    /* pilot ton */
     for ( uint16_t i = 0; i < pilot_count; i++ ) {
-        if ( EXIT_FAILURE == tzx_add_pulse ( vs, TZX_PILOT_PULSE_LENGTH, 1, config ) ) goto fail;
-        if ( EXIT_FAILURE == tzx_add_pulse ( vs, TZX_PILOT_PULSE_LENGTH, 0, config ) ) goto fail;
+        if ( EXIT_FAILURE == tzx_add_pulse ( vs, TZX_PILOT_PULSE_LENGTH, &lv, config ) ) goto fail;
     }
 
-    /* sync pulzy */
-    if ( EXIT_FAILURE == tzx_add_pulse ( vs, TZX_SYNC1_PULSE_LENGTH, 1, config ) ) goto fail;
-    if ( EXIT_FAILURE == tzx_add_pulse ( vs, TZX_SYNC2_PULSE_LENGTH, 0, config ) ) goto fail;
+    if ( EXIT_FAILURE == tzx_add_pulse ( vs, TZX_SYNC1_PULSE_LENGTH, &lv, config ) ) goto fail;
+    if ( EXIT_FAILURE == tzx_add_pulse ( vs, TZX_SYNC2_PULSE_LENGTH, &lv, config ) ) goto fail;
 
-    /* data */
     if ( EXIT_FAILURE == tzx_add_data_bits ( vs, block->data, block->data_length, 8,
-                                              TZX_ZERO_BIT_PULSE_LENGTH, TZX_ONE_BIT_PULSE_LENGTH, config ) ) goto fail;
+                                              TZX_ZERO_BIT_PULSE_LENGTH, TZX_ONE_BIT_PULSE_LENGTH, &lv, config ) ) goto fail;
 
-    /* pauza */
-    if ( EXIT_FAILURE == tzx_add_pause_to_vstream ( vs, block->pause_ms, config ) ) goto fail;
+    if ( EXIT_FAILURE == tzx_add_pause_to_vstream ( vs, block->pause_ms, &lv, config ) ) goto fail;
 
+    *level = lv;
     *err = TZX_OK;
     return vs;
 
@@ -460,33 +490,33 @@ fail:
 }
 
 
-st_CMT_VSTREAM* tzx_generate_turbo_speed ( const st_TZX_TURBO_SPEED *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+/**
+ * @brief Generátor bloku 0x11 s úrovní signálu (pilot = pilot_count pulzů).
+ * @param block Naparsovaný blok. @param config Konfigurace.
+ * @param[in,out] level Aktuální úroveň; mění se jen při úspěchu.
+ * @param err Výstupní chybový kód.
+ * @return Nový vstream, nebo NULL při chybě.
+ */
+static st_CMT_VSTREAM* gen_turbo_speed ( const st_TZX_TURBO_SPEED *block, const st_TZX_CONFIG *config,
+                                         uint8_t *level, en_TZX_ERROR *err ) {
 
-    en_TZX_ERROR local_err = TZX_OK;
-    if ( !err ) err = &local_err;
-
-    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
-
-    st_CMT_VSTREAM *vs = tzx_create_vstream ( config );
+    uint8_t lv = *level ? 1 : 0;
+    st_CMT_VSTREAM *vs = tzx_create_vstream ( config, lv );
     if ( !vs ) { *err = TZX_ERROR_ALLOC; return NULL; }
 
-    /* pilot ton */
     for ( uint16_t i = 0; i < block->pilot_count; i++ ) {
-        if ( EXIT_FAILURE == tzx_add_pulse ( vs, block->pilot_pulse, 1, config ) ) goto fail;
-        if ( EXIT_FAILURE == tzx_add_pulse ( vs, block->pilot_pulse, 0, config ) ) goto fail;
+        if ( EXIT_FAILURE == tzx_add_pulse ( vs, block->pilot_pulse, &lv, config ) ) goto fail;
     }
 
-    /* sync pulzy */
-    if ( EXIT_FAILURE == tzx_add_pulse ( vs, block->sync1_pulse, 1, config ) ) goto fail;
-    if ( EXIT_FAILURE == tzx_add_pulse ( vs, block->sync2_pulse, 0, config ) ) goto fail;
+    if ( EXIT_FAILURE == tzx_add_pulse ( vs, block->sync1_pulse, &lv, config ) ) goto fail;
+    if ( EXIT_FAILURE == tzx_add_pulse ( vs, block->sync2_pulse, &lv, config ) ) goto fail;
 
-    /* data */
     if ( EXIT_FAILURE == tzx_add_data_bits ( vs, block->data, block->data_length, block->used_bits,
-                                              block->zero_pulse, block->one_pulse, config ) ) goto fail;
+                                              block->zero_pulse, block->one_pulse, &lv, config ) ) goto fail;
 
-    /* pauza */
-    if ( EXIT_FAILURE == tzx_add_pause_to_vstream ( vs, block->pause_ms, config ) ) goto fail;
+    if ( EXIT_FAILURE == tzx_add_pause_to_vstream ( vs, block->pause_ms, &lv, config ) ) goto fail;
 
+    *level = lv;
     *err = TZX_OK;
     return vs;
 
@@ -497,22 +527,25 @@ fail:
 }
 
 
-st_CMT_VSTREAM* tzx_generate_pure_tone ( const st_TZX_PURE_TONE *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+/**
+ * @brief Generátor bloku 0x12 s úrovní signálu.
+ * @param block Naparsovaný blok. @param config Konfigurace.
+ * @param[in,out] level Aktuální úroveň; mění se jen při úspěchu.
+ * @param err Výstupní chybový kód.
+ * @return Nový vstream, nebo NULL při chybě. Při 0 pulzech vrátí vstream s 0 vzorky.
+ */
+static st_CMT_VSTREAM* gen_pure_tone ( const st_TZX_PURE_TONE *block, const st_TZX_CONFIG *config,
+                                       uint8_t *level, en_TZX_ERROR *err ) {
 
-    en_TZX_ERROR local_err = TZX_OK;
-    if ( !err ) err = &local_err;
-
-    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
-
-    st_CMT_VSTREAM *vs = tzx_create_vstream ( config );
+    uint8_t lv = *level ? 1 : 0;
+    st_CMT_VSTREAM *vs = tzx_create_vstream ( config, lv );
     if ( !vs ) { *err = TZX_ERROR_ALLOC; return NULL; }
 
-    /* pulzy alternuji high/low - kazdy pulz je half-period */
     for ( uint16_t i = 0; i < block->pulse_count; i++ ) {
-        int level = ( i % 2 == 0 ) ? 1 : 0;
-        if ( EXIT_FAILURE == tzx_add_pulse ( vs, block->pulse_length, level, config ) ) goto fail;
+        if ( EXIT_FAILURE == tzx_add_pulse ( vs, block->pulse_length, &lv, config ) ) goto fail;
     }
 
+    if ( block->pulse_count ) *level = lv;   /* blok bez pulzů úroveň nemění */
     *err = TZX_OK;
     return vs;
 
@@ -523,23 +556,26 @@ fail:
 }
 
 
-st_CMT_VSTREAM* tzx_generate_pulse_sequence ( const st_TZX_PULSE_SEQUENCE *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+/**
+ * @brief Generátor bloku 0x13 s úrovní signálu.
+ * @param block Naparsovaný blok. @param config Konfigurace.
+ * @param[in,out] level Aktuální úroveň; mění se jen při úspěchu.
+ * @param err Výstupní chybový kód.
+ * @return Nový vstream, nebo NULL při chybě.
+ */
+static st_CMT_VSTREAM* gen_pulse_sequence ( const st_TZX_PULSE_SEQUENCE *block, const st_TZX_CONFIG *config,
+                                            uint8_t *level, en_TZX_ERROR *err ) {
 
-    en_TZX_ERROR local_err = TZX_OK;
-    if ( !err ) err = &local_err;
-
-    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
-
-    st_CMT_VSTREAM *vs = tzx_create_vstream ( config );
+    uint8_t lv = *level ? 1 : 0;
+    st_CMT_VSTREAM *vs = tzx_create_vstream ( config, lv );
     if ( !vs ) { *err = TZX_ERROR_ALLOC; return NULL; }
 
-    /* kazdy pulz alternuje uroven */
     for ( uint8_t i = 0; i < block->pulse_count; i++ ) {
-        int level = ( i % 2 == 0 ) ? 1 : 0;
         uint16_t pulse_len = read_le16 ( (const uint8_t*) &block->pulses[i] );
-        if ( EXIT_FAILURE == tzx_add_pulse ( vs, pulse_len, level, config ) ) goto fail;
+        if ( EXIT_FAILURE == tzx_add_pulse ( vs, pulse_len, &lv, config ) ) goto fail;
     }
 
+    if ( block->pulse_count ) *level = lv;   /* blok bez pulzů úroveň nemění */
     *err = TZX_OK;
     return vs;
 
@@ -550,23 +586,27 @@ fail:
 }
 
 
-st_CMT_VSTREAM* tzx_generate_pure_data ( const st_TZX_PURE_DATA *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+/**
+ * @brief Generátor bloku 0x14 s úrovní signálu (data bez pilotu a sync, pak pauza).
+ * @param block Naparsovaný blok. @param config Konfigurace.
+ * @param[in,out] level Aktuální úroveň; mění se jen při úspěchu.
+ * @param err Výstupní chybový kód.
+ * @return Nový vstream, nebo NULL při chybě.
+ */
+static st_CMT_VSTREAM* gen_pure_data ( const st_TZX_PURE_DATA *block, const st_TZX_CONFIG *config,
+                                       uint8_t *level, en_TZX_ERROR *err ) {
 
-    en_TZX_ERROR local_err = TZX_OK;
-    if ( !err ) err = &local_err;
-
-    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
-
-    st_CMT_VSTREAM *vs = tzx_create_vstream ( config );
+    /* bez dat žádný pulz: pauza od úrovně volajícího (po pauze bez 1 ms vysoko) */
+    uint8_t lv = block->data_length ? ( *level ? 1 : 0 ) : tzx_level_norm ( *level );
+    st_CMT_VSTREAM *vs = tzx_create_vstream ( config, lv == 1 );
     if ( !vs ) { *err = TZX_ERROR_ALLOC; return NULL; }
 
-    /* data bity (bez pilot/sync) */
     if ( EXIT_FAILURE == tzx_add_data_bits ( vs, block->data, block->data_length, block->used_bits,
-                                              block->zero_pulse, block->one_pulse, config ) ) goto fail;
+                                              block->zero_pulse, block->one_pulse, &lv, config ) ) goto fail;
 
-    /* pauza */
-    if ( EXIT_FAILURE == tzx_add_pause_to_vstream ( vs, block->pause_ms, config ) ) goto fail;
+    if ( EXIT_FAILURE == tzx_add_pause_to_vstream ( vs, block->pause_ms, &lv, config ) ) goto fail;
 
+    if ( block->data_length || block->pause_ms ) *level = lv;   /* blok bez signálu úroveň nemění */
     *err = TZX_OK;
     return vs;
 
@@ -577,14 +617,25 @@ fail:
 }
 
 
-st_CMT_VSTREAM* tzx_generate_direct_recording ( const st_TZX_DIRECT_RECORDING *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+/**
+ * @brief Generátor bloku 0x15 s úrovní signálu.
+ *
+ * Úrovně vzorků určují bity dat (0 = nízká, 1 = vysoká, MSb první),
+ * sousední stejné bity se slučují do jednoho pulzu. Po posledním bitu je
+ * aktuální úroveň jeho opakem (bez dat se nemění), pak pauza.
+ *
+ * @param block Naparsovaný blok. @param config Konfigurace.
+ * @param[in,out] level Aktuální úroveň; mění se jen při úspěchu.
+ * @param err Výstupní chybový kód.
+ * @return Nový vstream, nebo NULL při chybě.
+ */
+static st_CMT_VSTREAM* gen_direct_recording ( const st_TZX_DIRECT_RECORDING *block, const st_TZX_CONFIG *config,
+                                              uint8_t *level, en_TZX_ERROR *err ) {
 
-    en_TZX_ERROR local_err = TZX_OK;
-    if ( !err ) err = &local_err;
-
-    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
-
-    st_CMT_VSTREAM *vs = tzx_create_vstream ( config );
+    uint8_t lv = tzx_level_norm ( *level );   /* bez dat zůstane (pauza od úrovně volajícího) */
+    /* vstream začíná úrovní prvního vzorku (jinak by vznikl prázdný první event) */
+    int start = ( block->data_length > 0 ) ? ( ( block->data[0] & 0x80 ) ? 1 : 0 ) : ( lv == 1 );
+    st_CMT_VSTREAM *vs = tzx_create_vstream ( config, start );
     if ( !vs ) { *err = TZX_ERROR_ALLOC; return NULL; }
 
     uint32_t rate = config->sample_rate ? config->sample_rate : CMTSTREAM_DEFAULT_RATE;
@@ -592,11 +643,6 @@ st_CMT_VSTREAM* tzx_generate_direct_recording ( const st_TZX_DIRECT_RECORDING *b
     uint32_t samples_per_bit = (uint32_t) ( (double) block->tstates_per_sample * rate / clock + 0.5 );
     if ( samples_per_bit == 0 ) samples_per_bit = 1;
 
-    /*
-     * Kazdy bit = jedna uroven signalu (0=low, 1=high), MSb first.
-     * Sousedni bity se stejnou urovni se slucuji do jednoho pulzu
-     * pro efektivnejsi RLE kodovani ve vstreamu.
-     */
     int current_level = -1;
     uint32_t current_samples = 0;
 
@@ -605,16 +651,16 @@ st_CMT_VSTREAM* tzx_generate_direct_recording ( const st_TZX_DIRECT_RECORDING *b
         int bits = ( i == block->data_length - 1 ) ? block->used_bits : 8;
 
         for ( int b = 0; b < bits; b++ ) {
-            int level = ( byte & 0x80 ) ? 1 : 0;
+            int bit_level = ( byte & 0x80 ) ? 1 : 0;
 
-            if ( level == current_level ) {
+            if ( bit_level == current_level ) {
                 current_samples += samples_per_bit;
             } else {
-                /* zapsat predchozi pulz */
+                /* zapsat předchozí pulz */
                 if ( current_level >= 0 && current_samples > 0 ) {
                     if ( EXIT_FAILURE == cmt_vstream_add_value ( vs, current_level, current_samples ) ) goto fail;
                 }
-                current_level = level;
+                current_level = bit_level;
                 current_samples = samples_per_bit;
             }
 
@@ -622,14 +668,15 @@ st_CMT_VSTREAM* tzx_generate_direct_recording ( const st_TZX_DIRECT_RECORDING *b
         }
     }
 
-    /* posledni pulz */
+    /* poslední pulz; další blok začne hranou (opak posledního vzorku) */
     if ( current_level >= 0 && current_samples > 0 ) {
         if ( EXIT_FAILURE == cmt_vstream_add_value ( vs, current_level, current_samples ) ) goto fail;
+        lv = (uint8_t) !current_level;
     }
 
-    /* pauza */
-    if ( EXIT_FAILURE == tzx_add_pause_to_vstream ( vs, block->pause_ms, config ) ) goto fail;
+    if ( EXIT_FAILURE == tzx_add_pause_to_vstream ( vs, block->pause_ms, &lv, config ) ) goto fail;
 
+    *level = lv;
     *err = TZX_OK;
     return vs;
 
@@ -640,25 +687,145 @@ fail:
 }
 
 
-st_CMT_VSTREAM* tzx_generate_pause ( uint16_t pause_ms, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+/**
+ * @brief Generátor pauzy s úrovní signálu.
+ * @param pause_ms Pauza v ms (0 = žádný stream, úroveň beze změny).
+ * @param config Konfigurace.
+ * @param[in,out] level Aktuální úroveň; mění se jen při úspěchu.
+ * @param err Výstupní chybový kód.
+ * @return Nový vstream, nebo NULL při chybě a u pauzy 0 (err TZX_OK).
+ */
+static st_CMT_VSTREAM* gen_pause ( uint16_t pause_ms, const st_TZX_CONFIG *config, uint8_t *level, en_TZX_ERROR *err ) {
 
-    en_TZX_ERROR local_err = TZX_OK;
-    if ( !err ) err = &local_err;
-
-    if ( !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
     if ( pause_ms == 0 ) { *err = TZX_OK; return NULL; }
 
-    st_CMT_VSTREAM *vs = tzx_create_vstream ( config );
+    uint8_t lv = tzx_level_norm ( *level );
+    st_CMT_VSTREAM *vs = tzx_create_vstream ( config, lv == 1 );
     if ( !vs ) { *err = TZX_ERROR_ALLOC; return NULL; }
 
-    if ( EXIT_FAILURE == tzx_add_pause_to_vstream ( vs, pause_ms, config ) ) {
+    if ( EXIT_FAILURE == tzx_add_pause_to_vstream ( vs, pause_ms, &lv, config ) ) {
         cmt_vstream_destroy ( vs );
         *err = TZX_ERROR_STREAM_CREATE;
         return NULL;
     }
 
+    *level = lv;
     *err = TZX_OK;
     return vs;
+}
+
+
+st_CMT_VSTREAM* tzx_generate_block ( const st_TZX_BLOCK *block, const st_TZX_CONFIG *config, uint8_t *level,
+                                     en_TZX_ERROR *err ) {
+
+    en_TZX_ERROR local_err = TZX_OK;
+    if ( !err ) err = &local_err;
+
+    if ( !block || !config || !level || ( !block->data && block->length ) ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
+
+    switch ( block->id ) {
+        case TZX_BLOCK_ID_STANDARD_SPEED: {
+            st_TZX_STANDARD_SPEED p;
+            if ( ( *err = tzx_parse_standard_speed ( block->data, block->length, &p ) ) != TZX_OK ) return NULL;
+            return gen_standard_speed ( &p, config, level, err );
+        }
+        case TZX_BLOCK_ID_TURBO_SPEED: {
+            st_TZX_TURBO_SPEED p;
+            if ( ( *err = tzx_parse_turbo_speed ( block->data, block->length, &p ) ) != TZX_OK ) return NULL;
+            return gen_turbo_speed ( &p, config, level, err );
+        }
+        case TZX_BLOCK_ID_PURE_TONE: {
+            st_TZX_PURE_TONE p;
+            if ( ( *err = tzx_parse_pure_tone ( block->data, block->length, &p ) ) != TZX_OK ) return NULL;
+            return gen_pure_tone ( &p, config, level, err );
+        }
+        case TZX_BLOCK_ID_PULSE_SEQUENCE: {
+            st_TZX_PULSE_SEQUENCE p;
+            if ( ( *err = tzx_parse_pulse_sequence ( block->data, block->length, &p ) ) != TZX_OK ) return NULL;
+            return gen_pulse_sequence ( &p, config, level, err );
+        }
+        case TZX_BLOCK_ID_PURE_DATA: {
+            st_TZX_PURE_DATA p;
+            if ( ( *err = tzx_parse_pure_data ( block->data, block->length, &p ) ) != TZX_OK ) return NULL;
+            return gen_pure_data ( &p, config, level, err );
+        }
+        case TZX_BLOCK_ID_DIRECT_RECORDING: {
+            st_TZX_DIRECT_RECORDING p;
+            if ( ( *err = tzx_parse_direct_recording ( block->data, block->length, &p ) ) != TZX_OK ) return NULL;
+            return gen_direct_recording ( &p, config, level, err );
+        }
+        case TZX_BLOCK_ID_PAUSE: {
+            st_TZX_PAUSE p;
+            if ( ( *err = tzx_parse_pause ( block->data, block->length, &p ) ) != TZX_OK ) return NULL;
+            return gen_pause ( p.pause_ms, config, level, err );
+        }
+        default:
+            *err = TZX_ERROR_UNSUPPORTED;
+            return NULL;
+    }
+}
+
+
+st_CMT_VSTREAM* tzx_generate_standard_speed ( const st_TZX_STANDARD_SPEED *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+    en_TZX_ERROR local_err = TZX_OK;
+    if ( !err ) err = &local_err;
+    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
+    uint8_t lv = 0;
+    return gen_standard_speed ( block, config, &lv, err );
+}
+
+
+st_CMT_VSTREAM* tzx_generate_turbo_speed ( const st_TZX_TURBO_SPEED *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+    en_TZX_ERROR local_err = TZX_OK;
+    if ( !err ) err = &local_err;
+    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
+    uint8_t lv = 0;
+    return gen_turbo_speed ( block, config, &lv, err );
+}
+
+
+st_CMT_VSTREAM* tzx_generate_pure_tone ( const st_TZX_PURE_TONE *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+    en_TZX_ERROR local_err = TZX_OK;
+    if ( !err ) err = &local_err;
+    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
+    uint8_t lv = 0;
+    return gen_pure_tone ( block, config, &lv, err );
+}
+
+
+st_CMT_VSTREAM* tzx_generate_pulse_sequence ( const st_TZX_PULSE_SEQUENCE *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+    en_TZX_ERROR local_err = TZX_OK;
+    if ( !err ) err = &local_err;
+    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
+    uint8_t lv = 0;
+    return gen_pulse_sequence ( block, config, &lv, err );
+}
+
+
+st_CMT_VSTREAM* tzx_generate_pure_data ( const st_TZX_PURE_DATA *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+    en_TZX_ERROR local_err = TZX_OK;
+    if ( !err ) err = &local_err;
+    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
+    uint8_t lv = 0;
+    return gen_pure_data ( block, config, &lv, err );
+}
+
+
+st_CMT_VSTREAM* tzx_generate_direct_recording ( const st_TZX_DIRECT_RECORDING *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+    en_TZX_ERROR local_err = TZX_OK;
+    if ( !err ) err = &local_err;
+    if ( !block || !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
+    uint8_t lv = 0;
+    return gen_direct_recording ( block, config, &lv, err );
+}
+
+
+st_CMT_VSTREAM* tzx_generate_pause ( uint16_t pause_ms, const st_TZX_CONFIG *config, en_TZX_ERROR *err ) {
+    en_TZX_ERROR local_err = TZX_OK;
+    if ( !err ) err = &local_err;
+    if ( !config ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
+    uint8_t lv = 0;
+    return gen_pause ( pause_ms, config, &lv, err );
 }
 
 
@@ -777,6 +944,12 @@ en_TZX_ERROR tzx_read_header ( st_HANDLER *h, st_TZX_HEADER *header ) {
         return TZX_ERROR_INVALID_SIGNATURE;
     }
 
+    /* major verze: TZX i TMZ používají 1 (TZX 1.20, TMZ 1.0/1.1) */
+    if ( header->ver_major != 1 ) {
+        g_tzx_error_cb ( __func__, __LINE__, "Unsupported major version %u (expected 1)\n", header->ver_major );
+        return TZX_ERROR_INVALID_VERSION;
+    }
+
     return TZX_OK;
 }
 
@@ -821,7 +994,9 @@ en_TZX_ERROR tzx_write_header ( st_HANDLER *h, const st_TZX_HEADER *header ) {
  * @param[out] block_data_length Vystupni delka dat bloku.
  * @param[out] total_consumed Celkovy pocet bajtu spotrebovanych timto blokem
  *             (vcetne hlavicky, bez ID bajtu).
- * @return TZX_OK pri uspechu, jinak chybovy kod.
+ * @return TZX_OK pri uspechu, TZX_ERROR_IO pokud délková pole nejdou
+ *         přečíst (useknutý soubor), TZX_ERROR_INVALID_BLOCK pokud by
+ *         výsledná délka přetekla uint32_t.
  */
 static en_TZX_ERROR tzx_read_block_length ( st_HANDLER *h, uint32_t offset, uint8_t id,
                                              uint32_t *block_data_length, uint32_t *total_consumed ) {
@@ -1020,15 +1195,18 @@ static en_TZX_ERROR tzx_read_block_length ( st_HANDLER *h, uint32_t offset, uint
             return TZX_OK;
         }
 
-        /* Blok 0x35 - Custom Info: 10B ASCII ID + 4B DWORD delka + data */
+        /* Blok 0x35 - Custom Info: 16B ASCII ID + 4B DWORD délka + data (TZX v1.01+) */
         case TZX_BLOCK_ID_CUSTOM_INFO:
         {
             uint32_t length;
-            if ( EXIT_SUCCESS != generic_driver_read ( h, offset + 10, &length, 4 ) ) {
+            if ( EXIT_SUCCESS != generic_driver_read ( h, offset + TZX_CUSTOM_INFO_ID_LENGTH, &length, 4 ) ) {
                 return TZX_ERROR_IO;
             }
             length = endianity_bswap32_LE ( length );
-            *block_data_length = 10 + 4 + length;
+            if ( length > UINT32_MAX - ( TZX_CUSTOM_INFO_ID_LENGTH + 4 ) ) {
+                return TZX_ERROR_INVALID_BLOCK;
+            }
+            *block_data_length = TZX_CUSTOM_INFO_ID_LENGTH + 4 + length;
             *total_consumed = *block_data_length;
             return TZX_OK;
         }
@@ -1049,6 +1227,9 @@ static en_TZX_ERROR tzx_read_block_length ( st_HANDLER *h, uint32_t offset, uint
                 return TZX_ERROR_IO;
             }
             length = endianity_bswap32_LE ( length );
+            if ( length > UINT32_MAX - 4 ) {
+                return TZX_ERROR_INVALID_BLOCK;
+            }
             *block_data_length = length;
             *total_consumed = 4 + length;
             return TZX_OK;
@@ -1062,14 +1243,45 @@ static en_TZX_ERROR tzx_read_block_length ( st_HANDLER *h, uint32_t offset, uint
 /* ========================================================================= */
 
 /**
+ * @brief Uvolní rozpracovaný seznam bloků a strukturu souboru při chybě načítání.
+ *
+ * @param blocks Pole bloků (může být NULL).
+ * @param count Počet bloků s platnými (nebo NULL) ukazateli na data.
+ * @param file Struktura souboru (může být NULL).
+ */
+static void tzx_load_cleanup ( st_TZX_BLOCK *blocks, uint32_t count, st_TZX_FILE *file ) {
+    if ( blocks ) {
+        for ( uint32_t i = 0; i < count; i++ ) {
+            if ( blocks[i].data ) g_tzx_allocator->free ( blocks[i].data );
+        }
+        g_tzx_allocator->free ( blocks );
+    }
+    if ( file ) g_tzx_allocator->free ( file );
+}
+
+
+/**
  * @brief Nacte cely TZX/TMZ soubor (hlavicku + vsechny bloky) z handleru.
  *
  * Prochazi bloky od offsetu 10 (za hlavickou) az do konce souboru.
  * Kazdy blok alokuje samostatne a uklada jeho surova data.
  * Pole bloku se dynamicky zvetsuje.
  *
+ * Konec souboru je platný jen na hranici bloku (před bajtem ID). Před
+ * alokací dat bloku se ověří, že soubor obsahuje jeho poslední bajt, takže
+ * nesmyslná délka v poškozeném souboru nevede k obří alokaci. Při chybě
+ * se nikdy nevrací částečně načtený soubor.
+ *
  * @param h Otevreny handler s TZX/TMZ daty.
- * @param err Vystupni chybovy kod (muze byt NULL).
+ * @param err Vystupni chybovy kod (muze byt NULL):
+ *            - TZX_OK při úspěchu,
+ *            - TZX_ERROR_UNEXPECTED_EOF pro blok useknutý v délce nebo datech,
+ *            - TZX_ERROR_INVALID_BLOCK pro délku bloku přetékající 32bit offset,
+ *            - TZX_ERROR_ALLOC při selhání alokace,
+ *            - TZX_ERROR_IO / TZX_ERROR_INVALID_SIGNATURE
+ *              jen z hlavičky souboru (tzx_read_header) nebo při NULL handleru.
+ *            Selhání čtení uvnitř bloků (useknutí i I/O chyba média) se
+ *            hlásí jako TZX_ERROR_UNEXPECTED_EOF - file driver je nerozliší.
  * @return Ukazatel na novou st_TZX_FILE strukturu, nebo NULL pri chybe.
  *
  * @pre h musi byt otevreny a pripraveny ke cteni.
@@ -1132,8 +1344,29 @@ st_TZX_FILE* tzx_load ( st_HANDLER *h, en_TZX_ERROR *err ) {
 
         *err = tzx_read_block_length ( h, offset, id, &block_data_length, &total_consumed );
         if ( *err != TZX_OK ) {
-            g_tzx_error_cb ( __func__, __LINE__, "Failed to read block 0x%02X length at offset %u\n", id, offset );
-            break;
+            g_tzx_error_cb ( __func__, __LINE__, "Invalid or truncated block 0x%02X length at offset %u\n", id, offset );
+            tzx_load_cleanup ( blocks, count, file );
+            if ( *err != TZX_ERROR_INVALID_BLOCK ) *err = TZX_ERROR_UNEXPECTED_EOF;
+            return NULL;
+        }
+
+        /* ochrana proti přetečení offsetu */
+        if ( total_consumed > UINT32_MAX - offset ) {
+            g_tzx_error_cb ( __func__, __LINE__, "Block 0x%02X length %u overflows file offset\n", id, total_consumed );
+            tzx_load_cleanup ( blocks, count, file );
+            *err = TZX_ERROR_INVALID_BLOCK;
+            return NULL;
+        }
+
+        /* sonda posledního bajtu bloku - neexistující data se nealokují */
+        if ( total_consumed > 0 ) {
+            uint8_t probe;
+            if ( EXIT_SUCCESS != generic_driver_read ( h, offset + total_consumed - 1, &probe, 1 ) ) {
+                g_tzx_error_cb ( __func__, __LINE__, "Block 0x%02X truncated: needs %u bytes at offset %u\n", id, total_consumed, offset );
+                tzx_load_cleanup ( blocks, count, file );
+                *err = TZX_ERROR_UNEXPECTED_EOF;
+                return NULL;
+            }
         }
 
         /* zvetseni pole pokud je potreba */
@@ -1142,11 +1375,7 @@ st_TZX_FILE* tzx_load ( st_HANDLER *h, en_TZX_ERROR *err ) {
             st_TZX_BLOCK *new_blocks = g_tzx_allocator->alloc0 ( capacity * sizeof ( st_TZX_BLOCK ) );
             if ( !new_blocks ) {
                 g_tzx_error_cb ( __func__, __LINE__, "Failed to grow block array\n" );
-                for ( uint32_t i = 0; i < count; i++ ) {
-                    if ( blocks[i].data ) g_tzx_allocator->free ( blocks[i].data );
-                }
-                g_tzx_allocator->free ( blocks );
-                g_tzx_allocator->free ( file );
+                tzx_load_cleanup ( blocks, count, file );
                 *err = TZX_ERROR_ALLOC;
                 return NULL;
             }
@@ -1164,11 +1393,7 @@ st_TZX_FILE* tzx_load ( st_HANDLER *h, en_TZX_ERROR *err ) {
             blocks[count].data = g_tzx_allocator->alloc ( total_consumed );
             if ( !blocks[count].data ) {
                 g_tzx_error_cb ( __func__, __LINE__, "Failed to allocate block data (%u bytes)\n", total_consumed );
-                for ( uint32_t i = 0; i < count; i++ ) {
-                    if ( blocks[i].data ) g_tzx_allocator->free ( blocks[i].data );
-                }
-                g_tzx_allocator->free ( blocks );
-                g_tzx_allocator->free ( file );
+                tzx_load_cleanup ( blocks, count, file );
                 *err = TZX_ERROR_ALLOC;
                 return NULL;
             }
@@ -1176,7 +1401,10 @@ st_TZX_FILE* tzx_load ( st_HANDLER *h, en_TZX_ERROR *err ) {
             if ( EXIT_SUCCESS != generic_driver_read ( h, offset, blocks[count].data, total_consumed ) ) {
                 g_tzx_error_cb ( __func__, __LINE__, "Failed to read block 0x%02X data at offset %u\n", id, offset );
                 g_tzx_allocator->free ( blocks[count].data );
-                break;
+                blocks[count].data = NULL;
+                tzx_load_cleanup ( blocks, count, file );
+                *err = TZX_ERROR_UNEXPECTED_EOF;
+                return NULL;
             }
 
             blocks[count].length = total_consumed;
@@ -1467,6 +1695,9 @@ en_TZX_ERROR tzx_block_create_archive_info ( const st_TZX_ARCHIVE_ENTRY *entries
         if ( slen > 255 ) slen = 255;
         records_size += 2 + (uint32_t) slen; /* 1B type + 1B len + text */
     }
+
+    /* WORD délky těla (count + záznamy) neumí víc než 65535 B (dřív zápis za buffer) */
+    if ( 1 + records_size > 0xFFFFu ) return TZX_ERROR_INVALID_BLOCK;
 
     /* format bloku 0x32: [2B celkova delka za WORD][1B count][zaznamy...] */
     uint16_t body_length = (uint16_t) ( 1 + records_size );

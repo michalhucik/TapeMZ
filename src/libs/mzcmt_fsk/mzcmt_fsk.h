@@ -1,13 +1,13 @@
 /**
  * @file   mzcmt_fsk.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  FSK (Frequency Shift Keying) koder pro kazetovy zaznam Sharp MZ.
  *
  * Knihovna implementuje FSK modulaci pouzivnou programem mzf2snd (mzftools).
  * FSK koduje bity zmenou frekvence signalu: bit "1" = delsi pulz (nizsi
  * frekvence), bit "0" = kratsi pulz (vyssi frekvence). Dekoder na Z80
- * kalibruje casovani z leader tonu a pouziva adaptivni prahovou hodnotu.
+ * rozlisuje pulzy pevnym prahem z tabulky podle urovne rychlosti.
  *
  * @par Struktura FSK signalu:
  * @verbatim
@@ -25,9 +25,9 @@
  * predpocitan a ulozen primo v kodu loaderu (self-modifying Z80 kod).
  *
  * @par Referencni implementace:
- * - docs/detailne-prozkoumat/mzftools-code/src/coder.c (fsk_pulse, fsk_encode_data_byte)
- * - docs/detailne-prozkoumat/mzftools-code/src/formats.c (fsk_body)
- * - docs/detailne-prozkoumat/mzftools-code/src/fsk.asm (Z80 dekoder)
+ * - mzftools: src/coder.c (fsk_pulse, fsk_encode_data_byte)
+ * - mzftools: src/formats.c (fsk_body)
+ * - mzftools: src/fsk.asm (Z80 dekoder)
  *
  * @par Licence:
  * Odvozeno z projektu MZFTools v0.2.2 (mz-fuzzy@users.sf.net),
@@ -163,9 +163,9 @@ extern "C" {
      *
      * @note FSK kodovani nepridava stop bity za datove bajty (na rozdil
      *       od NORMAL FM). Checksum neni soucasti signalu.
-     * @note Pri velmi nizkych vzorkovacich frekvencich (< 8000 Hz) a vysokych
-     *       rychlostech (speed 4-6) nemusi byt dostatecne rozliseni pro
-     *       spravne casovani pulzu.
+     * @note Pri nizsich vzorkovacich frekvencich (v emulatoru uz 22050 Hz)
+     *       a vyssich rychlostech nemusi byt dostatecne rozliseni pro
+     *       spravne casovani pulzu (player zmerene necitelne kombinace odmitne).
      */
     extern st_CMT_VSTREAM* mzcmt_fsk_create_vstream (
         const uint8_t *data,
@@ -303,6 +303,11 @@ extern "C" {
      * @param type      Typ vystupniho streamu (bitstream/vstream).
      * @param rate      Vzorkovaci frekvence (Hz).
      * @return Novy stream, nebo NULL pri chybe.
+     *
+     * @note Čitelnost zavaděčem závisí na vzorkovací frekvenci: při 44100 Hz
+     *       prošly v emulátoru všechny úrovně, jinde jen některé
+     *       (měření v emulátoru). Player změřené nečitelné
+     *       kombinace odmítne; tato funkce frekvenci nekontroluje.
      */
     extern st_CMT_STREAM* mzcmt_fsk_create_tape_stream (
         const st_MZF_HEADER *original,
@@ -339,7 +344,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny mzcmt_fsk. */
-#define MZCMT_FSK_VERSION "1.0.0"
+#define MZCMT_FSK_VERSION "1.0.1"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny mzcmt_fsk.

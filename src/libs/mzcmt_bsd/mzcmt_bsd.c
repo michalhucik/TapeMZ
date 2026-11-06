@@ -1,13 +1,14 @@
 /**
  * @file   mzcmt_bsd.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
- * @brief  Implementace BSD/BRD koderu pro Sharp MZ.
+ * @version 1.1.1
+ * @brief  Implementace BSD/BRD kodéru TMZ v1.0 (jen pro TAPEMZ-V1-LEGACY, viz mzcmt_bsd.h).
  *
- * BSD/BRD je chunkovany datovy format pouzivany BASICem pro ukladani
- * dat na pasku (SAVE DATA, PRINT#, automaticke cteni). Pouziva
- * standardni NORMAL FM modulaci (1 bit na pulz, MSB first, stop bit
- * za kazdym bajtem).
+ * BSD/BRD je chunkovaný datový soubor BASICu (BASIC 1Z-016 WOPEN#/PRINT#).
+ * Používá NORMAL FM modulaci (1 bit na pulz, MSB first, start
+ * bit LONG před každým bajtem). Struktura v1.0 (tón jen před prvním kusem)
+ * BASIC za prvním kusem nepřečte; player používá profil
+ * BASIC-1Z016.
  *
  * Hlavicka se koduje stejne jako u standardniho MZF zaznamu
  * (LGAP + LTM + 2L + HDR + CHKH + 2L). Telo je rozdeleno do N
@@ -127,7 +128,8 @@ typedef struct st_bsd_pulses_length {
 /**
  * @brief Vychozi pulzni konstanty pro MZ-700, MZ-80K, MZ-80A.
  *
- * Symetricke hodnoty - shodne s mzcmt_turbo g_pulses_700.
+ * Symetrické hodnoty v1.0 bez doloženého zdroje - shodné
+ * s mzcmt_turbo g_pulses_700.
  */
 static const st_bsd_pulses_length g_pulses_700 = {
     { 0.000504, 0.000504 },   /* long: 504 us H + 504 us L */
@@ -138,8 +140,9 @@ static const st_bsd_pulses_length g_pulses_700 = {
 /**
  * @brief Vychozi pulzni konstanty pro MZ-800, MZ-1500.
  *
- * Symetricke hodnoty - shodne s mzcmt_turbo g_pulses_800.
- * ROM pouziva stejnou delay smycku pro obe poloviny pulzu.
+ * Symetrické hodnoty v1.0 - shodné s mzcmt_turbo g_pulses_800. ROM
+ * MZ-800 symetrické pulzy nezapisuje (ROM SAVE 844/920 a 1664/1750 T,
+ * změřeno v emulátoru).
  */
 static const st_bsd_pulses_length g_pulses_800 = {
     { 0.000498, 0.000498 },   /* long: 498 us H + 498 us L */
@@ -552,4 +555,14 @@ st_CMT_STREAM* mzcmt_bsd_create_stream (
 
 const char* mzcmt_bsd_version ( void ) {
     return MZCMT_BSD_VERSION;
+}
+
+int mzcmt_bsd_get_pulse_lengths ( en_MZCMT_BSD_PULSESET pulseset, double out[4] ) {
+    if ( !out || ( int ) pulseset < 0 || pulseset >= MZCMT_BSD_PULSESET_COUNT ) return EXIT_FAILURE;
+    const st_bsd_pulses_length *p = g_pulses[pulseset];
+    out[0] = p->long_pulse.high;
+    out[1] = p->long_pulse.low;
+    out[2] = p->short_pulse.high;
+    out[3] = p->short_pulse.low;
+    return EXIT_SUCCESS;
 }

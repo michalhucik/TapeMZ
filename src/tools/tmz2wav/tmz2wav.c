@@ -1,7 +1,7 @@
 /**
  * @file   tmz2wav.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.0
+ * @version 1.3.1
  * @brief  Konverzni utility TMZ/TZX -> WAV.
  *
  * Nacte TMZ nebo TZX soubor, prehaje vybrane (nebo vsechny) audio bloky
@@ -10,10 +10,18 @@
  * a pripojeni k existujicimu WAV souboru.
  *
  * Podporuje vsechny bloky, ktere TMZ player umi prehrat:
- * - MZ bloky 0x40 (Standard Data) a 0x41 (Turbo Data) pres mztape
+ * - MZ bloky 0x40, 0x41 a 0x45 přes převod na blok 0x46 (tmz_v1conv),
+ *   nepřevoditelné formáty 0x41 přes kodéry mzcmt_*
  * - TZX bloky 0x10-0x15 a 0x20 pres TZX knihovnu
+ * - blok 0x46 (MZ File, TMZ v1.1) přes generátor FM
  *
  * Ridici a informacni bloky jsou preskoceny.
+ *
+ * Když player odmítne vybraný blok jako nečitelný při zvolené vzorkovací
+ * frekvenci (TMZ_PLAYER_ERROR_UNREADABLE), WAV se neuloží a program
+ * skončí chybou: záznam bez bloku by se nenahrál. Jiná chyba vybraného
+ * bloku se vypíše, WAV se uloží bez něj a program skončí kódem 1.
+ * Bloky, které nejsou vybrané (--blocks), návratový kód neovlivní.
  *
  * @par Pouziti:
  * @code
@@ -62,7 +70,7 @@
 #include "libs/generic_driver/memory_driver.h"
 
 /** @brief Verze programu tmz2wav (z @version v hlavicce souboru). */
-#define TMZ2WAV_VERSION  "1.1.0"
+#define TMZ2WAV_VERSION  "1.3.1"
 
 
 /**
@@ -228,7 +236,9 @@ static void print_usage ( const char *prog_name ) {
  *
  * @param argc Pocet argumentu.
  * @param argv Pole argumentu.
- * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
+ * @return EXIT_SUCCESS při úspěchu, EXIT_FAILURE při chybě. Chyba je i vybraný
+ *         blok, který se nepřehrál: nečitelný blok (UNREADABLE) WAV neuloží,
+ *         jiná chyba bloku WAV uloží bez něj.
  */
 int main ( int argc, char *argv[] ) {
 
@@ -436,6 +446,8 @@ int main ( int argc, char *argv[] ) {
     uint32_t audio_blocks = 0;
     uint32_t skipped_blocks = 0;
     uint32_t error_blocks = 0;
+    uint32_t unreadable_blocks = 0;
+    uint32_t failed_selected = 0;   /* vybrané bloky, které se nepřehrály z jiného důvodu než UNREADABLE */
 
     st_TMZ_PLAYER_STATE state;
     tmz_player_state_init ( &state, file, &config );
@@ -479,6 +491,16 @@ int main ( int argc, char *argv[] ) {
                       bi, block->id, tmz_block_id_name ( block->id ),
                       tmz_player_error_string ( player_err ) );
             error_blocks++;
+            if ( !block_selection || block_selection[bi] ) {
+                if ( player_err == TMZ_PLAYER_ERROR_UNREADABLE ) unreadable_blocks++;
+                else failed_selected++;
+            }
+        }
+        else if ( tmz_player_state_stopped ( &state ) ) {
+            /* Pause 0 / 0x2A: zastavení pásky má smysl pro emulátor, WAV pokračuje */
+            uint32_t bi = state.last_played_block;
+            printf ( "  [%3u] 0x%02X %-25s    STOP TAPE (WAV continues)\n",
+                     bi, file->blocks[bi].id, tmz_block_id_name ( file->blocks[bi].id ) );
         }
         /* player_err == OK && stream == NULL: ridici/info blok */
     }
@@ -487,6 +509,15 @@ int main ( int argc, char *argv[] ) {
     if ( skipped_blocks > 0 ) printf ( ", Skipped: %u", skipped_blocks );
     if ( error_blocks > 0 ) printf ( ", Errors: %u", error_blocks );
     printf ( "\n" );
+
+    if ( unreadable_blocks > 0 ) {
+        fprintf ( stderr, "Error: %u block(s) not readable at %u Hz (see the messages above), WAV not saved\n",
+                  unreadable_blocks, sample_rate );
+        free ( block_selection );
+        cmt_vstream_destroy ( master );
+        tzx_free ( file );
+        return EXIT_FAILURE;
+    }
 
     if ( audio_blocks == 0 && !append_mode ) {
         fprintf ( stderr, "Error: no audio blocks to export\n" );
@@ -515,6 +546,13 @@ int main ( int argc, char *argv[] ) {
         printf ( "Saved  : %s\n", output_file );
     } else {
         fprintf ( stderr, "Error: failed to save WAV file '%s'\n", output_file );
+    }
+
+    /* vybraný selhaný blok (jiný než nečitelný, ten WAV neuloží výš): WAV bez něj, rc 1 */
+    if ( failed_selected > 0 ) {
+        fprintf ( stderr, "Error: %u block(s) failed to play (see above); the WAV does not contain them\n",
+                  failed_selected );
+        result = EXIT_FAILURE;
     }
 
     /* uklid - nerusit master pres cmt_stream_destroy, protoze wrapper je na stacku */

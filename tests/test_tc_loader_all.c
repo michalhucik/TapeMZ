@@ -28,6 +28,7 @@
  * GNU General Public License v3 (GPLv3)
  *
  * Copyright (C) 2026 Michal Hucik <hucik@ordoz.com>
+ * Bez tstdata/ vypíše SKIP a skončí 0 (tests/tstdata_skip.h).
  */
 
 #include <stdio.h>
@@ -38,6 +39,7 @@
 #include "libs/generic_driver/memory_driver.h"
 #include "libs/mzf/mzf.h"
 #include "libs/wav_analyzer/wav_analyzer.h"
+#include "tstdata_skip.h"
 
 
 /** @brief Cesta k testovaci WAV nahravce (relativne z build/). */
@@ -110,6 +112,7 @@ static int load_reference_mzf ( const char *path, uint8_t **out_body,
 
 
 int main ( int argc, char *argv[] ) {
+    if ( argc < 2 && tstdata_skip ( "test_tc_loader_all" ) ) return 0;   /* argv[1] dává vstup místo tstdata/ */
     const char *wav_path = g_wav_path;
     const char *ref_path = g_ref_mzf_path;
     int failures = 0;

@@ -21,6 +21,7 @@ tmzinfo <soubor.tmz|soubor.tzx>
 | Volba | Hodnoty | Výchozí | Popis |
 |-------|---------|---------|-------|
 | `--charset` | eu, jp, utf8-eu, utf8-jp | eu | Znaková sada Sharp MZ pro zobrazení názvu souboru (viz níže) |
+| `--lint` | - | - | U bloků 0x46 zkontrolovat rezervy čtecího bodu a shodu s registrem profilů; při varování návratový kód 1 |
 | `--version` | - | - | Zobrazit verzi programu |
 | `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 
@@ -59,14 +60,16 @@ Všechny informace se vypisují na standardní výstup.
 - Verze formátu (např. 1.0 pro TMZ, 1.20 pro TZX)
 - Celkový počet bloků
 
-### MZ bloky (0x40-0x45)
+### MZ bloky (0x40-0x46)
 
 - **0x40 MZ Standard Data** - cílový stroj, pulzní sada, pauza, MZF hlavička (název, typ, velikost, adresy)
-- **0x41 MZ Turbo Data** - formát (NORMAL/TURBO/FASTIPL/FSK/SLOW/DIRECT/CPM-TAPE), rychlost nebo custom pulseset (s délkami pulzů v us a odhadovanou Bd), MZF hlavička
+- **0x41 MZ Turbo Data** - formát (NORMAL/TURBO/FASTIPL/FSK/SLOW/DIRECT/CPM-TAPE), rychlost nebo custom pulseset (s délkami pulzů v us a odhadovanou Bd), MZF hlavička; u CPM-TAPE úroveň a rychlost, kterou ho přehraje převod na `PEZIK-2.0A`
+- **0x46 MZ File** - u části rodiny Manchester (CPM-TAPE) půlky bitu 0 a 1, pilot (počet a vzor), sync, flag, checksum, koncové bity, přenos, počet kontextů a pauza
 - **0x42 MZ Extra Body** - formát, rychlost, pauza, velikost těla
 - **0x43 MZ Machine Info** - stroj, CPU takt, verze ROM
 - **0x44 MZ Loader** - typ loaderu (TURBO/FASTIPL/FSK/SLOW/DIRECT), rychlost, velikost, MZF hlavička
-- **0x45 MZ BASIC Data** - stroj, pulzní sada, počet chunků, MZF hlavička
+- **0x45 MZ BASIC Data** - stroj, pulzní sada, počet kusů, MZF hlavička, profil, jako který ho player přehraje (`Played as: BASIC-1Z016`)
+- **0x46 MZ File** (TMZ v1.1) - profil zapisovače a jeho parametry, MZF hlavička, části: role, rodina, velikost dat, časová základna, pulzy, tón, tapemark, checksum, koncovka, kopie, počet kontextů, pauza, STOP, čtecí rutina a N. S `--lint` navíc rezervy čtecího bodu u částí s READER (nejméně 10 µs) a porovnání s blokem, který z téhož MZF sestaví registr profilů
 
 ### TZX bloky
 

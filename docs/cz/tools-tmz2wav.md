@@ -5,8 +5,14 @@ Používá TMZ player k přehrání vybraných (nebo všech) audio bloků
 a generování výsledného signálu.
 
 Podporuje všechny bloky, které TMZ player umí přehrát:
-- MZ bloky 0x40 (Standard Data) a 0x41 (Turbo Data) přes mztape kodéry
-- TZX bloky 0x10-0x15 a 0x20 přes TZX knihovnu
+- MZ bloky 0x40 (Standard Data), 0x41 (Turbo Data) a 0x45 (BASIC Data): převedou se
+  v paměti na blok 0x46 (TMZ v1.1); formáty, které převést nejde (FSK, SLOW, DIRECT
+  a další, viz tmzconv `--upgrade`), přes kodéry mzcmt_*. 0x41 CPM-TAPE
+  a 0x45 se převádějí vždy (0x45 jako `BASIC-1Z016`, s víc než 254 kusy se nepřehraje)
+- TZX bloky 0x10-0x15 a 0x20 přes TZX knihovnu; záznam ZX Spectrum (SINCLAIR) se
+  přehraje jako TZX blok 0x10/0x11. Blok 0x41 s formátem SINCLAIR player nepřehraje
+  a nástroje ho nevytvářejí
+- blok 0x46 (MZ File, TMZ v1.1) přes generátory FM a MANCHESTER
 
 Řídicí a informační bloky (0x21, 0x30, 0x32 atd.) jsou automaticky přeskočeny.
 
@@ -21,7 +27,7 @@ tmz2wav <vstup.tmz|vstup.tzx> <vystup.wav> [volby]
 | Volba | Hodnota | Výchozí | Popis |
 |-------|---------|---------|-------|
 | `--rate` | 8000-192000 | 44100 | Vzorkovací frekvence v Hz |
-| `--pulseset` | 700, 800, 80b | 800 | Výchozí pulzní sada |
+| `--pulseset` | 700, 800, 80b | 800 | Výchozí pulzní sada [ignorováno playerem] |
 | `--blocks` | specifikace | všechny | Výběr bloků k exportu |
 | `--append` | - | - | Připojit k existujícímu WAV souboru |
 | `--version` | - | - | Zobrazit verzi programu |
@@ -33,11 +39,15 @@ tmz2wav <vstup.tmz|vstup.tzx> <vystup.wav> [volby]
 znamenají přesnější reprodukci signálu, ale větší soubory.
 Běžné hodnoty: 22050, 44100, 48000.
 
-**--pulseset** - výchozí pulzní sada pro bloky, které ji nemají
-explicitně specifikovanou. Ovlivňuje časování pulzů:
-- `700` - MZ-700/80K/80A časování
-- `800` - MZ-800/1500 časování
-- `80b` - MZ-80B časování
+U bloku 0x46 player zkontroluje, zda čtecí rutina signál po převodu na
+vzorky přečte. Hrana pulzu se posune až o jeden vzorek, a u rychlých
+přenosů to při nízké frekvenci stačí k chybě čtení. Když blok nejde
+přečíst (např. TurboCopy 8:3 nebo 3:1 při 22050 Hz), WAV se neuloží
+a program skončí chybou; pomůže vyšší `--rate`. Při rezervě pod 10 µs
+program jen vypíše varování a WAV uloží.
+
+**--pulseset** - hodnotu (`700`, `800`, `80b`) program přijme a vypíše,
+player ji ale nepoužívá [ignorováno playerem]. Pulzní sadu bere z bloku.
 
 **--blocks** - výběr konkrétních bloků k exportu (indexy podle tmzinfo).
 Formát specifikace:
@@ -52,6 +62,13 @@ ovlivňuje pouze audio bloky.
 Existující WAV musí být mono PCM a jeho vzorkovací frekvence musí
 odpovídat `--rate` (nebo výchozí 44100 Hz). Pokud soubor neexistuje,
 program ohlásí chybu.
+
+### Návratový kód
+
+Program skončí kódem 1 při chybě voleb nebo vstupu, při bloku, který při
+zvolené `--rate` nejde přečíst (WAV se pak neuloží), a také při bloku,
+který se nepřehrál z jiného důvodu (např. nepodporovaný blok TZX). V tom
+případě se WAV uloží bez tohoto bloku.
 
 ## Příklady
 
@@ -71,12 +88,6 @@ Konverze TZX souboru (ZX Spectrum):
 
 ```
 tmz2wav spectrum.tzx spectrum.wav
-```
-
-Konverze s pulzní sadou MZ-700:
-
-```
-tmz2wav old_tape.tmz old_tape.wav --pulseset 700
 ```
 
 Konverze s nižší vzorkovací frekvencí (menší soubor):

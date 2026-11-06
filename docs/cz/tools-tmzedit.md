@@ -303,12 +303,12 @@ tmzedit set <soubor> <index> [--format <fmt>] [--speed <spd>] [--pulse <hodnoty>
 
 | Volba | Hodnoty | Popis |
 |-------|---------|-------|
-| `--format` | normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape | Formát záznamu |
+| `--format` | normal, turbo, fastipl, fsk, slow, direct | Formát záznamu. `sinclair` se odmítne: SINCLAIR je TZX blok 0x11, rychlost se mění `--sinclair-speed` na bloku 0x11. `cpm-tape` se odmítne: zapisuje se jako blok 0x46 (`mzf2tmz --format cpm-tape` nebo `--profile PEZIK-2.0A` / `IC-10.2-CPM`) |
 | `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14, nebo baudrate (napr. 2800) | Poměr rychlosti nebo baudrate v Bd (neplatný pro FSK/SLOW/SINCLAIR) |
 | `--fsk-speed` | 0-6 | Rychlostní úroveň FSK (pouze pro FSK formát) |
 | `--slow-speed` | 0-4 | Rychlostní úroveň SLOW (pouze pro SLOW formát) |
 | `--sinclair-speed` | 1381, 1772, 2074, 2487 | SINCLAIR rychlost v Bd (pouze pro blok 0x11) |
-| `--pulse` | long_h/long_l,short_h/short_l | Vlastní délky pulzů v us*100 jednotkách |
+| `--pulse` | long_h/long_l,short_h/short_l | Vlastní délky pulzů v jednotkách 0,1 µs (např. 4980/4980,2490/2490), 0-65535 |
 
 ### Příklady
 
@@ -370,6 +370,10 @@ Zkontroluje integritu TMZ/TZX souboru:
 - Párovanost Group Start / Group End
 - Párovanost Loop Start / Loop End
 - MZF hlavičky v MZ blocích (ftype, fsize vs body_size)
+- blok 0x45: chyba, když nejde naparsovat, nemá žádný kus, ID kusů nejdou 0, 1, ...
+  nebo poslední kus nemá ID FFFF, nebo stroj či pulzní sada nejsou platné; varování
+  u typu souboru jiného než 03h/04h, nenulového fsize/fstrt/fexec a víc než 254 kusů
+  (blok se nepřehraje)
 
 Návratový kód: 0 = validní, 1 = nevalidní (chyby).
 

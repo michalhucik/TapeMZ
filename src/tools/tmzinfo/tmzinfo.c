@@ -1,7 +1,7 @@
 /**
  * @file   tmzinfo.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.3.0
+ * @version 1.7.1
  * @brief  Utility pro zobrazeni obsahu TMZ/TZX souboru.
  *
  * Nacte TMZ nebo TZX soubor a vypise informace o hlavicce,
@@ -14,6 +14,8 @@
  *
  * @par Volby:
  * - --charset <mode>       : znakova sada: eu (vychozi), jp, utf8-eu, utf8-jp
+ * - --lint                 : u bloků 0x46 zkontrolovat rezervy čtecího bodu
+ *                            a shodu s registrem profilů (návrat 1 při varování)
  * - --version              : zobrazit verzi programu
  * - --lib-versions         : zobrazit verze knihoven
  *
@@ -46,9 +48,15 @@
 #include "libs/mzf/mzf.h"
 #include "libs/mzf/mzf_tools.h"
 #include "libs/cmtspeed/cmtspeed.h"
+#include "libs/endianity/endianity.h"
+#include "libs/tmz/tmz_tlv.h"
+#include "libs/tmz/tmz_mzfile.h"
+#include "libs/tmz/tmz_part_fm.h"
+#include "libs/tmz/tmz_part_manchester.h"
+#include "libs/tmz/tmz_profile.h"
 
 /** @brief Verze programu tmzinfo (z @version v hlavicce souboru). */
-#define TMZINFO_VERSION  "1.4.0"
+#define TMZINFO_VERSION  "1.7.1"
 
 
 /** @brief Znakova sada pro zobrazeni nazvu souboru (nastaveno z --charset). */
@@ -115,7 +123,7 @@ static const char* format_name ( uint8_t format ) {
  * - FSK: en_MZCMT_FSK_SPEED (0-6)
  * - SLOW: en_MZCMT_SLOW_SPEED (0-4)
  * - DIRECT: ignorovano
- * - CPM_TAPE: en_MZCMT_CPMTAPE_SPEED (0-2)
+ * - CPM_TAPE: úroveň 0-2 bloku v1.0; přehrává se jako PEZIK-2.0A (2 = 3200 Bd, jinak 2400)
  *
  * @param format Hodnota en_TMZ_FORMAT.
  * @param speed Hodnota pole speed.
@@ -151,15 +159,8 @@ static void print_speed ( uint8_t format, uint8_t speed ) {
             printf ( "      Speed   : (N/A - sample rate dependent)\n" );
             break;
         case 7: /* CPM_TAPE */
-        {
-            static const uint16_t cpmtape_bd[] = { 1200, 2400, 3200 };
-            if ( speed < 3 ) {
-                printf ( "      Speed   : %u Bd\n", cpmtape_bd[speed] );
-            } else {
-                printf ( "      Speed   : CPM-TAPE level %u\n", speed );
-            }
+            printf ( "      Speed   : level %u (played as PEZIK-2.0A %u Bd)\n", speed, speed == 2 ? 3200u : 2400u );
             break;
-        }
         default:
             printf ( "      Speed   : %u\n", speed );
             break;
@@ -177,7 +178,7 @@ static const char* mzf_ftype_name ( uint8_t ftype ) {
         case 0x01: return "OBJ (machine code)";
         case 0x02: return "BTX (BASIC text)";
         case 0x03: return "BSD (BASIC data)";
-        case 0x04: return "BRD (BASIC read-after-run)";
+        case 0x04: return "BRD (BASIC data, WOPEN#)";   /* zapisuje WOPEN# BASICu 1Z-016 */
         case 0x05: return "RB (read and branch)";
         default: return "Unknown";
     }
@@ -198,6 +199,254 @@ static void print_mzf_header ( const st_MZF_HEADER *hdr, int indent ) {
     printf ( "%*sSize     : %u bytes (0x%04X)\n", indent, "", hdr->fsize, hdr->fsize );
     printf ( "%*sLoad addr: 0x%04X\n", indent, "", hdr->fstrt );
     printf ( "%*sExec addr: 0x%04X\n", indent, "", hdr->fexec );
+}
+
+
+/**
+ * @brief Převede 128 B MZF hlavičky z bloku (LE) do pořadí hostitele.
+ *
+ * Mění jen fsize/fstrt/fexec (mzf_header_items_correction by přepsal i
+ * fname.terminator).
+ *
+ * @param raw 128 B hlavičky z bloku.
+ * @param[out] out Hlavička v pořadí hostitele.
+ */
+static void mzfile_header_to_host ( const uint8_t *raw, st_MZF_HEADER *out ) {
+    memcpy ( out, raw, sizeof ( st_MZF_HEADER ) );
+    out->fsize = endianity_bswap16_LE ( out->fsize );
+    out->fstrt = endianity_bswap16_LE ( out->fstrt );
+    out->fexec = endianity_bswap16_LE ( out->fexec );
+}
+
+
+/**
+ * @brief Najde v blokových TLV text PROFILE_ARGS.
+ * @param mf Naparsovaný blok.
+ * @param[out] len Délka textu (0 když chybí).
+ * @return Ukazatel do bloku, nebo NULL.
+ */
+static const char* mzfile_profile_args ( const st_TMZ_MZFILE *mf, uint16_t *len ) {
+    st_TMZ_TLV_ITER it;
+    st_TMZ_TLV t;
+    *len = 0;
+    tmz_tlv_iter_init ( &it, mf->block_tlv, mf->block_tlv_length );
+    while ( tmz_tlv_iter_next ( &it, &t ) == 1 ) {
+        if ( t.tag == TMZ_TAG_PROFILE_ARGS ) {
+            *len = t.length;
+            return ( const char* ) t.value;
+        }
+    }
+    return NULL;
+}
+
+
+/** @brief Takt MZ-800 v Hz: výchozí TIMEBASE, kterou registr do tmz 1.4.0 do části nezapisoval. */
+#define LINT_CPU_TIMEBASE 3546895u
+
+
+/**
+ * @brief Zkopíruje oblast TLV části bez položky TIMEBASE s hodnotou LINT_CPU_TIMEBASE.
+ *
+ * Registr od tmz 1.4.1 zapisuje TIMEBASE do každé části; bloky z dřívějších
+ * verzí ji při taktu MZ-800 vynechávaly. Pro takt MZ-800 (výchozí
+ * časovou základnu čtenáře bez bloku 0x43) jsou obě podoby rovnocenné,
+ * proto se před porovnáním s registrem odstraní z obou stran.
+ *
+ * @param tlv Oblast TLV (NULL = prázdná).
+ * @param length Délka oblasti.
+ * @param[out] out Inicializovaný buffer; volající ho uvolní tmz_tlvbuf_free().
+ * @return EXIT_SUCCESS, nebo EXIT_FAILURE při poškozené oblasti nebo alokaci.
+ */
+static int lint_tlv_normalize ( const uint8_t *tlv, uint32_t length, st_TMZ_TLVBUF *out ) {
+    st_TMZ_TLV_ITER it;
+    st_TMZ_TLV t;
+    int r;
+    tmz_tlv_iter_init ( &it, tlv, length );
+    while ( ( r = tmz_tlv_iter_next ( &it, &t ) ) == 1 ) {
+        if ( t.tag == TMZ_TAG_TIMEBASE && t.length == 4 && tmz_rd32 ( t.value ) == LINT_CPU_TIMEBASE ) continue;
+        if ( tmz_tlvbuf_add ( out, t.tag, t.critical, t.value, t.length ) != EXIT_SUCCESS ) return EXIT_FAILURE;
+    }
+    return ( r == 0 ) ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+
+/**
+ * @brief Porovná oblasti TLV dvou částí (TIMEBASE taktu MZ-800 se nepočítá).
+ * @param a Oblast první části. @param alen Její délka.
+ * @param b Oblast druhé části. @param blen Její délka.
+ * @return 1 = shodné, 0 = liší se nebo nejdou přečíst.
+ */
+static int lint_tlv_same ( const uint8_t *a, uint32_t alen, const uint8_t *b, uint32_t blen ) {
+    st_TMZ_TLVBUF na, nb;
+    tmz_tlvbuf_init ( &na );
+    tmz_tlvbuf_init ( &nb );
+    int same = lint_tlv_normalize ( a, alen, &na ) == EXIT_SUCCESS && lint_tlv_normalize ( b, blen, &nb ) == EXIT_SUCCESS
+               && na.length == nb.length && ( !na.length || memcmp ( na.data, nb.data, na.length ) == 0 );
+    tmz_tlvbuf_free ( &na );
+    tmz_tlvbuf_free ( &nb );
+    return same;
+}
+
+
+/**
+ * @brief Porovná blok 0x46 s blokem, který z jeho MZF sestaví registr profilů.
+ *
+ * Profil a parametry se vezmou z ID profilu a PROFILE_ARGS bloku.
+ * Porovnává se počet částí a u každé role, rodina, zdroj, inline bajty a
+ * oblast TLV (bez TIMEBASE rovné taktu MZ-800, viz lint_tlv_normalize(),
+ * aby bloky z tmz do 1.4.0 dál prošly).
+ *
+ * @param mf Naparsovaný blok.
+ * @return Počet varování (0 = shoda nebo profil mimo registr).
+ */
+static int lint_registry ( const st_TMZ_MZFILE *mf ) {
+    if ( !tmz_profile_find ( mf->profile_id ) ) {
+        printf ( "      lint: profile \"%s\" is not in the registry, comparison skipped\n", mf->profile_id );
+        return 0;
+    }
+    uint16_t args_len = 0;
+    const char *args_text = mzfile_profile_args ( mf, &args_len );
+    st_TMZ_PROFILE_ARGS args;
+    if ( tmz_profile_args_parse ( args_text, args_len, &args ) != EXIT_SUCCESS ) {
+        printf ( "      lint: WARNING cannot parse PROFILE_ARGS \"%.*s\"\n", ( int ) args_len, args_text ? args_text : "" );
+        return 1;
+    }
+    st_MZF_HEADER hdr;
+    mzfile_header_to_host ( mf->header, &hdr );
+    en_TMZ_PROFILE_ERROR pe = TMZ_PROFILE_OK;
+    st_TZX_BLOCK *ref = tmz_profile_build_block ( mf->profile_id, &args, &hdr, mf->body, mf->body_size, &pe );
+    st_TMZ_MZFILE rf;
+    if ( !ref || tmz_mzfile_parse ( ref, &rf ) != TZX_OK ) {
+        printf ( "      lint: WARNING registry cannot rebuild the block: %s\n", tmz_profile_error_string ( pe ) );
+        if ( ref ) tmz_block_free ( ref );
+        return 1;
+    }
+    int warnings = 0;
+    if ( rf.part_count != mf->part_count ) {
+        printf ( "      lint: WARNING %u parts, registry profile %s has %u\n", mf->part_count, mf->profile_id, rf.part_count );
+        warnings++;
+    } else {
+        for ( uint8_t i = 0; i < mf->part_count; i++ ) {
+            const st_TMZ_PART *a = &mf->parts[i];
+            const st_TMZ_PART *b = &rf.parts[i];
+            int same = a->role == b->role && a->family == b->family && a->source == b->source
+                       && a->slice_offset == b->slice_offset && a->slice_length == b->slice_length
+                       && a->inline_length == b->inline_length
+                       && ( !a->inline_length || memcmp ( a->inline_data, b->inline_data, a->inline_length ) == 0 )
+                       && lint_tlv_same ( a->tlv, a->tlv_length, b->tlv, b->tlv_length );
+            if ( !same ) {
+                printf ( "      lint: WARNING part %u differs from registry profile %s\n", i, mf->profile_id );
+                warnings++;
+            }
+        }
+    }
+    if ( !warnings ) printf ( "      lint: matches registry profile %s\n", mf->profile_id );
+    tmz_mzfile_free ( &rf );
+    tmz_block_free ( ref );
+    return warnings;
+}
+
+
+/**
+ * @brief Vypíše detail bloku 0x46 (MZ File) a volitelně ho zkontroluje.
+ *
+ * @param block TMZ blok.
+ * @param default_timebase Výchozí časová základna částí (takt z posledního bloku 0x43).
+ * @param lint Nenulové = kontrola čtecího bodu a shody s registrem.
+ * @return Počet varování kontroly a chyb částí.
+ */
+static int print_block_mz_file ( const st_TZX_BLOCK *block, uint32_t default_timebase, int lint ) {
+    st_TMZ_MZFILE mf;
+    en_TZX_ERROR e = tmz_mzfile_parse ( block, &mf );
+    if ( e != TZX_OK ) {
+        printf ( "      Error   : invalid MZ File block (%s)\n", tzx_error_string ( e ) );
+        return 1;
+    }
+    int warnings = 0;
+    uint16_t args_len = 0;
+    const char *args_text = mzfile_profile_args ( &mf, &args_len );
+    printf ( "      Profile : %s (%.*s)\n", mf.profile_id[0] ? mf.profile_id : "-", ( int ) args_len,
+             args_text ? args_text : "" );
+    st_MZF_HEADER hdr;
+    mzfile_header_to_host ( mf.header, &hdr );
+    printf ( "      Body    : %u bytes\n", mf.body_size );
+    print_mzf_header ( &hdr, 6 );
+    printf ( "      Parts   : %u\n", mf.part_count );
+
+    st_MZCMT_FM_PARAMS *p = malloc ( sizeof ( st_MZCMT_FM_PARAMS ) );
+    st_MZCMT_MANCH_PARAMS *mp = malloc ( sizeof ( st_MZCMT_MANCH_PARAMS ) );
+    for ( uint8_t i = 0; p && mp && i < mf.part_count; i++ ) {
+        const st_TMZ_PART *pt = &mf.parts[i];
+        uint32_t size = 0;
+        en_TMZ_PART_ERROR pe = TMZ_PART_OK;
+        tmz_mzfile_part_data ( &mf, pt, &size, &pe );
+        printf ( "        [%u] %s, %s, %u bytes", i, tmz_part_role_name ( pt->role ), tmz_family_name ( pt->family ), size );
+        if ( pt->family == TMZ_FAMILY_MANCHESTER && pe == TMZ_PART_OK ) {
+            /* rodina MANCHESTER: READER se nekontroluje ani v lint */
+            st_TMZ_PART_COMMON c;
+            pe = tmz_part_manchester_decode ( pt->tlv, pt->tlv_length, default_timebase, mp, &c );
+            if ( pe != TMZ_PART_OK ) {
+                printf ( "  (%s)\n", tmz_part_error_string ( pe ) );
+                warnings++;
+                continue;
+            }
+            printf ( ", timebase %u Hz\n", mp->timebase );
+            char pat[MZCMT_MANCH_MAX_PATTERN_BITS + 1];
+            uint8_t pb = mp->pilot_count ? mp->pilot_bits : 0;
+            for ( uint8_t k = 0; k < pb; k++ ) pat[k] = ( char ) ( '0' + ( ( mp->pilot_pattern >> k ) & 1 ) );
+            pat[pb] = '\0';
+            printf ( "            halves 0: %u/%u 1: %u/%u, pilot %u x \"%s\", sync %u, flag %s",
+                     mp->half1[0], mp->half2[0], mp->half1[1], mp->half2[1], mp->pilot_count, pat, mp->sync_bits,
+                     mp->has_flag ? "" : "none" );
+            if ( mp->has_flag ) printf ( "%02Xh", mp->flag );
+            printf ( ", checksum %u, end %u", mp->checksum, mp->end_bits );
+            if ( mp->carry_adjust ) printf ( ", carry %d", mp->carry_adjust );
+            if ( mp->context_count ) printf ( ", contexts %u", mp->context_count );
+            if ( mp->pause ) printf ( ", pause %u%s", mp->pause, mp->pause_level ? " HIGH" : "" );
+            if ( c.stop ) printf ( ", STOP" );
+            printf ( "\n" );
+            continue;
+        }
+        if ( pt->family != TMZ_FAMILY_FM || pe != TMZ_PART_OK ) {
+            printf ( "  (%s)\n", tmz_part_error_string ( pe != TMZ_PART_OK ? pe : TMZ_PART_ERROR_UNSUPPORTED_FAMILY ) );
+            warnings++;
+            continue;
+        }
+        st_TMZ_PART_COMMON c;
+        pe = tmz_part_fm_decode ( pt->tlv, pt->tlv_length, default_timebase, p, &c );
+        if ( pe != TMZ_PART_OK ) {
+            printf ( "  (%s)\n", tmz_part_error_string ( pe ) );
+            warnings++;
+            continue;
+        }
+        printf ( ", timebase %u Hz\n", p->timebase );
+        printf ( "            pulses S %u/%u L %u/%u, tone %u, tapemark %u/%u/%u, checksum %u, end %u/%u",
+                 p->short_first, p->short_second, p->long_first, p->long_second, p->tone,
+                 p->tm_long, p->tm_short, p->tm_end_long, p->checksum, p->end_long, p->tail_short );
+        if ( p->copies ) printf ( ", copies %u/%u", p->copies, p->copy_sep );
+        if ( p->context_count ) printf ( ", contexts %u", p->context_count );
+        if ( p->pause ) printf ( ", pause %u%s", p->pause, p->pause_level ? " HIGH" : "" );
+        if ( c.stop ) printf ( ", STOP" );
+        if ( c.has_reader ) printf ( ", reader %u N=%u", c.reader_routine, c.reader_n );
+        printf ( "\n" );
+        if ( lint ) {
+            st_TMZ_READER_MARGINS m;
+            en_TMZ_READER_CHECK r = tmz_part_fm_check_reader ( p, &c, 0, &m );
+            if ( r != TMZ_READER_SKIPPED ) {
+                printf ( "      lint: part %u reader %u N=%u margins %.1f/%.1f/%.1f us %s\n", i, c.reader_routine,
+                         c.reader_routine == 0 ? 82u : ( unsigned ) c.reader_n, m.short_high_us, m.long_high_us,
+                         m.short_period_us,
+                         r == TMZ_READER_OK ? "OK" : ( r == TMZ_READER_LOW_MARGIN ? "WARNING (low margin)"
+                                                                                  : "WARNING (unreadable)" ) );
+                if ( r != TMZ_READER_OK ) warnings++;
+            }
+        }
+    }
+    free ( p );
+    free ( mp );
+    if ( lint ) warnings += lint_registry ( &mf );
+    tmz_mzfile_free ( &mf );
+    return warnings;
 }
 
 
@@ -300,7 +549,7 @@ static void print_block_mz_machine_info ( const st_TZX_BLOCK *block ) {
 
 
 /**
- * @brief Vypise detail bloku 0x45 (MZ BASIC Data).
+ * @brief Vypíše detail bloku 0x45 (MZ BASIC Data) a profil, jako který ho player přehraje.
  * @param block TMZ blok.
  */
 static void print_block_mz_basic_data ( const st_TZX_BLOCK *block ) {
@@ -320,6 +569,12 @@ static void print_block_mz_basic_data ( const st_TZX_BLOCK *block ) {
         printf ( "      Pause   : %u ms\n", d->pause_ms );
         printf ( "      Chunks  : %u (%u bytes total)\n", d->chunk_count,
                  d->chunk_count * TMZ_BASIC_CHUNK_DATA_SIZE );
+        /* 0x45 se vždy přehraje jako BASIC-1Z016 (nejvýš 254 kusů) */
+        if ( d->chunk_count >= 1 && d->chunk_count <= 254 ) {
+            printf ( "      Played as: BASIC-1Z016\n" );
+        } else {
+            printf ( "      Played as: not playable (%s)\n", d->chunk_count ? "more than 254 chunks" : "no chunk" );
+        }
         print_mzf_header ( &d->mzf_header, 6 );
     }
     free ( data_copy );
@@ -736,16 +991,17 @@ static void print_block_tzx_hardware_type ( const st_TZX_BLOCK *block ) {
 /**
  * @brief Vypise detail TZX bloku 0x35 (Custom Info).
  *
- * Data bloku zacinaji 10B ASCII identifikatorem,
- * nasleduje 4B DWORD delka vlastnich dat.
+ * Data bloku začínají 16B ASCII identifikátorem (TZX_CUSTOM_INFO_ID_LENGTH),
+ * následuje 4B DWORD délka vlastních dat.
  *
  * @param block TMZ blok.
  */
 static void print_block_tzx_custom_info ( const st_TZX_BLOCK *block ) {
-    if ( block->length < 14 ) return;
-    printf ( "      ID      : \"%.*s\"\n", 10, (const char*) block->data );
-    uint32_t len = block->data[10] | ( block->data[11] << 8 ) |
-                   ( block->data[12] << 16 ) | ( (uint32_t) block->data[13] << 24 );
+    const uint32_t id_len = TZX_CUSTOM_INFO_ID_LENGTH;
+    if ( block->length < id_len + 4 ) return;
+    printf ( "      ID      : \"%.*s\"\n", ( int ) id_len, (const char*) block->data );
+    uint32_t len = block->data[id_len] | ( block->data[id_len + 1] << 8 ) |
+                   ( block->data[id_len + 2] << 16 ) | ( (uint32_t) block->data[id_len + 3] << 24 );
     printf ( "      Data    : %u bytes\n", len );
 }
 
@@ -847,6 +1103,7 @@ int main ( int argc, char *argv[] ) {
         fprintf ( stderr, "Usage: tmzinfo [options] <file.tmz|file.tzx>\n\n" );
         fprintf ( stderr, "Options:\n" );
         fprintf ( stderr, "  --charset <mode>        Character set: eu (default), jp, utf8-eu, utf8-jp\n" );
+        fprintf ( stderr, "  --lint                  Check MZ File blocks (0x46): reader margins, registry profile\n" );
         fprintf ( stderr, "  --version             Show program version\n" );
         fprintf ( stderr, "  --lib-versions        Show library versions\n" );
         return EXIT_FAILURE;
@@ -854,6 +1111,9 @@ int main ( int argc, char *argv[] ) {
 
     /* parsovani argumentu */
     const char *filename = NULL;
+    int lint = 0;                  /* --lint: kontrola bloků 0x46 */
+    int lint_warnings = 0;         /* počet varování kontroly */
+    uint32_t mz_clock = 3546895;   /* výchozí časová základna částí 0x46 (blok 0x43, spec 5.3) */
 
     for ( int i = 1; i < argc; i++ ) {
         if ( strcmp ( argv[i], "--version" ) == 0 ) {
@@ -862,6 +1122,8 @@ int main ( int argc, char *argv[] ) {
         } else if ( strcmp ( argv[i], "--lib-versions" ) == 0 ) {
             print_lib_versions ();
             return EXIT_SUCCESS;
+        } else if ( strcmp ( argv[i], "--lint" ) == 0 ) {
+            lint = 1;
         } else if ( strcmp ( argv[i], "--charset" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --charset requires a value\n" );
@@ -949,6 +1211,10 @@ int main ( int argc, char *argv[] ) {
                 break;
             case TMZ_BLOCK_ID_MZ_MACHINE_INFO:
                 print_block_mz_machine_info ( block );
+                if ( block->data && block->length >= 4 + 1 + 4 ) mz_clock = tmz_rd32 ( block->data + 4 + 1 );
+                break;
+            case TMZ_BLOCK_ID_MZ_FILE:
+                lint_warnings += print_block_mz_file ( block, mz_clock, lint );
                 break;
             case TMZ_BLOCK_ID_MZ_LOADER:
                 print_block_mz_loader ( block );
@@ -1031,5 +1297,9 @@ int main ( int argc, char *argv[] ) {
     printf ( "\n" );
     tzx_free ( file );
 
+    if ( lint && lint_warnings ) {
+        printf ( "lint: %d warning(s)\n", lint_warnings );
+        return EXIT_FAILURE;
+    }
     return EXIT_SUCCESS;
 }

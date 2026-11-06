@@ -1,7 +1,7 @@
 /**
  * @file   tmz2mzf.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.0
+ * @version 1.4.1
  * @brief  Konverzni utility TMZ/TZX -> MZF.
  *
  * Nacte TMZ nebo TZX soubor, najde bloky obsahujici MZF data
@@ -24,6 +24,8 @@
  * - --list                 : vypsat extrahovatelne bloky bez extrakce
  * - --overwrite            : povolit prepis existujiciho souboru
  * - --append               : pripojit na konec existujiciho souboru (multi-MZF)
+ * - --mzt                  : všechny MZF do jednoho MZT (klasické, časování se ztratí; výchozí pro --output *.mzt)
+ * - --mzt-unicmt           : MZT s hlavičkami CMTSPEED UniCMT, kde se mění rychlost (spec 10.3)
  * - --charset <mode>       : znakova sada: eu (vychozi), jp, utf8-eu, utf8-jp
  * - --version              : zobrazit verzi programu
  * - --lib-versions         : zobrazit verze knihoven
@@ -57,9 +59,10 @@
 #include "libs/tmz/tmz_blocks.h"
 #include "libs/mzf/mzf.h"
 #include "libs/mzf/mzf_tools.h"
+#include "libs/tmz/tmz_mzt.h"
 
 /** @brief Verze programu tmz2mzf (z @version v hlavicce souboru). */
-#define TMZ2MZF_VERSION  "1.2.0"
+#define TMZ2MZF_VERSION  "1.4.1"
 
 
 /**
@@ -94,7 +97,7 @@ static const char* mzf_ftype_name ( uint8_t ftype ) {
         case 0x01: return "OBJ (machine code)";
         case 0x02: return "BTX (BASIC text)";
         case 0x03: return "BSD (BASIC data)";
-        case 0x04: return "BRD (BASIC read-after-run)";
+        case 0x04: return "BRD (BASIC data, WOPEN#)";   /* zapisuje WOPEN# BASICu 1Z-016 */
         case 0x05: return "RB (read and branch)";
         default:   return "Unknown";
     }
@@ -104,15 +107,16 @@ static const char* mzf_ftype_name ( uint8_t ftype ) {
 /**
  * @brief Overi, zda blok obsahuje extrahovatelna MZF data.
  *
- * Extrahovatelne jsou bloky 0x40 (MZ Standard Data) a 0x41 (MZ Turbo Data),
- * ktere obsahuji kompletni MZF hlavicku a datove telo.
+ * Extrahovatelne jsou bloky 0x40 (MZ Standard Data), 0x41 (MZ Turbo Data)
+ * a 0x46 (MZ File, TMZ v1.1), ktere obsahuji kompletni MZF hlavicku a datove telo.
  *
  * @param block_id Identifikator bloku.
  * @return true pokud blok obsahuje MZF data, false jinak.
  */
 static bool is_extractable ( uint8_t block_id ) {
     return block_id == TMZ_BLOCK_ID_MZ_STANDARD_DATA ||
-           block_id == TMZ_BLOCK_ID_MZ_TURBO_DATA;
+           block_id == TMZ_BLOCK_ID_MZ_TURBO_DATA ||
+           block_id == TMZ_BLOCK_ID_MZ_FILE;
 }
 
 
@@ -287,6 +291,15 @@ static int extract_and_save ( const st_TZX_BLOCK *block, uint32_t block_index,
         return EXIT_FAILURE;
     }
 
+    /* délka těla musí sedět s fsize, jinak by se četlo mimo tělo nebo tělo useklo */
+    if ( mzf->header.fsize != mzf->body_size ) {
+        fprintf ( stderr, "Error: block [%u]: MZF header size %u differs from body size %u\n",
+                  block_index, mzf->header.fsize, mzf->body_size );
+        generic_driver_close ( h_out );
+        mzf_free ( mzf );
+        return EXIT_FAILURE;
+    }
+
     /* zapis hlavicky a tela na urceny offset */
     en_MZF_ERROR mzf_err = MZF_OK;
 
@@ -351,9 +364,99 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "  --list                List extractable blocks without extracting\n" );
     fprintf ( stderr, "  --overwrite           Overwrite existing output file(s)\n" );
     fprintf ( stderr, "  --append              Append to existing output file (multi-MZF)\n" );
+    fprintf ( stderr, "  --mzt                 Write all MZF files into one classic MZT (timing is lost)\n" );
+    fprintf ( stderr, "                        Default when --output ends with .mzt\n" );
+    fprintf ( stderr, "  --mzt-unicmt          Write MZT with UniCMT CMTSPEED headers where the speed changes\n" );
     fprintf ( stderr, "  --charset <mode>        Character set: eu (default), jp, utf8-eu, utf8-jp\n" );
     fprintf ( stderr, "  --version             Show program version\n" );
     fprintf ( stderr, "  --lib-versions        Show library versions\n" );
+}
+
+
+/**
+ * @brief Zjistí, zda cesta končí danou příponou (bez ohledu na velikost písmen).
+ * @param path Cesta. @param ext Přípona včetně tečky.
+ * @return true při shodě.
+ */
+static bool has_extension ( const char *path, const char *ext ) {
+    size_t n = strlen ( path ), e = strlen ( ext );
+    if ( n < e ) return false;
+    for ( size_t i = 0; i < e; i++ ) {
+        char c = path[n - e + i];
+        if ( c >= 'A' && c <= 'Z' ) c = ( char ) ( c - 'A' + 'a' );
+        if ( c != ext[i] ) return false;
+    }
+    return true;
+}
+
+
+/**
+ * @brief Vypíše varování exportu MZT (callback tmz_mzt_export).
+ * @param user Nepoužito. @param block_index Index bloku. @param text Text varování.
+ */
+static void mzt_warn ( void *user, uint32_t block_index, const char *text ) {
+    ( void ) user;
+    fprintf ( stderr, "Warning: block [%u]: %s\n", block_index, text );
+}
+
+
+/**
+ * @brief Zapíše bloky s MZF jako jeden soubor MZT (spec 10.3, tmz_mzt_export).
+ *
+ * @param file Načtený soubor.
+ * @param input_file Vstupní cesta (pro odvození výstupu).
+ * @param output_file Výstupní cesta, nebo NULL: pak jméno vstupu bez adresáře a přípony + ".mzt".
+ * @param mode Klasické MZT nebo UniCMT.
+ * @param write_mode Přepis existujícího souboru jen s WRITE_MODE_OVERWRITE.
+ * @param conflict Zadáno --index nebo --list (s MZT nelze).
+ * @return EXIT_SUCCESS, nebo EXIT_FAILURE (konflikt voleb, existující výstup,
+ *         chyba exportu, chyba zápisu).
+ */
+static int export_mzt ( const st_TZX_FILE *file, const char *input_file, const char *output_file,
+                        en_TMZ_MZT_MODE mode, en_WRITE_MODE write_mode, bool conflict ) {
+    if ( conflict || write_mode == WRITE_MODE_APPEND ) {
+        fprintf ( stderr, "Error: --mzt/--mzt-unicmt cannot be combined with --index, --list or --append\n" );
+        return EXIT_FAILURE;
+    }
+    char path[1024];
+    if ( output_file ) {
+        snprintf ( path, sizeof ( path ), "%s", output_file );
+    } else {
+        char base[1000];
+        extract_basename ( input_file, base, sizeof ( base ) );
+        snprintf ( path, sizeof ( path ), "%s.mzt", base );
+    }
+    if ( file_exists ( path ) && write_mode != WRITE_MODE_OVERWRITE ) {
+        fprintf ( stderr, "Error: output file '%s' already exists (use --overwrite)\n", path );
+        return EXIT_FAILURE;
+    }
+    uint8_t *data = NULL;
+    uint32_t size = 0;
+    if ( tmz_mzt_export ( file, mode, &data, &size, mzt_warn, NULL ) != EXIT_SUCCESS ) {
+        fprintf ( stderr, "Error: cannot write %s MZT (no MZF blocks, damaged block or UniCMT rule violated)\n",
+                  mode == TMZ_MZT_UNICMT ? "UniCMT" : "classic" );
+        return EXIT_FAILURE;
+    }
+    FILE *fp = fopen ( path, "wb" );
+    int ok = fp && fwrite ( data, 1, size, fp ) == size;
+    if ( fp && fclose ( fp ) != 0 ) ok = 0;
+    if ( !ok ) {
+        if ( fp ) remove ( path );   /* nenechat rozepsaný MZT */
+        fprintf ( stderr, "Error: cannot write output file '%s'\n", path );
+        free ( data );
+        return EXIT_FAILURE;
+    }
+    st_TMZ_MZT m;
+    uint32_t files = 0, headers = 0;
+    if ( tmz_mzt_parse ( data, size, &m ) == EXIT_SUCCESS ) {
+        files = m.count - m.cmtspeed_count;
+        headers = m.cmtspeed_count;
+        tmz_mzt_free ( &m );
+    }
+    printf ( "Written: %s (%s MZT, %u file(s), %u CMTSPEED header(s), %u bytes)\n", path,
+             mode == TMZ_MZT_UNICMT ? "UniCMT" : "classic", files, headers, size );
+    free ( data );
+    return EXIT_SUCCESS;
 }
 
 
@@ -396,6 +499,7 @@ int main ( int argc, char *argv[] ) {
     int selected_index = -1;   /* -1 = vsechny */
     bool list_only = false;
     en_WRITE_MODE write_mode = WRITE_MODE_DEFAULT;
+    int mzt_mode = -1;   /* -1 = samostatné MZF, jinak en_TMZ_MZT_MODE */
 
     /* parsovani argumentu */
     int positional = 0;
@@ -430,6 +534,10 @@ int main ( int argc, char *argv[] ) {
             write_mode = WRITE_MODE_OVERWRITE;
         } else if ( strcmp ( argv[i], "--append" ) == 0 ) {
             write_mode = WRITE_MODE_APPEND;
+        } else if ( strcmp ( argv[i], "--mzt" ) == 0 ) {
+            mzt_mode = TMZ_MZT_CLASSIC;
+        } else if ( strcmp ( argv[i], "--mzt-unicmt" ) == 0 ) {
+            mzt_mode = TMZ_MZT_UNICMT;
         } else if ( strcmp ( argv[i], "--charset" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --charset requires a value\n" );
@@ -486,6 +594,15 @@ int main ( int argc, char *argv[] ) {
         return EXIT_FAILURE;
     }
 
+    /* MZT (spec 10.3): jeden výstupní soubor z bloků s MZF */
+    if ( mzt_mode < 0 && output_file && has_extension ( output_file, ".mzt" ) ) mzt_mode = TMZ_MZT_CLASSIC;
+    if ( mzt_mode >= 0 ) {
+        int rc = export_mzt ( file, input_file, output_file, ( en_TMZ_MZT_MODE ) mzt_mode, write_mode,
+                              selected_index >= 0 || list_only );
+        tzx_free ( file );
+        return rc;
+    }
+
     /* spocitat extrahovatelne bloky */
     uint32_t extractable_count = 0;
     for ( uint32_t i = 0; i < file->block_count; i++ ) {
@@ -535,6 +652,7 @@ int main ( int argc, char *argv[] ) {
                 en_TZX_ERROR parse_err;
                 const st_MZF_HEADER *hdr = NULL;
                 uint16_t body_size = 0;
+                st_MZF *mzf46 = NULL;   /* blok 0x46: MZF přes tmz_block_to_mzf */
 
                 if ( copy.id == TMZ_BLOCK_ID_MZ_STANDARD_DATA ) {
                     uint8_t *body;
@@ -550,6 +668,12 @@ int main ( int argc, char *argv[] ) {
                         hdr = &d->mzf_header;
                         body_size = d->body_size;
                     }
+                } else if ( copy.id == TMZ_BLOCK_ID_MZ_FILE ) {
+                    mzf46 = tmz_block_to_mzf ( &copy, &parse_err );
+                    if ( mzf46 ) {
+                        hdr = &mzf46->header;
+                        body_size = ( uint16_t ) mzf46->body_size;
+                    }
                 }
 
                 if ( hdr ) {
@@ -562,6 +686,7 @@ int main ( int argc, char *argv[] ) {
                              fname, hdr->ftype, body_size, hdr->fstrt, hdr->fexec );
                 }
 
+                if ( mzf46 ) mzf_free ( mzf46 );
                 free ( data_copy );
             }
         }
@@ -606,7 +731,8 @@ int main ( int argc, char *argv[] ) {
                           ( target_count == 1 );
 
     /* extrahovat vybrany blok nebo vsechny */
-    uint32_t extracted = 0;
+    uint32_t processed = 0;   /* zpracované bloky (i neúspěšné); číslování výstupních souborů jde podle nich */
+    uint32_t failed = 0;   /* bloky, které nešlo extrahovat */
     for ( uint32_t i = 0; i < file->block_count; i++ ) {
 
         if ( selected_index >= 0 ) {
@@ -630,7 +756,7 @@ int main ( int argc, char *argv[] ) {
         } else {
             /* vice bloku do samostatnych souboru - pridavat cisla */
             snprintf ( output_path, sizeof ( output_path ), "%s_%03u.mzf",
-                       basename, extracted + 1 );
+                       basename, processed + 1 );
         }
 
         /*
@@ -648,13 +774,15 @@ int main ( int argc, char *argv[] ) {
 
         if ( extract_and_save ( &file->blocks[i], i, output_path, block_write_mode ) != EXIT_SUCCESS ) {
             result = EXIT_FAILURE;
+            failed++;
         }
 
-        extracted++;
+        processed++;
         if ( selected_index >= 0 ) break;
     }
 
-    printf ( "\nExtracted %u MZF file(s).\n", extracted );
+    if ( failed ) printf ( "\nExtracted %u MZF file(s), %u failed.\n", processed - failed, failed );
+    else printf ( "\nExtracted %u MZF file(s).\n", processed );
 
     tzx_free ( file );
     return result;

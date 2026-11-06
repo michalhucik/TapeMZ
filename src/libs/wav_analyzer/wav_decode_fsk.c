@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_fsk.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  Implementace vrstvy 4e3 - FSK dekoder.
  *
  * Dekoduje FSK (Frequency Shift Keying) signal z WAV nahravky.
@@ -46,7 +46,7 @@
 /**
  * @brief Maximalni pocet dekodovanych bajtu (ochrana proti preteceni).
  *
- * FSK signal pri nejpomalejsim speed 0 a 44100 Hz prenese ~5500 B/s.
+ * Prenosova rychlost FSK pri speed 0 a 44100 Hz [neovereno].
  * 65535 bajtu je dostatecna horni mez pro vsechny rozumne vstupy.
  */
 #define MAX_DECODED_BYTES  65535

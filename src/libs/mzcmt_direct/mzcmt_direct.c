@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_direct.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  Implementace DIRECT koderu pro Sharp MZ (primy bitovy zapis).
  *
  * DIRECT je nejrychlejsi metoda prenosu dat na kazetach Sharp MZ.

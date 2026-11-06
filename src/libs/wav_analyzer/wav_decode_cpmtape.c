@@ -1,20 +1,18 @@
 /**
  * @file   wav_decode_cpmtape.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
- * @brief  Implementace vrstvy 4e2 - CPM-TAPE dekoder (Pezik/MarVan).
+ * @version 2.1.2
+ * @brief  Implementace vrstvy 4e2 - dekodér CPM-TAPE (Manchester).
  *
- * Dekoduje manchestersky modulovany signal CPM-TAPE z WAV nahravky.
- *
- * Algoritmus dekodovani:
- * 1. Detekce sync - hledame par velmi dlouhych pulzu (5*T/2) predchazeny
- *    pilotem s charakteristickym vzorem (smes T/2 a 3T/2 pulzu)
- * 2. Kalibrace bitove periody T z kratkych pilotních pulzu (T/2)
- * 3. Manchester cteni bitu: uroven signalu na zacatku bitove periody
- *    urcuje hodnotu bitu (HIGH = 1, LOW = 0)
- * 4. Bajty se ctou LSB first (8 bitu, bez stop bitu)
- * 5. Checksum: 16-bit soucet bajtu (vcetne flag bajtu), low byte first
- * 6. Posledni bit body bloku se rekonstruuje z checksumu
+ * Postup:
+ * 1. Pilot: pulzy (půlvlny) v poměru 2:1:1:2 půlek bitu, opakovaně
+ *    (vzor "011" = L H H L H L, sousední stejné úrovně splývají). Z pilotu
+ *    se určí délka půlky bitu.
+ * 2. Pulzy se rozloží na půlky bitu (1 nebo 2; delší pulz = konec bloku),
+ *    dvojice půlek dají bit. Zarovnání dvojic: obě půlky bitu musí mít
+ *    různou úroveň. Polarita: vzor pilotu musí dát 0,1,1 (1,0,0 = obrácený).
+ * 3. Konec pilotu: tři jedničky za sebou (vzor končí 1,1 a sync je bit 1).
+ * 4. Flag, data a checksum (16bitový součet dat bez flagu, L, H) LSB první.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -38,512 +36,293 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
 #include "libs/mzf/mzf.h"
-#include "libs/endianity/endianity.h"
 
 #include "wav_decode_cpmtape.h"
 
 
-/**
- * @brief Maximalni povolena odchylka mezi dvema sync pul-periodami.
- *
- * Sync bit 1 = HIGH(5T/2) + LOW(5T/2). Obe pul-periody by mely byt
- * priblizne stejne. Povolujeme 40% relativni odchylku.
- */
-#define SYNC_PAIR_TOLERANCE     0.4
+/** @brief Nejvíc pulzů mezi koncem hlavičky a pilotem těla (jinak jde o jinou nahrávku). */
+#define CPMTAPE_BODY_SEARCH_MAX  50000u
+/** @brief Délka hlavičky v bajtech. */
+#define CPMTAPE_HEADER_SIZE      128u
+
 
 /**
- * @brief Nasobitel pro rozliseni SHORT/LONG pulzu v pilotu.
+ * @brief Čtečka půlek bitu ze sekvence pulzů.
  *
- * Pulzy < sync_avg * PILOT_SHORT_FACTOR jsou SHORT (T/2),
- * pulzy >= nez tato hranice a < sync jsou LONG (3T/2).
+ * @invariant left > 0 jen když pos > 0 (zbytek pulzu pos - 1)
  */
-#define PILOT_SHORT_FACTOR      0.5
+typedef struct st_MRD {
+    const st_WAV_PULSE_SEQUENCE *seq;   /**< sekvence pulzů */
+    uint32_t pos;                       /**< další nepřečtený pulz */
+    uint32_t left;                      /**< nepřečtené půlky pulzu pos - 1 */
+    int level;                          /**< úroveň pulzu pos - 1 */
+    double h;                           /**< délka půlky bitu (µs) */
+    int pol;                            /**< úroveň první půlky bitu 1 */
+} st_MRD;
 
-
-/* =========================================================================
- *  Interni kontext dekoderu
- * ========================================================================= */
 
 /**
- * @brief Kontext Manchester dekoderu pro CPM-TAPE.
- *
- * Sleduje pozici v sekvenci pulzu s presnosti na cas uvnitr
- * aktualniho pulzu (time-budget pristup). Tím spravne dekoduje
- * i pulzy, ktere zasahuji pres hranice bitu (RLE slevani).
- *
- * @par Invarianty:
- * - pos < seq->count (nebo na konci)
- * - time_offset_us >= 0 a < aktualni pulz duration
- * - bit_period_us > 0
+ * @brief Počet půlek bitu v pulzu.
+ * @param dur Délka pulzu (µs). @param h Půlka bitu (µs).
+ * @return 1, 2, nebo 0 (mimo Manchester: příliš krátký, nebo 3 a víc půlek).
  */
-typedef struct {
-    const st_WAV_PULSE_SEQUENCE *seq;   /**< zdrojova sekvence pulzu */
-    uint32_t pos;                       /**< aktualni index v sekvenci */
-    double time_offset_us;              /**< cas uplynuly v aktualnim pulzu (us) */
-    double bit_period_us;               /**< perioda jednoho bitu (us) = T */
-    uint16_t checksum;                  /**< akumulator 16-bit souctu */
-    int bit1_level;                     /**< uroven signalu odpovídající bitu 1
-                                             (1 pri normalni polarite, 0 pri invertovane) */
-} st_CPMTAPE_DEC;
-
-
-/* =========================================================================
- *  Pomocne funkce - cas a pozice
- * ========================================================================= */
-
-/**
- * @brief Posune pozici dekoderu o zadany cas (us).
- *
- * Konzumuje pulzy a aktualizuje time_offset. Pokud cas presahuje
- * zbyvajici delku aktualniho pulzu, presune se na dalsi.
- *
- * @param dec Kontext dekoderu.
- * @param duration_us Cas k posunuti (us).
- */
-static void cpmtape_advance ( st_CPMTAPE_DEC *dec, double duration_us ) {
-    while ( duration_us > 0.1 && dec->pos < dec->seq->count ) {
-        double remaining = dec->seq->pulses[dec->pos].duration_us - dec->time_offset_us;
-        if ( duration_us < remaining - 0.1 ) {
-            /* cas se vejde do aktualniho pulzu */
-            dec->time_offset_us += duration_us;
-            return;
-        }
-        /* konzumujeme zbytek aktualniho pulzu a pokracujeme dalsim */
-        duration_us -= remaining;
-        dec->pos++;
-        dec->time_offset_us = 0.0;
-    }
-}
-
-
-/* =========================================================================
- *  Pomocne funkce - cteni bitu a bajtu
- * ========================================================================= */
-
-/**
- * @brief Precte jeden Manchester bit.
- *
- * V manchesterskem kodovani urcuje uroven signalu v prvni polovine
- * bitove periody hodnotu bitu:
- * - HIGH = bit 1 (Manchester: HIGH-LOW)
- * - LOW = bit 0 (Manchester: LOW-HIGH)
- *
- * Funkce precte uroven na aktualni pozici (zacatek bitove periody)
- * a pak posune pozici o celou bitovou periodu T.
- *
- * @param dec Kontext dekoderu.
- * @param[out] bit Hodnota bitu (0 nebo 1).
- * @return WAV_ANALYZER_OK pri uspechu,
- *         WAV_ANALYZER_ERROR_DECODE_INCOMPLETE na konci sekvence.
- */
-static en_WAV_ANALYZER_ERROR cpmtape_read_bit ( st_CPMTAPE_DEC *dec, int *bit ) {
-    if ( dec->pos >= dec->seq->count ) {
-        return WAV_ANALYZER_ERROR_DECODE_INCOMPLETE;
-    }
-
-    /*
-     * Uroven na zacatku bitove periody urcuje hodnotu bitu.
-     * Manchester bit 1 = prvni polovina v polarite bit1_level.
-     * bit1_level se urcuje ze sync bitu (sync je bit 1).
-     */
-    *bit = ( dec->seq->pulses[dec->pos].level == dec->bit1_level ) ? 1 : 0;
-
-    /* posuneme se o celou bitovou periodu */
-    cpmtape_advance ( dec, dec->bit_period_us );
-
-    return WAV_ANALYZER_OK;
+static int halves_of ( double dur, double h ) {
+    double r = dur / h;
+    if ( r < 0.5 ) return 0;
+    if ( r < 1.5 ) return 1;
+    if ( r < 2.5 ) return 2;
+    return 0;
 }
 
 
 /**
- * @brief Precte jeden bajt (8 bitu LSB first) a akumuluje checksum.
- *
- * @param dec Kontext dekoderu.
- * @param[out] byte Vystupni hodnota bajtu.
- * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
- *
- * @post dec->checksum je aktualizovan o hodnotu bajtu.
+ * @brief Přečte další půlku bitu.
+ * @param r Čtečka. @param[out] level Úroveň půlky.
+ * @return 0 = OK, -1 = konec bloku (pulz mimo Manchester nebo konec sekvence; pos zůstane na něm).
  */
-static en_WAV_ANALYZER_ERROR cpmtape_read_byte ( st_CPMTAPE_DEC *dec, uint8_t *byte ) {
-    uint8_t value = 0;
-    int i;
-
-    for ( i = 0; i < 8; i++ ) {
-        int bit;
-        en_WAV_ANALYZER_ERROR err = cpmtape_read_bit ( dec, &bit );
-        if ( err != WAV_ANALYZER_OK ) return err;
-        if ( bit ) value |= ( uint8_t ) ( 1 << i );
+static int next_half ( st_MRD *r, int *level ) {
+    if ( !r->left ) {
+        if ( r->pos >= r->seq->count ) return -1;
+        const st_WAV_PULSE *p = &r->seq->pulses[r->pos];
+        int n = halves_of ( p->duration_us, r->h );
+        if ( !n ) return -1;
+        r->left = ( uint32_t ) n;
+        r->level = p->level ? 1 : 0;
+        r->pos++;
     }
-
-    *byte = value;
-    dec->checksum += value;
-    return WAV_ANALYZER_OK;
+    r->left--;
+    *level = r->level;
+    return 0;
 }
 
 
 /**
- * @brief Precte jeden bajt (8 bitu LSB first) BEZ akumulace checksumu.
- *
- * Pouziva se pro cteni checksum bajtu z pasky, ktere se nesmi
- * akumulovat do kontrolniho souctu.
- *
- * @param dec Kontext dekoderu.
- * @param[out] byte Vystupni hodnota bajtu.
- * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
+ * @brief Přečte bit (dvě půlky různé úrovně).
+ * @param r Čtečka. @param[out] bit Hodnota.
+ * @return 0 = OK, -1 = konec bloku, -2 = porušený Manchester (stejné úrovně půlek).
  */
-static en_WAV_ANALYZER_ERROR cpmtape_read_byte_raw ( st_CPMTAPE_DEC *dec, uint8_t *byte ) {
-    uint8_t value = 0;
-    int i;
-
-    for ( i = 0; i < 8; i++ ) {
-        int bit;
-        en_WAV_ANALYZER_ERROR err = cpmtape_read_bit ( dec, &bit );
-        if ( err != WAV_ANALYZER_OK ) return err;
-        if ( bit ) value |= ( uint8_t ) ( 1 << i );
-    }
-
-    *byte = value;
-    return WAV_ANALYZER_OK;
-}
-
-
-/**
- * @brief Precte 7 bitu posledniho bajtu (LSB first) BEZ akumulace checksumu.
- *
- * CPM-TAPE neprenasi MSB (bit 7) posledniho bajtu body bloku.
- * Dekoder cte 7 bitu a MSB rekonstruuje z checksumu.
- *
- * @param dec Kontext dekoderu.
- * @param[out] partial Vystupni hodnota (bity 0-6, bit 7 = 0).
- * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
- */
-static en_WAV_ANALYZER_ERROR cpmtape_read_byte_partial ( st_CPMTAPE_DEC *dec, uint8_t *partial ) {
-    uint8_t value = 0;
-    int i;
-
-    for ( i = 0; i < 7; i++ ) {
-        int bit;
-        en_WAV_ANALYZER_ERROR err = cpmtape_read_bit ( dec, &bit );
-        if ( err != WAV_ANALYZER_OK ) return err;
-        if ( bit ) value |= ( uint8_t ) ( 1 << i );
-    }
-
-    *partial = value;
-    return WAV_ANALYZER_OK;
-}
-
-
-/* =========================================================================
- *  Sync detekce a kalibrace
- * ========================================================================= */
-
-/**
- * @brief Najde CPM-TAPE sync v sekvenci pulzu.
- *
- * Sync bit 1 se sklada ze dvou velmi dlouhych pul-period:
- * HIGH(5*T/2) + LOW(5*T/2). Hledame par po sobe jdoucich pulzu,
- * ktere splnuji:
- * 1. Oba delsi nez WAV_CPMTAPE_SYNC_MIN_US
- * 2. Opacne polarity (Manchester bit = dve protipolarne pul-periody)
- * 3. Vzajemne podobne (do SYNC_PAIR_TOLERANCE)
- * 4. Predchazene pilotem s T/2 a 3T/2 pulzy (pomer ≈ 1:3)
- * 5. Pomer sync/short ≈ 5 (v rozsahu SYNC_RATIO_MIN - SYNC_RATIO_MAX)
- *
- * @param seq Sekvence pulzu.
- * @param start_pos Pozice od ktere zacit hledat.
- * @param[out] out_sync_pos Index prvniho sync pulzu.
- * @param[out] out_bit_period Kalibrovana bitova perioda T (us).
- * @param[out] out_bit1_level Uroven signalu odpovídající bitu 1
- *             (urcena z polarity prvni pul-periody sync bitu).
- * @return WAV_ANALYZER_OK pri nalezeni, jinak chybovy kod.
- */
-static en_WAV_ANALYZER_ERROR cpmtape_find_sync (
-    const st_WAV_PULSE_SEQUENCE *seq,
-    uint32_t start_pos,
-    uint32_t *out_sync_pos,
-    double *out_bit_period,
-    int *out_bit1_level
-) {
-    if ( !seq || !out_sync_pos || !out_bit_period || !out_bit1_level ) {
-        return WAV_ANALYZER_ERROR_INVALID_PARAM;
-    }
-
-    /* potrebujeme alespon PILOT_WINDOW pulzu pred sync + 2 pro sync */
-    uint32_t min_start = start_pos + WAV_CPMTAPE_PILOT_WINDOW;
-
-    uint32_t pos;
-    for ( pos = min_start; pos + 1 < seq->count; pos++ ) {
-        double d1 = seq->pulses[pos].duration_us;
-        double d2 = seq->pulses[pos + 1].duration_us;
-
-        /* obe pul-periody musi byt dostatecne dlouhe */
-        if ( d1 < WAV_CPMTAPE_SYNC_MIN_US || d2 < WAV_CPMTAPE_SYNC_MIN_US ) continue;
-
-        /* obe pul-periody musi mit opacnou polaritu (Manchester bit) */
-        if ( seq->pulses[pos].level == seq->pulses[pos + 1].level ) continue;
-
-        /* obe pul-periody musi byt podobne */
-        double sync_avg = ( d1 + d2 ) / 2.0;
-        if ( fabs ( d1 - d2 ) > sync_avg * SYNC_PAIR_TOLERANCE ) continue;
-
-        /* kalibrace z predchazejiciho pilotu */
-        uint32_t cal_start = ( pos > WAV_CPMTAPE_PILOT_WINDOW )
-                             ? pos - WAV_CPMTAPE_PILOT_WINDOW
-                             : 0;
-
-        /* spocitame SHORT pulzy (T/2) v pilotnim okne */
-        double short_sum = 0.0;
-        int short_count = 0;
-        double long_sum = 0.0;
-        int long_count = 0;
-
-        uint32_t i;
-        for ( i = cal_start; i < pos; i++ ) {
-            double d = seq->pulses[i].duration_us;
-            if ( d < sync_avg * PILOT_SHORT_FACTOR ) {
-                /* SHORT pulz (T/2) */
-                short_sum += d;
-                short_count++;
-            } else if ( d < sync_avg * 0.8 ) {
-                /* LONG pilot pulz (3T/2) - delsi nez short, kratsi nez sync */
-                long_sum += d;
-                long_count++;
-            }
-        }
-
-        /* musime mit dostatek obou typu pulzu */
-        if ( short_count < WAV_CPMTAPE_PILOT_MIN_SHORT ) continue;
-        if ( long_count < WAV_CPMTAPE_PILOT_MIN_LONG ) continue;
-
-        double short_avg = short_sum / short_count;
-        double long_avg = long_sum / long_count;
-
-        /* pomer long/short musi byt ≈ 3 (pilot vzor T/2 a 3T/2) */
-        double pilot_ratio = long_avg / short_avg;
-        if ( pilot_ratio < WAV_CPMTAPE_PILOT_RATIO_MIN ||
-             pilot_ratio > WAV_CPMTAPE_PILOT_RATIO_MAX ) continue;
-
-        /* pomer sync/short musi byt ≈ 5 (sync = 5*T/2, short = T/2) */
-        double sync_ratio = sync_avg / short_avg;
-        if ( sync_ratio < WAV_CPMTAPE_SYNC_RATIO_MIN ||
-             sync_ratio > WAV_CPMTAPE_SYNC_RATIO_MAX ) continue;
-
+static int read_bit ( st_MRD *r, int *bit ) {
+    int a, b;
+    if ( next_half ( r, &a ) ) return -1;
+    if ( next_half ( r, &b ) ) {
         /*
-         * Validni sync nalezen!
-         * Sync je Manchester bit 1. Prvni pul-perioda sync bitu
-         * ma polaritu odpovídající bitu 1. To muze byt HIGH nebo LOW
-         * v zavislosti na kodovani WAV signalu.
+         * Druhá půlka posledního bitu bloku splyne s pauzou (Pezik nemá koncový
+         * bit): delší pulz opačné úrovně, nebo konec signálu. Pulz zůstane
+         * nepřečtený (pos na něm), další čtení skončí koncem bloku.
          */
-        *out_sync_pos = pos;
-        *out_bit_period = short_avg * 2.0;  /* T = 2 * (T/2) */
-        *out_bit1_level = seq->pulses[pos].level;
-        return WAV_ANALYZER_OK;
+        if ( r->pos >= r->seq->count || ( r->seq->pulses[r->pos].level ? 1 : 0 ) != a ) {
+            *bit = ( a == r->pol ) ? 1 : 0;
+            return 0;
+        }
+        return -1;
     }
-
-    return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
+    if ( a == b ) return -2;
+    *bit = ( a == r->pol ) ? 1 : 0;
+    return 0;
 }
 
 
 /**
- * @brief Inicializuje kontext dekoderu za sync bitem.
- *
- * Po nalezeni sync (HIGH pul-perioda na pozici sync_pos) nastavi
- * dekoder tak, aby ukazoval na zacatek prvniho datoveho bitu.
- *
- * Sync bit 1 = HIGH(5T/2) + LOW(5T/2). LOW cast muze byt sleita
- * s prvnim datovym bitem (pokud zacinaji stejnou polaritou).
- * Dekoder preskoci sync LOW pomoci time-budget pristpu.
- *
- * @param dec Kontext dekoderu k inicializaci.
- * @param seq Sekvence pulzu.
- * @param sync_pos Index sync HIGH pulzu.
- * @param bit_period Kalibrovana bitova perioda T (us).
+ * @brief Přečte bajt LSB první.
+ * @param r Čtečka. @param[out] v Bajt.
+ * @return 0 = OK, jinak chyba read_bit().
  */
-static void cpmtape_init_after_sync (
-    st_CPMTAPE_DEC *dec,
-    const st_WAV_PULSE_SEQUENCE *seq,
-    uint32_t sync_pos,
-    double bit_period,
-    int bit1_level
-) {
-    dec->seq = seq;
-    dec->bit_period_us = bit_period;
-    dec->checksum = 0;
-    dec->bit1_level = bit1_level;
-
-    /* presuneme se na sync LOW pulz (pos + 1) */
-    dec->pos = sync_pos + 1;
-    dec->time_offset_us = 0.0;
-
-    /*
-     * Preskocime sync druhou pul-periodu.
-     * Pouzijeme skutecnou delku sync HIGH pulzu (presnou, ne vypoctenou),
-     * protoze zaokrouhlovani v koderu zpusobi, ze T*2.5 != skutecny sync.
-     * Napr. pro 2400 Bd@44100: T/2=9 vzorku, ale round(T/2*5)=46, ne 45.
-     */
-    double sync_half = seq->pulses[sync_pos].duration_us;
-    cpmtape_advance ( dec, sync_half );
+static int read_byte ( st_MRD *r, uint8_t *v ) {
+    uint8_t x = 0;
+    for ( int i = 0; i < 8; i++ ) {
+        int b, e = read_bit ( r, &b );
+        if ( e ) return e;
+        x |= ( uint8_t ) ( b << i );
+    }
+    *v = x;
+    return 0;
 }
 
 
-/* =========================================================================
- *  Dekodovani bloku
- * ========================================================================= */
-
 /**
- * @brief Dekoduje blok dat: flag + data_bytes + checksum.
- *
- * Precte flag bajt, overeni s ocekavanym, pak precte data a checksum.
- * Pro header blok cte plnych 128 bajtu. Pro body blok cte
- * (size-1) plnych bajtu a 7 bitu posledniho + rekonstruuje MSB.
- *
- * @param dec Kontext dekoderu (uz pozicovany za sync).
- * @param expected_flag Ocekavana hodnota flag bajtu ($00 nebo $01).
- * @param data_size Pocet datovych bajtu k precteni.
- * @param is_body 1 pro body blok (posledni bajt ma 7 bitu), 0 pro header.
- * @param[out] out_data Alokuje a naplni pole dekodovanych dat.
- * @param[out] out_crc_status Vysledek CRC verifikace.
- * @param[out] out_crc_stored Checksum precteny z pasky.
- * @param[out] out_crc_computed Checksum vypocteny z dat.
- * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
- *
- * @post Pri uspechu *out_data ukazuje na alokovanou pamet s daty.
+ * @brief Najde pilot: aspoň WAV_CPMTAPE_MIN_PATTERNS cyklů pulzů 2:1:1:2 půlek.
+ * @param seq Sekvence. @param from Začátek hledání. @param limit Konec hledání (index pulzu, kde smí pilot začít).
+ * @param[out] start Index prvního pulzu pilotu. @param[out] h Průměrná půlka bitu (µs).
+ * @return 1 = nalezen, 0 = ne.
  */
-static en_WAV_ANALYZER_ERROR cpmtape_decode_block (
-    st_CPMTAPE_DEC *dec,
-    uint8_t expected_flag,
-    uint32_t data_size,
-    int is_body,
-    uint8_t **out_data,
-    en_WAV_CRC_STATUS *out_crc_status,
-    uint16_t *out_crc_stored,
-    uint16_t *out_crc_computed
-) {
-    en_WAV_ANALYZER_ERROR err;
-
-    /* === 1. Cteni flag bajtu === */
-    dec->checksum = 0;
-    uint8_t flag;
-    err = cpmtape_read_byte ( dec, &flag );
-    if ( err != WAV_ANALYZER_OK ) return err;
-
-    if ( flag != expected_flag ) {
-        return WAV_ANALYZER_ERROR_DECODE_DATA;
-    }
-
-    /* === 2. Alokace bufferu a cteni dat === */
-    uint8_t *data = ( uint8_t* ) malloc ( data_size );
-    if ( !data ) return WAV_ANALYZER_ERROR_ALLOC;
-
-    if ( !is_body || data_size <= 1 ) {
-        /* header blok: vsechny bajty plne (8 bitu) */
-        /* nebo body s 0-1 bajty */
-        if ( !is_body ) {
-            /* header: vsech data_size bajtu plnych 8 bitu */
-            uint32_t i;
-            for ( i = 0; i < data_size; i++ ) {
-                err = cpmtape_read_byte ( dec, &data[i] );
-                if ( err != WAV_ANALYZER_OK ) {
-                    free ( data );
-                    return err;
+static int find_pilot ( const st_WAV_PULSE_SEQUENCE *seq, uint32_t from, uint32_t limit, uint32_t *start, double *h ) {
+    static const int cyc[4] = { 2, 1, 1, 2 };
+    uint32_t i = from;
+    while ( i < limit && i + 8 <= seq->count ) {
+        /* odhad půlky: průměr 4 nejkratších z 8 pulzů (v cyklu jsou 4 jednopůlkové) */
+        double v[8];
+        for ( int k = 0; k < 8; k++ ) v[k] = seq->pulses[i + k].duration_us;
+        for ( int a = 0; a < 8; a++ ) {
+            for ( int b = a + 1; b < 8; b++ ) {
+                if ( v[b] < v[a] ) {
+                    double t = v[a];
+                    v[a] = v[b];
+                    v[b] = t;
                 }
             }
-        } else if ( data_size == 1 ) {
-            /* body s 1 bajtem: jen 7 bitu */
-            uint8_t partial;
-            err = cpmtape_read_byte_partial ( dec, &partial );
-            if ( err != WAV_ANALYZER_OK ) {
-                free ( data );
-                return err;
-            }
-            data[0] = partial; /* MSB rekonstruujeme nize */
         }
-        /* data_size == 0: nic necteme (neocekavano pro body, ale bezpecne) */
-    } else {
-        /* body blok: (data_size - 1) plnych bajtu + 7 bitu posledniho */
-        uint32_t i;
-        for ( i = 0; i < data_size - 1; i++ ) {
-            err = cpmtape_read_byte ( dec, &data[i] );
-            if ( err != WAV_ANALYZER_OK ) {
-                free ( data );
-                return err;
+        double hh = ( v[0] + v[1] + v[2] + v[3] ) / 4.0;
+        int n0[4];
+        int phase = -1;
+        for ( int k = 0; hh > 0 && k < 4; k++ ) n0[k] = halves_of ( seq->pulses[i + k].duration_us, hh );
+        for ( int p = 0; hh > 0 && p < 4 && phase < 0; p++ ) {
+            if ( n0[0] == cyc[p] && n0[1] == cyc[( p + 1 ) % 4] && n0[2] == cyc[( p + 2 ) % 4] && n0[3] == cyc[( p + 3 ) % 4] ) {
+                phase = p;
             }
         }
-
-        /* posledni bajt: jen 7 bitu */
-        uint8_t partial;
-        err = cpmtape_read_byte_partial ( dec, &partial );
-        if ( err != WAV_ANALYZER_OK ) {
-            free ( data );
-            return err;
+        if ( phase < 0 ) {
+            i++;
+            continue;
         }
-        data[data_size - 1] = partial; /* MSB rekonstruujeme nize */
-    }
-
-    /* === 3. Cteni checksumu z pasky (2 bajty, low byte first) === */
-    uint8_t chk_lo, chk_hi;
-    err = cpmtape_read_byte_raw ( dec, &chk_lo );
-    if ( err != WAV_ANALYZER_OK ) {
-        free ( data );
-        if ( out_crc_status ) *out_crc_status = WAV_CRC_NOT_AVAILABLE;
-        return err;
-    }
-
-    err = cpmtape_read_byte_raw ( dec, &chk_hi );
-    if ( err != WAV_ANALYZER_OK ) {
-        free ( data );
-        if ( out_crc_status ) *out_crc_status = WAV_CRC_NOT_AVAILABLE;
-        return err;
-    }
-
-    uint16_t stored = ( uint16_t ) chk_lo | ( ( uint16_t ) chk_hi << 8 );
-
-    /* === 4. Rekonstrukce chybejiciho MSB posledniho bajtu (body) === */
-    if ( is_body && data_size > 0 ) {
-        /*
-         * stored = flag + sum(vsechny plne bajty)
-         * dec->checksum = flag + sum(bajty 0..n-2)
-         * diff = stored - dec->checksum = posledni bajt (plny, 8 bitu)
-         *
-         * Overime, ze dolních 7 bitu odpovida tomu, co jsme prectli.
-         */
-        uint16_t diff = ( uint16_t ) ( stored - dec->checksum );
-        uint8_t reconstructed = ( uint8_t ) ( diff & 0xFF );
-        uint8_t partial = data[data_size - 1];
-
-        if ( ( reconstructed & 0x7F ) == partial ) {
-            /* MSB uspesne rekonstruovan */
-            data[data_size - 1] = reconstructed;
-            /* aktualizujeme checksum se skutecnou hodnotou */
-            dec->checksum += reconstructed;
-        } else {
-            /* rekonstrukce selhala - CRC chyba */
-            /* ponechame 7-bitovou hodnotu */
-            dec->checksum += partial;
+        uint32_t runs = 0, units = 0;
+        double sum = 0;
+        uint32_t j = i;
+        while ( j < seq->count ) {
+            int n = halves_of ( seq->pulses[j].duration_us, hh );
+            if ( n != cyc[( phase + runs ) % 4] ) break;
+            sum += seq->pulses[j].duration_us;
+            units += ( uint32_t ) n;
+            runs++;
+            j++;
+            if ( ( runs & 15 ) == 0 ) hh = sum / units;   /* průběžné upřesnění */
         }
+        if ( runs >= 4u * WAV_CPMTAPE_MIN_PATTERNS ) {
+            *start = i;
+            *h = sum / units;
+            return 1;
+        }
+        i += runs ? runs : 1;
     }
+    return 0;
+}
 
-    /* === 5. Verifikace checksumu === */
-    uint16_t computed = dec->checksum;
 
-    if ( out_crc_stored ) *out_crc_stored = stored;
-    if ( out_crc_computed ) *out_crc_computed = computed;
-
-    if ( out_crc_status ) {
-        *out_crc_status = ( computed == stored ) ? WAV_CRC_OK : WAV_CRC_ERROR;
+/**
+ * @brief Od začátku pilotu zarovná půlky na bity, určí polaritu a přečte pilot a sync.
+ * @param r Čtečka (seq a h nastavené; pos = začátek pilotu). @param[out] patterns Počet vzorů pilotu.
+ * @return 0 = za sync, jinak chyba.
+ */
+static int sync_pilot ( st_MRD *r, uint32_t *patterns ) {
+    /* zarovnání: posun 0 nebo 1 půlky, 8 dvojic musí mít různé úrovně */
+    st_MRD base = *r;
+    int off = -1;
+    for ( int o = 0; o < 2 && off < 0; o++ ) {
+        st_MRD t = base;
+        int lv, ok = 1;
+        for ( int k = 0; k < o && ok; k++ ) ok = next_half ( &t, &lv ) == 0;
+        for ( int k = 0; k < 8 && ok; k++ ) {
+            int a, b;
+            ok = next_half ( &t, &a ) == 0 && next_half ( &t, &b ) == 0 && a != b;
+        }
+        if ( ok ) off = o;
     }
+    if ( off < 0 ) return -1;
+    *r = base;
+    int lv;
+    for ( int k = 0; k < off; k++ ) next_half ( r, &lv );
+    /* polarita: vzor 0,1,1 má víc jedniček než 1,0,0 */
+    st_MRD t = *r;
+    t.pol = 1;
+    int ones = 0;
+    for ( int k = 0; k < 12; k++ ) {
+        int b;
+        if ( read_bit ( &t, &b ) ) return -1;
+        ones += b;
+    }
+    r->pol = ( ones >= 6 ) ? 1 : 0;
+    /* konec pilotu: tři jedničky za sebou (vzor ..., 1, 1 a sync 1) */
+    int b1 = -1, b2 = -1;
+    uint32_t zeros = 0;
+    for ( ;; ) {
+        int b, e = read_bit ( r, &b );
+        if ( e ) return e;
+        if ( b == 0 ) zeros++;
+        if ( b == 1 && b1 == 1 && b2 == 1 ) break;
+        b2 = b1;
+        b1 = b;
+    }
+    *patterns = zeros;
+    return ( zeros >= WAV_CPMTAPE_MIN_PATTERNS ) ? 0 : -1;
+}
 
-    *out_data = data;
+
+/**
+ * @brief Přečte blok: flag, data a checksum.
+ * @param r Čtečka za sync. @param flag Očekávaný flag. @param data Výstup (size B). @param size Délka.
+ * @param[out] stored Checksum z pásky. @param[out] computed Vypočtený checksum.
+ * @return WAV_ANALYZER_OK, WAV_ANALYZER_ERROR_DECODE_DATA.
+ */
+static en_WAV_ANALYZER_ERROR read_block ( st_MRD *r, uint8_t flag, uint8_t *data, uint32_t size,
+                                          uint16_t *stored, uint16_t *computed ) {
+    uint8_t f;
+    if ( read_byte ( r, &f ) || f != flag ) return WAV_ANALYZER_ERROR_DECODE_DATA;
+    uint16_t sum = 0;
+    for ( uint32_t i = 0; i < size; i++ ) {
+        if ( read_byte ( r, &data[i] ) ) return WAV_ANALYZER_ERROR_DECODE_DATA;
+        sum = ( uint16_t ) ( sum + data[i] );
+    }
+    uint8_t lo, hi;
+    if ( read_byte ( r, &lo ) || read_byte ( r, &hi ) ) return WAV_ANALYZER_ERROR_DECODE_DATA;
+    *stored = ( uint16_t ) ( lo | ( hi << 8 ) );
+    *computed = sum;
     return WAV_ANALYZER_OK;
 }
 
 
-/* =========================================================================
- *  Verejne API
- * ========================================================================= */
+/** @brief Rychlosti Intercopy V10.2 v režimu CPM (popisek v Bd). */
+/**
+ * @brief Rychlosti Intercopy V10.2 CPM a jejich půlka bitu v T (takt CPU MZ-800 3 546 895 Hz).
+ *
+ * Změřeno v emulátoru (záznam hran PC1): 1183, 741, 637, 559, 494 T.
+ */
+static const struct {
+    uint16_t bd;     /**< rychlost v Bd, jak ji nabízí Intercopy */
+    uint16_t half;   /**< půlka bitu v T */
+} g_ic_cpm[] = { { 1500, 1183 }, { 2400, 741 }, { 2800, 637 }, { 3200, 559 }, { 3600, 494 } };
+
+/**
+ * @brief Rychlost Intercopy CPM podle průměrné půlky bitu.
+ *
+ * Vybere rychlost, jejíž změřená půlka bitu (g_ic_cpm) je nejblíž průměrné
+ * půlce z pilotu hlavičky.
+ *
+ * @param half_us Průměrná půlka bitu z pilotu hlavičky (µs).
+ * @return Nejbližší rychlost z g_ic_cpm.
+ */
+static uint16_t cpmtape_intercopy_bd ( double half_us ) {
+    uint16_t best = 2400;
+    double bd_diff = 1e9;
+    for ( size_t k = 0; k < sizeof ( g_ic_cpm ) / sizeof ( g_ic_cpm[0] ); k++ ) {
+        double d = half_us - g_ic_cpm[k].half / 3.546895;
+        if ( d < 0 ) d = -d;
+        if ( d < bd_diff ) { bd_diff = d; best = g_ic_cpm[k].bd; }
+    }
+    return best;
+}
+
+
+/**
+ * @brief Zkusí přečíst koncový bit Intercopy: bit 1, jehož druhá půlka splyne s pauzou nebo koncem.
+ * @param r Čtečka za checksumem (posune se jen při úspěchu).
+ * @return 1 = koncový bit (Intercopy), 0 = ne (Pezik: následuje pilot těla).
+ */
+static int end_bit ( st_MRD *r ) {
+    st_MRD t = *r;
+    int a, b;
+    if ( next_half ( &t, &a ) ) return 0;
+    if ( a != t.pol ) return 0;                  /* první půlka bitu 1 */
+    if ( next_half ( &t, &b ) == 0 ) {
+        /* druhá půlka ještě v Manchesteru: Intercopy jen když hned potom končí blok */
+        int c;
+        st_MRD u = t;
+        if ( b == a || next_half ( &u, &c ) == 0 ) return 0;
+    }
+    *r = t;
+    return 1;
+}
+
 
 en_WAV_ANALYZER_ERROR wav_decode_cpmtape_decode_mzf (
     const st_WAV_PULSE_SEQUENCE *seq,
@@ -551,122 +330,117 @@ en_WAV_ANALYZER_ERROR wav_decode_cpmtape_decode_mzf (
     st_MZF **out_mzf,
     st_WAV_DECODE_RESULT *out_header_result,
     st_WAV_DECODE_RESULT *out_body_result,
-    uint32_t *out_consumed_until
+    uint32_t *out_consumed_until,
+    st_WAV_CPMTAPE_INFO *out_info
 ) {
-    if ( !seq || !out_mzf ) {
-        return WAV_ANALYZER_ERROR_INVALID_PARAM;
-    }
-
+    if ( !seq || !out_mzf ) return WAV_ANALYZER_ERROR_INVALID_PARAM;
     *out_mzf = NULL;
     if ( out_consumed_until ) *out_consumed_until = 0;
+    if ( out_header_result ) memset ( out_header_result, 0, sizeof ( *out_header_result ) );
+    if ( out_body_result ) memset ( out_body_result, 0, sizeof ( *out_body_result ) );
+    st_WAV_CPMTAPE_INFO info;
+    memset ( &info, 0, sizeof ( info ) );
 
-    /* === 1. Najdi header sync === */
-    uint32_t hdr_sync_pos;
-    double bit_period;
-    int bit1_level;
-    en_WAV_ANALYZER_ERROR err;
+    /* === 1. hlavička: pilot, sync, flag 00h, 128 B, checksum === */
+    uint8_t hdr[CPMTAPE_HEADER_SIZE];
+    uint16_t h_st = 0, h_cp = 0;
+    st_MRD r;
+    uint32_t from = search_from;
+    uint32_t start = 0;
+    for ( ;; ) {
+        double h;
+        if ( !find_pilot ( seq, from, seq->count, &start, &h ) ) return WAV_ANALYZER_ERROR_NO_LEADER;
+        memset ( &r, 0, sizeof ( r ) );
+        r.seq = seq;
+        r.pos = start;
+        r.h = h;
+        uint32_t patterns = 0;
+        if ( sync_pilot ( &r, &patterns ) == 0 && read_block ( &r, WAV_CPMTAPE_FLAG_HEADER, hdr, CPMTAPE_HEADER_SIZE, &h_st, &h_cp )
+                                                   == WAV_ANALYZER_OK ) {
+            info.half_us = h;
+            info.pilot_header = patterns;
+            info.header_start_pulse = start;
+            break;
+        }
+        from = ( r.pos > start ) ? r.pos : start + 1;   /* další kandidát (např. pilot těla bez hlavičky) */
+    }
+    uint32_t hdr_end = r.pos;
+    info.variant = end_bit ( &r ) ? WAV_CPMTAPE_INTERCOPY : WAV_CPMTAPE_PEZIK;
+    if ( info.variant == WAV_CPMTAPE_PEZIK ) {
+        info.bd = ( info.half_us <= WAV_CPMTAPE_PEZIK_3200_MAX_HALF_US ) ? 3200 : 2400;
+    } else {
+        info.bd = cpmtape_intercopy_bd ( info.half_us );
+    }
 
-    err = cpmtape_find_sync ( seq, search_from, &hdr_sync_pos, &bit_period, &bit1_level );
-    if ( err != WAV_ANALYZER_OK ) return err;
-
-    /* === 2. Dekoduj header blok === */
-    st_CPMTAPE_DEC dec;
-    cpmtape_init_after_sync ( &dec, seq, hdr_sync_pos, bit_period, bit1_level );
-
-    uint32_t hdr_pulse_start = dec.pos;
-    uint8_t *hdr_data = NULL;
-    en_WAV_CRC_STATUS hdr_crc_status = WAV_CRC_NOT_AVAILABLE;
-    uint16_t hdr_crc_stored = 0, hdr_crc_computed = 0;
-
-    err = cpmtape_decode_block ( &dec, WAV_CPMTAPE_FLAG_HEADER, MZF_HEADER_SIZE, 0,
-                                  &hdr_data, &hdr_crc_status,
-                                  &hdr_crc_stored, &hdr_crc_computed );
-    if ( err != WAV_ANALYZER_OK ) return err;
-
-    uint32_t hdr_pulse_end = dec.pos;
-
-    /* vyplnime header result */
     if ( out_header_result ) {
         out_header_result->format = WAV_TAPE_FORMAT_CPM_TAPE;
-        out_header_result->data = ( uint8_t* ) malloc ( MZF_HEADER_SIZE );
-        if ( out_header_result->data ) {
-            memcpy ( out_header_result->data, hdr_data, MZF_HEADER_SIZE );
-        }
-        out_header_result->data_size = MZF_HEADER_SIZE;
-        out_header_result->crc_status = hdr_crc_status;
-        out_header_result->crc_stored = hdr_crc_stored;
-        out_header_result->crc_computed = hdr_crc_computed;
-        out_header_result->pulse_start = hdr_pulse_start;
-        out_header_result->pulse_end = hdr_pulse_end;
+        out_header_result->data = malloc ( CPMTAPE_HEADER_SIZE );
+        if ( out_header_result->data ) memcpy ( out_header_result->data, hdr, CPMTAPE_HEADER_SIZE );
+        out_header_result->data_size = CPMTAPE_HEADER_SIZE;
+        out_header_result->crc_status = ( h_st == h_cp ) ? WAV_CRC_OK : WAV_CRC_ERROR;
+        out_header_result->crc_stored = h_st;
+        out_header_result->crc_computed = h_cp;
+        out_header_result->pulse_start = start;
+        out_header_result->pulse_end = hdr_end;
         out_header_result->is_header = 1;
     }
 
-    /* === 3. Parsuj MZF hlavicku === */
-    st_MZF_HEADER mzf_header;
-    memcpy ( &mzf_header, hdr_data, MZF_HEADER_SIZE );
-    free ( hdr_data );
-    hdr_data = NULL;
+    st_MZF_HEADER mh;
+    memcpy ( &mh, hdr, sizeof ( mh ) );
+    mzf_header_swap_endianity ( &mh );   /* 11h (fname.terminator) zůstává podle pásky */
+    uint32_t fsize = mh.fsize;
 
-    mzf_header_items_correction ( &mzf_header );
-    uint16_t body_size = mzf_header.fsize;
-
-    /* === 4. Dekoduj body blok (pokud existuje) === */
-    uint8_t *body_data = NULL;
-
-    if ( body_size > 0 ) {
-        /* najdi body sync */
-        uint32_t body_sync_pos;
-        double body_bit_period;
-        int body_bit1_level;
-
-        err = cpmtape_find_sync ( seq, dec.pos, &body_sync_pos, &body_bit_period, &body_bit1_level );
-        if ( err != WAV_ANALYZER_OK ) {
-            /* body sync nenalezen */
+    /* === 2. tělo: pilot, sync, flag 01h, fsize B, checksum === */
+    uint8_t *body = malloc ( fsize ? fsize : 1 );
+    if ( !body ) return WAV_ANALYZER_ERROR_ALLOC;
+    en_WAV_CRC_STATUS body_crc = WAV_CRC_NOT_AVAILABLE;
+    uint16_t b_st = 0, b_cp = 0;
+    uint32_t body_start = r.pos;
+    if ( fsize ) {
+        uint32_t bstart;
+        double bh;
+        uint32_t limit = ( r.pos > UINT32_MAX - CPMTAPE_BODY_SEARCH_MAX ) ? seq->count : r.pos + CPMTAPE_BODY_SEARCH_MAX;
+        if ( !find_pilot ( seq, r.pos, limit, &bstart, &bh ) ) {
+            free ( body );
+            if ( out_consumed_until ) *out_consumed_until = r.pos;   /* hledat dál za hlavičkou */
             return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
         }
-
-        /* inicializuj dekoder za body sync */
-        cpmtape_init_after_sync ( &dec, seq, body_sync_pos, body_bit_period, body_bit1_level );
-
-        uint32_t body_pulse_start = dec.pos;
-        en_WAV_CRC_STATUS body_crc_status = WAV_CRC_NOT_AVAILABLE;
-        uint16_t body_crc_stored = 0, body_crc_computed = 0;
-
-        err = cpmtape_decode_block ( &dec, WAV_CPMTAPE_FLAG_BODY, body_size, 1,
-                                      &body_data, &body_crc_status,
-                                      &body_crc_stored, &body_crc_computed );
-        if ( err != WAV_ANALYZER_OK ) return err;
-
-        /* vyplnime body result */
-        if ( out_body_result ) {
-            out_body_result->format = WAV_TAPE_FORMAT_CPM_TAPE;
-            out_body_result->data = NULL;   /* data jsou primo v mzf->body */
-            out_body_result->data_size = body_size;
-            out_body_result->crc_status = body_crc_status;
-            out_body_result->crc_stored = body_crc_stored;
-            out_body_result->crc_computed = body_crc_computed;
-            out_body_result->pulse_start = body_pulse_start;
-            out_body_result->pulse_end = dec.pos;
-            out_body_result->is_header = 0;
+        memset ( &r, 0, sizeof ( r ) );
+        r.seq = seq;
+        r.pos = bstart;
+        r.h = bh;
+        body_start = bstart;
+        if ( sync_pilot ( &r, &info.pilot_body ) != 0
+             || read_block ( &r, WAV_CPMTAPE_FLAG_BODY, body, fsize, &b_st, &b_cp ) != WAV_ANALYZER_OK ) {
+            free ( body );
+            if ( out_consumed_until ) *out_consumed_until = r.pos > bstart ? r.pos : bstart + 1;   /* za místem chyby */
+            return WAV_ANALYZER_ERROR_DECODE_DATA;
         }
+        body_crc = ( b_st == b_cp ) ? WAV_CRC_OK : WAV_CRC_ERROR;
+        end_bit ( &r );   /* Intercopy: koncový bit těla */
+    }
+    if ( out_body_result ) {
+        out_body_result->format = WAV_TAPE_FORMAT_CPM_TAPE;
+        out_body_result->data = NULL;   /* tělo je v mzf->body */
+        out_body_result->data_size = fsize;
+        out_body_result->crc_status = body_crc;
+        out_body_result->crc_stored = b_st;
+        out_body_result->crc_computed = b_cp;
+        out_body_result->pulse_start = body_start;
+        out_body_result->pulse_end = r.pos;
+        out_body_result->is_header = 0;
     }
 
-    /* === 5. Sestav MZF strukturu === */
-    st_MZF *mzf = ( st_MZF* ) calloc ( 1, sizeof ( st_MZF ) );
+    st_MZF *mzf = calloc ( 1, sizeof ( st_MZF ) );
     if ( !mzf ) {
-        free ( body_data );
+        free ( body );
         return WAV_ANALYZER_ERROR_ALLOC;
     }
-
-    memcpy ( &mzf->header, &mzf_header, sizeof ( st_MZF_HEADER ) );
-    mzf->body = body_data;
-    mzf->body_size = body_size;
-
+    memcpy ( &mzf->header, &mh, sizeof ( mh ) );
+    mzf->body = body;
+    mzf->body_size = fsize;
     *out_mzf = mzf;
-
-    if ( out_consumed_until ) {
-        *out_consumed_until = dec.pos;
-    }
-
+    if ( out_consumed_until ) *out_consumed_until = r.pos;
+    if ( out_info ) *out_info = info;
     return WAV_ANALYZER_OK;
 }

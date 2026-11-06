@@ -1,7 +1,7 @@
 /**
  * @file   generic_driver.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Jádrová implementace univerzální I/O abstrakce a volitelné zabudované callbacky.
  *
  * Tato knihovna slouží jako univerzální prostředek pro přístup k datovým blokům.
@@ -17,7 +17,7 @@
  * (prepare + ppread/ppwrite), který se vyhne kopírování dat.
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)

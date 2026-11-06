@@ -1,13 +1,13 @@
 /**
  * @file   cmt_stream_all.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Sdílené definice pro všechny typy CMT streamů.
  *
  * Obsahuje výčtový typ polarity signálu, společný pro bitstream i vstream.
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)

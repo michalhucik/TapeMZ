@@ -3,17 +3,20 @@
  * @brief  Komplexni integracni test BSD formatu: WAV dekodovani, re-enkodovani, round-trip.
  *
  * Testovaci program pro BSD/BRD chunkovany format:
- * 1. Dekoduje realnou nahravku tstdata/basic-bsd.wav pres wav_analyzer
+ * 1. Dekóduje nahrávku z emulátoru tstdata/basic-bsd.wav pres wav_analyzer
  * 2. Overi format BSD, ftype (0x03/0x04), header CRC, body CRC
  * 3. Sestavi BSD chunky z dekodovanych dat
- * 4. Re-enkoduje pres mzcmt_bsd_create_stream do WAV
- * 5. Dekoduje re-enkodovany WAV a porovna s originalem
+ * 4. Re-enkoduje profilem BASIC-1Z016 (blok 0x46, player) do WAV
+ * 5. Dekoduje re-enkodovany WAV a porovna s originalem (i počet kusů a CRC)
  * 6. Vytvori TMZ blok 0x45, naparsuje zpet a overi shodu dat
+ * 7. Poškozený kus: data z kopie, nebo CRC ERROR při poškození obou kopií
+ * 8. ftype 03h s fsize 0 se dekóduje jako BSD
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
  *
  * Copyright (C) 2026 Michal Hucik <hucik@ordoz.com>
+ * Bez tstdata/ vypíše SKIP a skončí 0 (tests/tstdata_skip.h).
  */
 
 #include <stdio.h>
@@ -21,7 +24,6 @@
 #include <string.h>
 
 #include "libs/mzf/mzf.h"
-#include "libs/mzcmt_bsd/mzcmt_bsd.h"
 #include "libs/cmt_stream/cmt_stream.h"
 #include "libs/endianity/endianity.h"
 #include "libs/generic_driver/generic_driver.h"
@@ -29,7 +31,10 @@
 #include "libs/wav_analyzer/wav_analyzer.h"
 #include "libs/tmz/tmz.h"
 #include "libs/tmz/tmz_blocks.h"
+#include "libs/tmz/tmz_profile.h"
+#include "libs/tmz/tmz_player.h"
 #include "libs/tzx/tzx.h"
+#include "tstdata_skip.h"
 
 
 /** @brief Cesta k testovaci nahravce (relativni z build/). */
@@ -40,6 +45,15 @@ static const char *g_tmp_wav = "temp/bsd_roundtrip.wav";
 
 /** @brief Vzorkovaci frekvence pro re-enkodovani. */
 #define SAMPLE_RATE  44100
+
+/** @brief Počet selhaných kontrol CHECK (testy 5 a 6). */
+static int g_checks_failed = 0;
+
+/** @brief Vyhodnotí podmínku a vypíše výsledek. */
+#define CHECK( cond, msg ) do { \
+    if ( cond ) { printf ( "OK: %s\n", msg ); } \
+    else { printf ( "FAIL: %s\n", msg ); g_checks_failed++; } \
+} while ( 0 )
 
 
 /**
@@ -67,31 +81,31 @@ static int build_chunks ( const uint8_t *body_data, uint32_t body_size,
     if ( body_size == 0 ) {
         total_chunks = 1; /* pouze terminacni chunk */
     } else {
-        total_chunks = ( body_size + MZCMT_BSD_CHUNK_DATA_SIZE - 1 ) / MZCMT_BSD_CHUNK_DATA_SIZE;
+        total_chunks = ( body_size + TMZ_BASIC_CHUNK_DATA_SIZE - 1 ) / TMZ_BASIC_CHUNK_DATA_SIZE;
     }
 
-    size_t chunks_bytes = (size_t) total_chunks * MZCMT_BSD_CHUNK_SIZE;
+    size_t chunks_bytes = (size_t) total_chunks * TMZ_BASIC_CHUNK_SIZE;
 
     uint8_t *chunks = calloc ( 1, chunks_bytes );
     if ( !chunks ) return -1;
 
     for ( uint32_t i = 0; i < total_chunks; i++ ) {
-        uint8_t *chunk = chunks + (size_t) i * MZCMT_BSD_CHUNK_SIZE;
+        uint8_t *chunk = chunks + (size_t) i * TMZ_BASIC_CHUNK_SIZE;
 
         /* chunk ID: posledni chunk dostane 0xFFFF, ostatni sekvencni */
         uint16_t chunk_id = ( i == total_chunks - 1 )
-                            ? MZCMT_BSD_LAST_CHUNK_ID
+                            ? TMZ_BASIC_LAST_CHUNK_ID
                             : (uint16_t) i;
         uint16_t id_le = endianity_bswap16_LE ( chunk_id );
         memcpy ( chunk, &id_le, 2 );
 
         /* chunk data (256B, zbytek nulovy z calloc) */
         if ( body_data && body_size > 0 ) {
-            size_t offset = (size_t) i * MZCMT_BSD_CHUNK_DATA_SIZE;
+            size_t offset = (size_t) i * TMZ_BASIC_CHUNK_DATA_SIZE;
             if ( offset < body_size ) {
                 size_t remaining = body_size - offset;
-                size_t copy_size = ( remaining < MZCMT_BSD_CHUNK_DATA_SIZE )
-                                   ? remaining : MZCMT_BSD_CHUNK_DATA_SIZE;
+                size_t copy_size = ( remaining < TMZ_BASIC_CHUNK_DATA_SIZE )
+                                   ? remaining : TMZ_BASIC_CHUNK_DATA_SIZE;
                 memcpy ( chunk + 2, body_data + offset, copy_size );
             }
         }
@@ -137,7 +151,7 @@ static int decode_wav ( const char *wav_path, st_WAV_ANALYZER_RESULT *result ) {
 
 
 /**
- * @brief Test 1: dekodovani realne BSD nahravky.
+ * @brief Test 1: dekódování BSD nahrávky z emulátoru.
  *
  * @param[out] out_result Vysledek analyzy (pro pouziti v dalsich testech).
  * @return Pocet selhani.
@@ -145,7 +159,7 @@ static int decode_wav ( const char *wav_path, st_WAV_ANALYZER_RESULT *result ) {
 static int test_decode_real_wav ( st_WAV_ANALYZER_RESULT *out_result ) {
     int failures = 0;
 
-    printf ( "=== Test 1: Dekodovani realne BSD nahravky ===\n\n" );
+    printf ( "=== Test 1: Decoding BSD recording (emulator) ===\n\n" );
 
     if ( decode_wav ( g_wav_path, out_result ) != 0 ) {
         printf ( "FAIL: cannot decode WAV\n" );
@@ -247,38 +261,31 @@ static int test_wav_roundtrip ( const st_MZF *orig_mzf ) {
     printf ( "Built %u chunks (%u data + 1 termination)\n", chunk_count, chunk_count - 1 );
 
     /*
-     * Priprava 128B raw hlavicky pro BSD enkodovani.
-     * BSD format vyzaduje fsize=0, fstrt=0, fexec=0 v hlavicce -
-     * na rozdil od dekodovaneho MZF, kde fsize uz obsahuje
-     * celkovou velikost dat ze vsech chunku (doplnenou dekoderem).
+     * Hlavička pro profil BASIC-1Z016 v pořadí hostitele. BSD má fsize,
+     * fstrt a fexec 0 - na rozdíl od dekódovaného MZF, kde fsize obsahuje
+     * celkovou velikost dat ze všech kusů (doplněnou dekodérem).
      */
-    uint8_t header_raw[128];
-    memset ( header_raw, 0, 128 );
-    memcpy ( header_raw, &orig_mzf->header, sizeof ( st_MZF_HEADER ) );
+    st_MZF_HEADER hdr = orig_mzf->header;
+    hdr.fsize = 0;
+    hdr.fstrt = 0;
+    hdr.fexec = 0;
 
-    /* vynulovat fsize/fstrt/fexec (BSD konvence) */
-    st_MZF_HEADER *hdr = (st_MZF_HEADER *) header_raw;
-    hdr->fsize = 0;
-    hdr->fstrt = 0;
-    hdr->fexec = 0;
-
-    /* re-enkodovani do BSD streamu */
-    st_MZCMT_BSD_CONFIG config = {
-        .pulseset = MZCMT_BSD_PULSESET_800,
-        .speed = CMTSPEED_1_1,
-        .lgap_length = 0,
-        .sgap_length = 0,
-        .flags = 0,
-    };
-
-    st_CMT_STREAM *stream = mzcmt_bsd_create_stream (
-                                header_raw, chunks, chunk_count, &config,
-                                CMT_STREAM_TYPE_VSTREAM, SAMPLE_RATE
-                            );
+    /* re-enkódování profilem BASIC-1Z016 přes player */
+    st_TMZ_PROFILE_ARGS pa;
+    tmz_profile_args_init ( &pa );
+    en_TMZ_PROFILE_ERROR pe;
+    st_TZX_BLOCK *block = tmz_profile_build_block ( "BASIC-1Z016", &pa, &hdr, chunks,
+                                                    ( uint32_t ) chunk_count * 258, &pe );
     free ( chunks );
+    st_TMZ_PLAYER_CONFIG pc;
+    tmz_player_config_init ( &pc );
+    pc.sample_rate = SAMPLE_RATE;
+    en_TMZ_PLAYER_ERROR ple;
+    st_CMT_STREAM *stream = block ? tmz_player_play_block ( block, &pc, &ple ) : NULL;
+    tmz_block_free ( block );
 
     if ( !stream ) {
-        printf ( "FAIL: mzcmt_bsd_create_stream failed\n" );
+        printf ( "FAIL: BASIC-1Z016 stream failed\n" );
         return 1;
     }
 
@@ -367,9 +374,182 @@ static int test_wav_roundtrip ( const st_MZF *orig_mzf ) {
         failures++;
     }
 
+    /* počet kusů, žádná chyba CRC, kopie nepoužitá */
+    if ( f->bsd_chunks == chunk_count && f->bsd_crc_errors == 0 && f->bsd_from_copy == 0
+         && f->body_crc == WAV_CRC_OK ) {
+        printf ( "OK: round-trip %u chunks, no CRC error\n", f->bsd_chunks );
+    } else {
+        printf ( "FAIL: round-trip chunks %u (expected %u), CRC errors %u, from copy %u\n",
+                 f->bsd_chunks, chunk_count, f->bsd_crc_errors, f->bsd_from_copy );
+        failures++;
+    }
+
     wav_analyzer_result_destroy ( &rt_result );
     printf ( "\n" );
     return failures;
+}
+
+
+/**
+ * @brief Zapíše 8bitový mono WAV 44 100 Hz (jako test_cpmtape_roundtrip.c).
+ * @param path Soubor. @param d Vzorky. @param n Počet. @return EXIT_SUCCESS, nebo EXIT_FAILURE.
+ */
+static int write_wav8 ( const char *path, const uint8_t *d, uint32_t n ) {
+    uint8_t h[44] = { 'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 1, 0,
+                      0x44, 0xAC, 0, 0, 0x44, 0xAC, 0, 0, 1, 0, 8, 0, 'd', 'a', 't', 'a', 0, 0, 0, 0 };
+    uint32_t riff = 36 + n;
+    for ( int i = 0; i < 4; i++ ) {
+        h[4 + i] = ( uint8_t ) ( riff >> ( 8 * i ) );
+        h[40 + i] = ( uint8_t ) ( n >> ( 8 * i ) );
+    }
+    FILE *f = fopen ( path, "wb" );
+    int ok = f && fwrite ( h, 1, 44, f ) == 44 && fwrite ( d, 1, n, f ) == n;
+    if ( f ) fclose ( f );
+    return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+
+/**
+ * @brief Přehraje BASIC-1Z016 do 8bitových vzorků 44,1 kHz (přes temp/bsd_part.wav).
+ * @param ftype Typ souboru v hlavičce. @param nchunks Počet kusů 1 až 3 (data = vzorek bajtů).
+ * @param[out] n Počet vzorků. @return Vzorky (uvolnit free), nebo NULL.
+ */
+static uint8_t* basic_samples ( uint8_t ftype, uint16_t nchunks, uint32_t *n ) {
+    static uint8_t chunks[3 * 258];
+    for ( uint32_t i = 0; i < sizeof ( chunks ); i++ ) chunks[i] = ( uint8_t ) ( i * 13 + 7 );
+    for ( uint16_t k = 0; k < nchunks; k++ ) {
+        uint16_t id = ( k + 1 == nchunks ) ? 0xFFFF : k;
+        chunks[k * 258] = ( uint8_t ) id;
+        chunks[k * 258 + 1] = ( uint8_t ) ( id >> 8 );
+    }
+    st_MZF_HEADER h;
+    memset ( &h, 0, sizeof ( h ) );
+    h.ftype = ftype;
+    memcpy ( h.fname.name, "DATA", 4 );
+    h.fname.name[4] = 0x0D;
+    st_TMZ_PROFILE_ARGS a;
+    tmz_profile_args_init ( &a );
+    en_TMZ_PROFILE_ERROR pe;
+    st_TZX_BLOCK *b = tmz_profile_build_block ( "BASIC-1Z016", &a, &h, chunks, nchunks * 258u, &pe );
+    st_TMZ_PLAYER_CONFIG pc;
+    tmz_player_config_init ( &pc );
+    pc.sample_rate = 44100;
+    en_TMZ_PLAYER_ERROR ple;
+    st_CMT_STREAM *s = b ? tmz_player_play_block ( b, &pc, &ple ) : NULL;
+    int saved = s && cmt_stream_save_wav ( s, 44100, ( char* ) "temp/bsd_part.wav" ) == EXIT_SUCCESS;
+    cmt_stream_destroy ( s );
+    tmz_block_free ( b );
+    if ( !saved ) return NULL;
+    FILE *f = fopen ( "temp/bsd_part.wav", "rb" );
+    if ( !f ) return NULL;
+    fseek ( f, 0, SEEK_END );
+    long len = ftell ( f );
+    uint8_t *d = ( len > 44 ) ? malloc ( ( size_t ) len - 44 ) : NULL;
+    fseek ( f, 44, SEEK_SET );
+    int ok = d && fread ( d, 1, ( size_t ) len - 44, f ) == ( size_t ) len - 44;
+    fclose ( f );
+    if ( !ok ) {
+        free ( d );
+        return NULL;
+    }
+    *n = ( uint32_t ) len - 44;
+    return d;
+}
+
+
+/**
+ * @brief Najde úseky signálu oddělené během konstantních vzorků >= 22050 (0,5 s).
+ * @param d Vzorky. @param n Počet. @param[out] st Začátky. @param[out] en Konce. @param max Kapacita.
+ * @return Počet úseků.
+ */
+static int find_segments ( const uint8_t *d, uint32_t n, uint32_t *st, uint32_t *en, int max ) {
+    int k = 0;
+    uint32_t i = 0;
+    while ( i < n && k < max ) {
+        uint32_t s = i;
+        uint32_t run = 0;
+        while ( i < n ) {
+            run = ( i > 0 && d[i] == d[i - 1] ) ? run + 1 : 0;
+            if ( run >= 22050 ) break;
+            i++;
+        }
+        st[k] = s;
+        en[k] = i - run;
+        k++;
+        while ( i < n && d[i] == d[i - 1] ) i++;
+    }
+    return k;
+}
+
+
+/**
+ * @brief Poškodí 40 vzorků úseku na poměrné pozici frac (konstanta = vzorek před).
+ * @param d Vzorky. @param st Začátek úseku. @param en Konec úseku. @param frac Poměrná pozice 0..1.
+ */
+static void damage ( uint8_t *d, uint32_t st, uint32_t en, double frac ) {
+    uint32_t p = st + ( uint32_t ) ( ( en - st ) * frac );
+    memset ( d + p, d[p - 1], 40 );
+}
+
+
+/**
+ * @brief Kus 1 (úsek 2): poškození 1. kopie, pak obou kopií.
+ *
+ * Úsek kusu BASIC-1Z016 trvá asi 9,3 s: tón 0 až 61 %, 1. kopie 61 až 80 %,
+ * oddělovač, kopie 81 až 100 % (z půlvln profilu BASIC-1Z016). Poškození 40 vzorků změní bajt.
+ */
+static void test_corrupt_chunk ( void ) {
+    printf ( "=== Test 5: poškozený kus (kopie, CRC každého kusu) ===\n\n" );
+    uint32_t n = 0;
+    uint32_t st[8], en[8];
+    for ( int both = 0; both < 2; both++ ) {
+        uint8_t *d = basic_samples ( 0x04, 3, &n );
+        int segs = d ? find_segments ( d, n, st, en, 8 ) : 0;
+        CHECK ( segs == 4, "BASIC-1Z016 3 chunks = 4 segments" );
+        if ( segs != 4 ) {
+            free ( d );
+            return;
+        }
+        damage ( d, st[2], en[2], 0.70 );
+        if ( both ) damage ( d, st[2], en[2], 0.90 );
+        st_WAV_ANALYZER_RESULT r;
+        int ok = write_wav8 ( "temp/bsd_damaged.wav", d, n ) == EXIT_SUCCESS
+                 && decode_wav ( "temp/bsd_damaged.wav", &r ) == 0;
+        free ( d );
+        CHECK ( ok && r.file_count == 1 && r.files[0].format == WAV_TAPE_FORMAT_BSD, "damaged BSD decodes as one file" );
+        if ( !ok ) continue;
+        if ( r.file_count == 1 ) {
+            const st_WAV_ANALYZER_FILE_RESULT *fr = &r.files[0];
+            printf ( "   body CRC %d, chunks %u, CRC errors %u, from copy %u\n", fr->body_crc, fr->bsd_chunks,
+                     fr->bsd_crc_errors, fr->bsd_from_copy );
+            if ( !both ) {
+                CHECK ( fr->body_crc == WAV_CRC_OK && fr->bsd_from_copy == 1 && fr->bsd_crc_errors == 0,
+                        "chunk 1 first copy damaged -> data from copy, CRC OK" );
+            } else {
+                CHECK ( fr->body_crc == WAV_CRC_ERROR && fr->bsd_crc_errors == 1,
+                        "chunk 1 both copies damaged -> CRC ERROR although the last chunk is OK" );
+            }
+        }
+        wav_analyzer_result_destroy ( &r );
+    }
+    printf ( "\n" );
+}
+
+
+/**
+ * @brief Hlavička ftype 03h a fsize 0 se dekóduje jako BSD.
+ */
+static void test_ftype03 ( void ) {
+    printf ( "=== Test 6: ftype 03h ===\n\n" );
+    uint32_t n = 0;
+    uint8_t *d = basic_samples ( 0x03, 1, &n );
+    st_WAV_ANALYZER_RESULT r;
+    int ok = d && write_wav8 ( "temp/bsd_ftype03.wav", d, n ) == EXIT_SUCCESS
+             && decode_wav ( "temp/bsd_ftype03.wav", &r ) == 0;
+    free ( d );
+    CHECK ( ok && r.file_count == 1 && r.files[0].format == WAV_TAPE_FORMAT_BSD, "ftype 03h with fsize 0 -> BSD" );
+    if ( ok ) wav_analyzer_result_destroy ( &r );
+    printf ( "\n" );
 }
 
 
@@ -613,14 +793,16 @@ static int test_tmz_file_roundtrip ( const st_MZF *orig_mzf ) {
  * @return 0 pri uspechu (vsechny testy PASS), 1 pri selhani.
  */
 int main ( int argc, char *argv[] ) {
+    if ( argc < 2 && tstdata_skip ( "test_bsd_wav" ) ) return 0;   /* argv[1] dává vstup místo tstdata/ */
     memory_driver_init ();
 
     if ( argc > 1 ) g_wav_path = argv[1];
 
     int total_failures = 0;
 
-    /* Test 1: dekodovani realne nahravky */
+    /* Test 1: dekódování nahrávky z emulátoru */
     st_WAV_ANALYZER_RESULT orig_result;
+    memset ( &orig_result, 0, sizeof ( orig_result ) ); /* při selhání dekódování se čte file_count */
     int t1_failures = test_decode_real_wav ( &orig_result );
     total_failures += t1_failures;
 
@@ -640,6 +822,11 @@ int main ( int argc, char *argv[] ) {
 
     /* Test 4: TMZ soubor round-trip */
     total_failures += test_tmz_file_roundtrip ( orig_mzf );
+
+    /* Test 5 a 6: poškozený kus, ftype 03h */
+    test_corrupt_chunk ();
+    test_ftype03 ();
+    total_failures += g_checks_failed;
 
     /* celkovy vysledek */
     printf ( "=== BSD Test: %s (%d failures) ===\n",

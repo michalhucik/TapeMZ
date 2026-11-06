@@ -1,6 +1,6 @@
 /**
  * @file   test_tc_normal.c
- * @brief  Integracni test: dekodovani realnych nahravek TurboCopy NORMAL
+ * @brief  Integracni test: dekódování nahrávek TurboCopy NORMAL z emulátoru
  *
  * Testuje dekodovani vsech zaznamu z TurboCopy nahravek pri ruznych
  * rychlostech (pomery 1:1 az 9:8). Kazda nahravka obsahuje program
@@ -17,6 +17,7 @@
  * - tc-normal1.wav: 19 zaznamu (rychlosti 1:1 az 5:4)
  * - tc-normal2.wav: 18 zaznamu (rychlosti 5:6 az 8:3)
  * - tc-normal3.wav: 11 zaznamu (rychlosti 8:4 az 9:8)
+ * Bez tstdata/ vypíše SKIP a skončí 0 (tests/tstdata_skip.h).
  */
 
 #include <stdio.h>
@@ -25,6 +26,7 @@
 
 #include "libs/generic_driver/generic_driver.h"
 #include "libs/wav_analyzer/wav_analyzer.h"
+#include "tstdata_skip.h"
 
 
 /** @brief Ocekavana velikost tela Y2K programu. */
@@ -192,6 +194,7 @@ static int test_one_recording ( const st_TC_TEST_CASE *tc ) {
 
 
 int main ( void ) {
+    if ( tstdata_skip ( "test_tc_normal" ) ) return 0;
     int total_failures = 0;
 
     for ( uint32_t i = 0; i < TEST_CASE_COUNT; i++ ) {

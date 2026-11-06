@@ -305,12 +305,12 @@ tmzedit set <file> <index> [--format <fmt>] [--speed <spd>] [--pulse <values>] [
 
 | Option | Values | Description |
 |--------|--------|-------------|
-| `--format` | normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape | Recording format |
+| `--format` | normal, turbo, fastipl, fsk, slow, direct | Recording format. `sinclair` is rejected: SINCLAIR is TZX block 0x11, its speed is changed with `--sinclair-speed` on block 0x11. `cpm-tape` is rejected: it is written as block 0x46 (`mzf2tmz --format cpm-tape` or `--profile PEZIK-2.0A` / `IC-10.2-CPM`) |
 | `--speed` | 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14, or baudrate (e.g. 2800) | Speed ratio or baudrate in Bd (not valid for FSK/SLOW/SINCLAIR) |
 | `--fsk-speed` | 0-6 | FSK speed level (only with FSK format) |
 | `--slow-speed` | 0-4 | SLOW speed level (only with SLOW format) |
 | `--sinclair-speed` | 1381, 1772, 2074, 2487 | SINCLAIR speed in Bd (only for block 0x11) |
-| `--pulse` | long_h/long_l,short_h/short_l | Custom pulse widths in us*100 units |
+| `--pulse` | long_h/long_l,short_h/short_l | Custom pulse widths in 0.1 us units (e.g. 4980/4980,2490/2490), 0-65535 |
 
 ### Examples
 
@@ -372,6 +372,10 @@ Checks the integrity of a TMZ/TZX file:
 - Group Start / Group End pairing
 - Loop Start / Loop End pairing
 - MZF headers in MZ blocks (ftype, fsize vs body_size)
+- block 0x45: an error when it cannot be parsed, has no chunk, the chunk IDs are not
+  0, 1, ... or the last chunk does not have ID FFFF, or the machine or pulse set is
+  invalid; a warning for a file type other than 03h/04h, a non-zero fsize/fstrt/fexec
+  and more than 254 chunks (the block is not played)
 
 Return code: 0 = valid, 1 = invalid (errors).
 

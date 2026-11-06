@@ -1,14 +1,14 @@
 /**
  * @file   cmtspeed.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Implementace datových polí knihovny cmtspeed — násobitele rychlostí a textové poměry.
  *
  * Obsahuje definice globálních polí g_cmtspeed_divisor[] a g_cmtspeed_ratio[],
  * která jsou indexována hodnotami enumu en_CMTSPEED.
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)

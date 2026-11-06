@@ -1,7 +1,7 @@
 /**
  * @file   tmz_blocks.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Definice a parsovani TMZ bloku specifickych pro pocitace Sharp MZ.
  *
  * Hlavickovy soubor definuje packed struktury pro kazdy typ TMZ bloku
@@ -12,6 +12,9 @@
  *   - 0x42 MZ Extra Body      - dodatecny datovy blok (napr. druhy program)
  *   - 0x43 MZ Machine Info    - informace o cilove architekture
  *   - 0x44 MZ Loader          - vlastni loader pro nestandardni formaty
+ *   - 0x45 MZ BASIC Data      - datovy soubor BASICu (kusy po 258 B)
+ *
+ * Blok 0x46 (MZ File, TMZ v1.1) definuje tmz_mzfile.h.
  *
  * Vsechna vicebajova pole jsou ulozena v little-endian poradi
  * (odpovidajici Z80 procesoru). Struktury jsou packed pro prime
@@ -70,7 +73,8 @@ extern "C" {
      * - machine musi byt platna hodnota en_TMZ_MACHINE
      * - pulseset musi byt platna hodnota en_TMZ_PULSESET
      * - body_size musi odpovidat velikosti dat nasledujicich za strukturou
-     * - mzf_header.fname musi obsahovat terminator 0x0D
+     * - bajt 11h (mzf_header.fname.terminator) se ukládá a čte beze změny,
+     *   jak je na pásce (ROM SAVE zapíše bajt z paměti, např. 00h)
      *
      * @par Ownership:
      * - datove telo nasledujici za strukturou je soucasti binarniho bloku
@@ -94,8 +98,8 @@ extern "C" {
      * vychozich hodnot pro dany model a rychlost.
      *
      * Delky pulzu (long_high, long_low, short_high, short_low) jsou
-     * v jednotkach us*100 (mikrosekundy * 100) pro dostatecne rozliseni
-     * bez pouziti plovouci carky.
+     * v jednotkach 0,1 µs (sekundy = hodnota / 1e7), cele cislo bez
+     * plovouci carky.
      *
      * Za touto strukturou nasleduje body_size bajtu datoveho tela.
      *
@@ -122,10 +126,10 @@ extern "C" {
         uint16_t lgap_length;       /**< delka LGAP v poctu kratkych pulzu (0 = vychozi) */
         uint16_t sgap_length;       /**< delka SGAP v poctu kratkych pulzu (0 = vychozi) */
         uint16_t pause_ms;          /**< pauza po bloku v milisekundach */
-        uint16_t long_high;         /**< delka high casti dlouheho pulzu (us*100, 0 = vychozi) */
-        uint16_t long_low;          /**< delka low casti dlouheho pulzu (us*100, 0 = vychozi) */
-        uint16_t short_high;        /**< delka high casti kratkeho pulzu (us*100, 0 = vychozi) */
-        uint16_t short_low;         /**< delka low casti kratkeho pulzu (us*100, 0 = vychozi) */
+        uint16_t long_high;         /**< delka high casti dlouheho pulzu (0,1 µs, 0 = vychozi) */
+        uint16_t long_low;          /**< delka low casti dlouheho pulzu (0,1 µs, 0 = vychozi) */
+        uint16_t short_high;        /**< delka high casti kratkeho pulzu (0,1 µs, 0 = vychozi) */
+        uint16_t short_low;         /**< delka low casti kratkeho pulzu (0,1 µs, 0 = vychozi) */
         uint8_t flags;              /**< priznaky (viz TMZ_TURBO_FLAG_*) */
         st_MZF_HEADER mzf_header;   /**< MZF hlavicka (128 bajtu) */
         uint16_t body_size;         /**< velikost datoveho tela v bajtech */
@@ -168,11 +172,11 @@ extern "C" {
      *
      * @par Invarianty:
      * - machine musi byt platna hodnota en_TMZ_MACHINE
-     * - cpu_clock musi byt nenulove (typicke hodnoty: 3546900 Hz pro MZ-800)
+     * - cpu_clock musi byt nenulove (typicke hodnoty: 3546895 Hz pro MZ-800)
      */
     typedef struct __attribute__((packed)) st_TMZ_MZ_MACHINE_INFO {
         uint8_t machine;            /**< cilovy model pocitace (en_TMZ_MACHINE) */
-        uint32_t cpu_clock;         /**< takt CPU v Hz (napr. 3546900 pro MZ-800) */
+        uint32_t cpu_clock;         /**< takt CPU v Hz (napr. 3546895 pro MZ-800) */
         uint8_t rom_version;        /**< verze ROM (0 = nezname) */
     } st_TMZ_MZ_MACHINE_INFO;
 
@@ -281,6 +285,9 @@ extern "C" {
      * @param body_data Vystupni ukazatel na datove telo za hlavickou (muze byt NULL)
      * @param err       Vystupni chybovy kod (muze byt NULL)
      * @return Ukazatel do block->data, nebo NULL pri chybe.
+     *         Chybou (NULL, err = TZX_ERROR_INVALID_BLOCK) je i deklarovaná
+     *         velikost dat (body_size) větší než data bloku - validuje se před
+     *         konverzí endianity, poškozený blok se tedy nemodifikuje.
      *
      * @note Platnost vraceneho ukazatele je vazana na zivotnost bloku.
      * @warning Funkce modifikuje data bloku (konverze endianity) - lze volat jen jednou.
@@ -297,6 +304,9 @@ extern "C" {
      * @param body_data Vystupni ukazatel na datove telo za hlavickou (muze byt NULL)
      * @param err       Vystupni chybovy kod (muze byt NULL)
      * @return Ukazatel do block->data, nebo NULL pri chybe.
+     *         Chybou (NULL, err = TZX_ERROR_INVALID_BLOCK) je i deklarovaná
+     *         velikost dat (body_size) větší než data bloku - validuje se před
+     *         konverzí endianity, poškozený blok se tedy nemodifikuje.
      *
      * @note Platnost vraceneho ukazatele je vazana na zivotnost bloku.
      * @warning Funkce modifikuje data bloku (konverze endianity) - lze volat jen jednou.
@@ -313,6 +323,9 @@ extern "C" {
      * @param body_data Vystupni ukazatel na datovou cast za hlavickou (muze byt NULL)
      * @param err       Vystupni chybovy kod (muze byt NULL)
      * @return Ukazatel do block->data, nebo NULL pri chybe.
+     *         Chybou (NULL, err = TZX_ERROR_INVALID_BLOCK) je i deklarovaná
+     *         velikost dat (body_size) větší než data bloku - validuje se před
+     *         konverzí endianity, poškozený blok se tedy nemodifikuje.
      *
      * @note Platnost vraceneho ukazatele je vazana na zivotnost bloku.
      * @warning Funkce modifikuje data bloku (konverze endianity) - lze volat jen jednou.
@@ -344,6 +357,9 @@ extern "C" {
      * @param loader_data Vystupni ukazatel na data loaderu za hlavickou (muze byt NULL)
      * @param err         Vystupni chybovy kod (muze byt NULL)
      * @return Ukazatel do block->data, nebo NULL pri chybe.
+     *         Chybou (NULL, err = TZX_ERROR_INVALID_BLOCK) je i deklarovaná
+     *         velikost dat (loader_size) větší než data bloku - validuje se před
+     *         konverzí endianity, poškozený blok se tedy nemodifikuje.
      *
      * @note Platnost vraceneho ukazatele je vazana na zivotnost bloku.
      * @warning Funkce modifikuje data bloku (konverze endianity) - lze volat jen jednou.
@@ -495,9 +511,14 @@ extern "C" {
     /**
      * @brief Extrahuje MZF soubor z TMZ bloku.
      *
-     * Podporuje bloky 0x40 (Standard Data) a 0x41 (Turbo Data),
-     * ktere obsahuji kompletni MZF hlavicku a datove telo.
-     * Alokuje novou st_MZF strukturu na heapu.
+     * Podporuje bloky 0x40 (Standard Data), 0x41 (Turbo Data) a 0x46
+     * (MZ File, TMZ v1.1), ktere obsahuji kompletni MZF hlavicku a datove
+     * telo. U 0x46 je chybou (TZX_ERROR_INVALID_BLOCK) telo delsi nez
+     * 65535 B a fsize v hlavicce odlisne od delky tela (spec 4.1 to v bloku
+     * dovoluje, MZF to popsat neumi). Hlavička z 0x46 má fsize/fstrt/fexec
+     * v pořadí hostitele jako u 0x40/0x41; fname.terminator (11h) zůstává
+     * u všech bloků podle bloku. Alokuje novou st_MZF strukturu
+     * na heapu.
      *
      * @param block Vstupni TMZ blok (nesmi byt NULL)
      * @param err   Vystupni chybovy kod (muze byt NULL)

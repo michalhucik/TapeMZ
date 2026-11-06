@@ -1,7 +1,7 @@
 /**
  * @file   tmz.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.11.0
  * @brief  Verejne API knihovny pro format TMZ - MZ-specificka nadstavba nad TZX.
  *
  * TMZ (TapeMZ) je rozsireni TZX formatu o bloky specificke
@@ -62,8 +62,8 @@ extern "C" {
 /** @brief Hlavni cislo verze formatu TMZ */
 #define TMZ_VERSION_MAJOR       1
 
-/** @brief Vedlejsi cislo verze formatu TMZ */
-#define TMZ_VERSION_MINOR       0
+/** @brief Vedlejší číslo verze formátu TMZ (1.1 = blok 0x46, tmz-v1.1-specification.md kap. 2) */
+#define TMZ_VERSION_MINOR       1
 
 /** @} */
 
@@ -84,6 +84,14 @@ extern "C" {
 #define TMZ_BLOCK_ID_MZ_LOADER         0x44
 /** @brief Sharp MZ BASIC datovy zaznam (BSD/BRD chunkovany format) */
 #define TMZ_BLOCK_ID_MZ_BASIC_DATA     0x45
+/** @brief Blok 0x46 - MZ File: MZF soubor + seznam částí (TMZ v1.1, tmz-v1.1-specification.md kap. 4) */
+#define TMZ_BLOCK_ID_MZ_FILE           0x46
+
+/** @brief První rezervované ID bloku MZ; rezervované bloky čtečka přeskočí s varováním (spec v1.1 kap. 3). */
+#define TMZ_BLOCK_ID_RESERVED_FIRST    0x47
+
+/** @brief Poslední rezervované ID bloku MZ (viz TMZ_BLOCK_ID_RESERVED_FIRST). */
+#define TMZ_BLOCK_ID_RESERVED_LAST     0x4F
 
 /** @} */
 
@@ -161,8 +169,8 @@ extern "C" {
         TMZ_LOADER_FASTIPL_V2,    /**< fast-IPL loader verze 2 */
         TMZ_LOADER_FASTIPL_V7,    /**< fast-IPL loader verze 7 */
         TMZ_LOADER_FSK,           /**< FSK (Frequency Shift Keying) loader */
-        TMZ_LOADER_SLOW,          /**< pomaly loader (standardni rychlost) */
-        TMZ_LOADER_DIRECT,        /**< primy loader (bez specialniho zavadece) */
+        TMZ_LOADER_SLOW,          /**< SLOW loader (2 bity na pulz, mzftools) */
+        TMZ_LOADER_DIRECT,        /**< DIRECT loader (prima bitova data, vlastni zavadec) */
         TMZ_LOADER_COUNT,         /**< pocet platnych hodnot (sentinel) */
     } en_TMZ_LOADER_TYPE;
 
@@ -229,10 +237,10 @@ extern "C" {
 
 
     /** @brief Verze knihovny tmz. */
-#define TMZ_VERSION "1.0.0"
+#define TMZ_VERSION "1.11.0"
 
-    /** @brief Verze formátu TMZ jako řetězec ("1.0"). */
-#define TMZ_FORMAT_VERSION "1.0"
+    /** @brief Verze formátu TMZ jako řetězec ("1.1"). */
+#define TMZ_FORMAT_VERSION "1.1"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny tmz.

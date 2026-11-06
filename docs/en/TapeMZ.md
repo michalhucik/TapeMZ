@@ -6,7 +6,7 @@ TapeMZ (TMZ) is a new file format for preserving the contents of cassette tapes 
 
 The TMZ format is based on TZX v1.20 (ZX Spectrum tape image format) and extends it with blocks specific to the Sharp MZ platform. This makes it fully compatible with the existing TZX ecosystem while providing native support for all known Sharp MZ tape formats.
 
-The project includes a set of C libraries for working with tape formats, a WAV analyzer capable of automatically decoding recordings from real cassette tapes, and eleven CLI tools for conversion, editing, and analysis.
+The project includes a set of C libraries for working with tape formats, a WAV analyzer capable of automatically decoding cassette tape recordings (WAV), and eleven CLI tools for conversion, editing, and analysis.
 
 ## 2. Motivation
 
@@ -29,7 +29,7 @@ The TZX format (ZX Spectrum tape image) is the de facto standard for tape record
 - Logical grouping (Group Start/End)
 - Pauses and control blocks
 
-TZX specification v1.20 also explicitly reserves the ID range 0x40-0x4F for future extensions. TMZ uses precisely this range for Sharp MZ specific blocks.
+TZX v1.20 does not define the ID range 0x40-0x4F (ID 0x40 was the deprecated Snapshot block, removed in v1.20) and gives the general rule that blocks added after v1.10 carry a 4-byte length after the ID. TMZ uses this range for Sharp MZ specific blocks; the "TapeMZ!" header tells them apart from possible future TZX blocks.
 
 Compatibility with TZX means that:
 - A TMZ reader can play pure TZX files (ZX Spectrum)
@@ -71,7 +71,7 @@ Structure on tape:
 [Checksum]     2 bytes
 ```
 
-This category also includes the **BSD/BRD** chunking format (BASIC data), where the header is followed by a sequence of 258B chunks (2B ID + 256B data), each with its own tapemark and checksum, terminated by a chunk with ID=0xFFFF.
+This category also includes the **BSD/BRD** chunking format (BASIC data file), where the header is followed by a sequence of 258B chunks (2B ID + 256B data), terminated by a chunk with ID=0xFFFF that carries the rest of the data. BASIC 1Z-016 (`WOPEN#`, `PRINT#`) writes its own tone and tapemark before every chunk, a checksum and a copy after it, and stops the motor between chunks. In TMZ it is block 0x46 with profile `BASIC-1Z016` (timing measured in the emulator); an old block 0x45 plays the same way.
 
 #### Category 2: NORMAL FM at Non-Standard Speed
 
@@ -104,7 +104,7 @@ Formats in this category:
 
 #### Outside Categories: CP/M Tape
 
-CP/M Tape (Pezik/MarVan, ZTAPE/TAPE.COM) uses a completely different protocol - Manchester encoding, LSB first, no stop bits, pilot "011". It runs outside Sharp ROM under CP/M. Supports 1200/2400/3200 Bd.
+CP/M Tape (Pezik/MarVan, ZTAPE/TAPE.COM, and the same format in the CPM mode of Intercopy) uses a completely different protocol - Manchester encoding, LSB first, no stop bits, pilot "011". It runs outside Sharp ROM under CP/M. TAPE.COM writes 2400 or 3200 Bd (1200 Bd does not exist), Intercopy 2400 Bd. In TMZ it is block 0x46 with profile `PEZIK-2.0A` or `IC-10.2-CPM`.
 
 ### 3.2 Format Overview
 
@@ -114,13 +114,13 @@ CP/M Tape (Pezik/MarVan, ZTAPE/TAPE.COM) uses a completely different protocol - 
 | NORMAL    | 2         | FM           | 2400+ Bd    | none    | 0x41      |
 | CP/M CMT  | 2         | FM           | 2400 Bd     | none    | 0x41      |
 | MZ-80B    | 2         | FM           | 1800 Bd     | none    | 0x41      |
-| BSD/BRD   | 1/2       | FM (chunked) | 1200+ Bd    | none    | 0x45      |
+| BSD/BRD   | 1         | FM (chunks)  | 1200 Bd     | none    | 0x46      |
 | TURBO     | 4         | FM           | config.     | $D400   | 0x41      |
 | FASTIPL   | 3         | FM + $BB     | config.     | comment | 0x41      |
 | FSK       | 4         | FSK          | 7 levels    | program | 0x41      |
 | SLOW      | 4         | quaternary   | 5 levels    | program | 0x41      |
 | DIRECT    | 4         | bitwise      | sample rate | program | 0x41      |
-| CP/M Tape | (outside) | Manchester   | 1200-3200   | CP/M    | 0x41      |
+| CP/M Tape | (outside) | Manchester   | 2400-3200   | CP/M    | 0x46      |
 | SINCLAIR  | -         | custom       | 1400 Bd     | -       | TZX 0x10  |
 
 ### 3.3 Special Cases
@@ -143,25 +143,23 @@ The Intercopy program generates special audio blocks on tape before each recordi
 
 ### 3.4 Pulse Sets
 
-Pulse lengths differ by computer model. The ROM uses the same delay loop for both halves of a pulse, so the theoretical timing is symmetric (HIGH = LOW). Real tape recordings exhibit asymmetric duty cycle due to analog artifacts (tape recorder, amplifier, head alignment).
+Pulse lengths differ by computer model and by the program that wrote the recording. The MZ-800 ROM writes asymmetric pulses (HIGH and LOW have different lengths). Nominal values per the hardware documentation:
 
-Theoretical ROM values (symmetric):
+| Parameter     | MZ-800/1500 ROM (nominal) |
+|---------------|---------------------------|
+| Long (H + L)  | 470 + 494 us              |
+| Short (H + L) | 240 + 278 us              |
 
-| Parameter     | MZ-700/80K/80A | MZ-800/1500 | MZ-80B   |
-|---------------|----------------|-------------|----------|
+Default v1.0 pulse sets used by the encoders (symmetric):
+
+| Parameter     | MZ-700/80K/80A | MZ-800/1500   | MZ-80B        |
+|---------------|----------------|---------------|---------------|
 | Long (H + L)  | ~504 + 504 us  | ~498 + 498 us | ~333 + 334 us |
 | Short (H + L) | ~252 + 252 us  | ~249 + 249 us | ~167 + 166 us |
 
-Typical values measured from real recordings (Intercopy 10.2 on MZ-800):
+The values for MZ-700/80K/80A and MZ-80B have no documented source [unverified]. The FSK, SLOW and DIRECT preloaders use a different MZ-700 set: LONG 464 + 494 us, SHORT 240 + 264 us [unverified].
 
-| Parameter    | MZ-800/1500 measured |
-|--------------|----------------------|
-| Long high    | ~476 us              |
-| Long low     | ~499 us              |
-| Short high   | ~227 us              |
-| Short low    | ~272 us              |
-
-Note: The asymmetric values from real recordings are important for FASTIPL encoding, where the readpoint (ROM delay parameter) must be consistent with the pulse set. For NORMAL and TURBO formats, symmetric values work correctly because the ROM auto-calibrates from the leader tone.
+The ROM has a fixed read point: it samples the signal at a fixed time after the pulse edge and tells a short pulse from a long one by the level at that moment. Whether a recording is readable therefore depends on the pulse lengths relative to the read point, not on pulse symmetry. The TurboCopy and Intercopy loaders change the read point (they overwrite a constant of the ROM read routine).
 
 ### 3.5 Checksum
 
@@ -183,11 +181,11 @@ Block types:
 - **Audio blocks** (0x10-0x15, 0x18, 0x19): carry audio data or parameters for signal generation
 - **Control blocks** (0x20-0x27): pauses, groups, loops
 - **Information blocks** (0x30-0x35, 0x5A): metadata, archive information
-- **Extension blocks** (0x40-0x4F): reserved for extensions - this is where TMZ blocks are placed
+- **Range 0x40-0x4F**: not defined by TZX v1.20 (0x40 was the deprecated Snapshot block) - this is where TMZ blocks are placed
 
 ### 4.3 TMZ Extension
 
-TMZ uses the signature "TapeMZ!" instead of "ZXTape!" and defines 6 types of MZ-specific blocks in the range 0x40-0x45:
+TMZ uses the signature "TapeMZ!" instead of "ZXTape!" and defines 7 types of MZ-specific blocks in the range 0x40-0x46:
 
 | ID   | Name               | Purpose                                         |
 |------|--------------------|------------------------------------------------|
@@ -197,16 +195,17 @@ TMZ uses the signature "TapeMZ!" instead of "ZXTape!" and defines 6 types of MZ-
 | 0x43 | MZ Machine Info    | Target machine, CPU clock, ROM version          |
 | 0x44 | MZ Loader          | Preloader program (TURBO/FASTIPL/FSK/SLOW/...)  |
 | 0x45 | MZ BASIC Data      | BSD/BRD chunking format                         |
+| 0x46 | MZ File            | MZF file and the list of its parts (TMZ v1.1)   |
 
-Blocks 0x46-0x4F are reserved for future extensions.
+Blocks 0x47-0x4F are reserved for future extensions.
 
-The formal TMZ format specification is in a separate document: **[tmz-specification.md](https://github.com/michalhucik/TapeMZ/blob/main/docs/en/tmz-specification.md)**
+The formal TMZ format specification is in a separate document: **[tmz-specification.md](https://github.com/michalhucik/TapeMZ/blob/main/docs/en/tmz-specification.md)**; block 0x46 is described in **[tmz-v1.1-specification.md](https://github.com/michalhucik/TapeMZ/blob/main/docs/en/tmz-v1.1-specification.md)**
 
 ## 5. WAV Analyzer
 
 ### 5.1 Overview
 
-The WAV analyzer is a key component of the project - it enables automatic analysis and decoding of recordings from real Sharp MZ cassette tapes. It is a five-layer pipeline processing raw PCM audio signal into structured data.
+The WAV analyzer is a key component of the project - it enables automatic analysis and decoding of Sharp MZ cassette tape recordings (WAV). It is a five-layer pipeline processing raw PCM audio signal into structured data.
 
 ### 5.2 Pipeline Architecture
 
@@ -239,9 +238,10 @@ WAV file (PCM 8/16/24/32/64-bit)
 [Layer 3] Format Classification
   |-- Two-stage detection:
   |     1. Speed class from leader tone average
-  |     2. Signature in header (ftype, $BB prefix, NIPSOFT)
+  |     2. Signature in header (ftype, $BB prefix, TURBO preloader)
   |-- Recognized formats: NORMAL, TURBO, FASTIPL, BSD,
-  |   CP/M CMT, CP/M Tape, MZ-80B, FSK, SLOW, DIRECT, ZX Spectrum
+  |   CP/M CMT, CP/M Tape, FSK, SLOW, DIRECT, ZX Spectrum
+  |   (MZ-80B is not detected automatically)
   |
   v
 [Layer 4] Specialized Decoders
@@ -297,7 +297,8 @@ The project draws from the following sources:
 ### 6.2 Software
 - **Intercopy 10.2** (MZ-800, Marek Šmihla - NIPSOFT) - reference auto-detection implementation, Z80 disassembly
 - **TurboCopy V1.21** (MZ-800, Michal Kreidl) - TURBO loader implementation
-- **cmt.com / ztape.com** (CP/M) - CP/M cassette utilities, Manchester encoding
+- **cmt.com** (CP/M) - CP/M CMT, FM 2400 Bd
+- **ZTAPE/TAPE.COM** (CP/M, Pezik/MarVan) - CP/M Tape, Manchester encoding
 - **mzftools** (mz-fuzzy, GPLv3) - reference C implementation of MZF conversions, FSK/SLOW/DIRECT Z80 loaders
 
 ### 6.3 Format Specifications
@@ -335,6 +336,7 @@ The project contains a set of C libraries (C99/C11) with modular architecture:
 - **tzx** - parsing and generating audio streams from all TZX v1.20 blocks
 - **tmz** - reading/writing TMZ/TZX files, block structure, parsing MZ blocks
 - **tmz_blocks** - definition and parsing of individual block types (0x40-0x45)
+- **tmz_mzfile** - reading, validation and writing of block 0x46 (MZ File)
 - **tmz_player** - generating CMT audio streams from TMZ blocks
 
 ### 7.5 CMT Encoders
@@ -346,8 +348,8 @@ Standalone libraries for each tape format, including embedded Z80 loaders:
 - **mzcmt_fsk** - FSK (Frequency Shift Keying, 7 speeds, two-phase loader)
 - **mzcmt_slow** - SLOW (quaternary encoding, 5 speeds, two-phase loader)
 - **mzcmt_direct** - DIRECT (direct bit writing, two-phase loader)
-- **mzcmt_bsd** - BSD/BRD (chunked NORMAL FM, no loader)
-- **mzcmt_cpmtape** - CP/M Tape (Pezik/MarVan, Manchester, LSB first, 1200/2400/3200 Bd)
+- **mzcmt_bsd** - BSD/BRD v1.0 (tone only before the first chunk; BASIC does not read such a recording past the first chunk). Used only by profile TAPEMZ-V1-LEGACY bsd, the player plays BSD with profile BASIC-1Z016
+- **mzcmt_manchester** - generic Manchester family generator for block 0x46 (CP/M Tape: profiles PEZIK-2.0A 2400/3200 Bd and IC-10.2-CPM 1500/2400/2800/3200/3600 Bd)
 
 ### 7.6 WAV Analyzer
 - **wav_analyzer** - complete analytical pipeline (preprocessing, pulse extraction, leader detection, format classification, decoding)
@@ -369,8 +371,8 @@ The project includes 11 command-line tools for conversion, analysis, and editing
 | **tmz2tap**  | Extract TAP blocks from TMZ/TZX                   |
 | **tmzconv**  | Convert signature between TMZ and TZX             |
 | **tmzedit**  | Tape file editor (list, dump, edit, merge)         |
-| **dat2bsd**  | Import binary data into TMZ as BSD block 0x45      |
-| **bsd2dat**  | Export BSD data from TMZ block 0x45                |
+| **dat2bsd**  | Import binary data into TMZ as BSD (block 0x46)    |
+| **bsd2dat**  | Export BSD data from TMZ (blocks 0x45 and 0x46)    |
 
 Detailed documentation for each tool with examples is in separate **tools-*.md** files.
 

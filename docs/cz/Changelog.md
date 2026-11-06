@@ -1,5 +1,86 @@
 # Changelog
 
+## 2026-11-06
+
+### TMZ v1.1
+
+Verze: tmz v1.11.0, tzx v1.2.0, wav v2.1.0, mzf v2.1.0, cmt_stream v2.0.1, cmtspeed v2.0.1, generic_driver v2.0.1, zxtape v2.0.1, wav_analyzer v1.12.0, mzcmt_fm v1.1.1 (nová), mzcmt_manchester v1.0.0 (nová), mzcmt_turbo v2.3.0, mzcmt_direct v1.0.1, mzcmt_fsk v1.0.1, mzcmt_slow v1.0.1, mztape v2.2.0, mzcmt_fastipl v1.3.0, mzcmt_bsd v1.1.1, mzf2tmz v1.11.0, tmz2mzf v1.4.1, tmz2wav v1.3.1, tmzinfo v1.7.1, tmzedit v1.7.1, tmzconv v1.1.0, wav2tmz v2.11.1, dat2bsd v1.1.0, bsd2dat v1.2.1, extract_preloader v1.0.1.
+
+- Nový blok 0x46 (MZ File): MZF soubor a seznam částí záznamu, každá
+  s vlastním časováním (pulzy, tóny, tapemarky, kontextové délky půlvln,
+  pauzy). Formát zapisovaných souborů je 1.1. Profily zapisovačů
+  v registru: ROM-800-NOMINAL, ROM-800-EXACT, TC-1.21 (TurboCopy V1.21),
+  IC-10.2-NORMAL/TURBO/FASTIPL/CPM (Intercopy V10.2), UNICMT, PEZIK-2.0A
+  (CP/M TAPE.COM), BASIC-1Z016 (datové soubory BASICu 1Z-016)
+  a TAPEMZ-V1-LEGACY. Časování profilů pochází z kódu programů a ze záznamů
+  v emulátoru; struktura signálu UNICMT zatím není ověřená.
+- Bloky TMZ v1.0 (0x40, 0x41, 0x45) se při přehrání převedou na blok 0x46;
+  `tmzconv --upgrade` převod uloží do souboru. Změny výstupu proti v1.0:
+  0x40 se sadou MZ-800 hraje časování ROM MZ-800, TURBO hraje TurboCopy
+  V1.21, FAST IPL 1:1, 2:1, 7:3 a 8:3 hraje Intercopy V10.2, CP/M TAPE hraje
+  TAPE.COM, 0x45 hraje BASIC 1Z-016 a pauza po bloku se přehraje.
+- CP/M TAPE (Pezik/MarVan TAPE.COM a Intercopy CPM) v kódování Manchester
+  a datové soubory BASICu s tónem, tapemarkem a kopií u každého kusu, jak
+  je zapisují původní programy. Knihovnu mzcmt_cpmtape nahradila mzcmt_manchester.
+- TURBO (0x41): pulzy a čtecí bod podle TurboCopy V1.2x; 1:1, 2:1, 7:3, 8:3
+  a 3:1 se v emulátoru nahrají při 44,1 i 48 kHz. Časování, které ROM
+  nepřečte s rezervou 10 µs, je chyba.
+- mzf2tmz: `--profile` (`--profile list`), `--bd`, `--loader`, `--gap`,
+  import MZT včetně hlaviček CMTSPEED (UniCMT). tmz2mzf: extrakce z bloku
+  0x46, export `--mzt` a `--mzt-unicmt`. tmzinfo: výpis bloku 0x46,
+  `--lint`, výpis bloku 0x35. tmz2wav: přehrává blok 0x46.
+- SINCLAIR (protokol ZX Spectrum) se ukládá a přehrává jako bloky TZX
+  0x10/0x11; `mzf2tmz --format sinclair` a `tmzedit set --format sinclair`
+  pro blok 0x41 odmítnou s odkazem na ně. tmzedit formát cpm-tape pro blok 0x41
+  odmítne (`mzf2tmz --format cpm-tape`).
+- wav2tmz: dekódování TURBO všech rychlostí (i Intercopy 2800/3200 Bd
+  a FAST IPL při 44100 Hz), druhé kopie
+  (Copy2), CP/M TAPE (obě polarity, varianta a rychlost), CRC každého kusu
+  BSD s použitím kopie, kontrolní součet těla FSK/SLOW/DIRECT, WAV
+  EXTENSIBLE, IEEE float a PCM 64 bit. Výchozí `--tolerance` je 0.20.
+- Player: zastavení pásky (Pause 0, blok 0x2A), úroveň signálu mezi bloky
+  podle TZX 1.20, rezervované bloky 0x47-0x4F se přeskočí s varováním.
+  tmz2wav odmítne signál, který by čtecí rutina při zvolené vzorkovací
+  frekvenci nepřečetla, a blok, který se nepřehraje, vrátí kódem 1.
+- tzx: pilot bloků 0x10/0x11 má `pilot_count` pulzů, blok 0x35 se čte se
+  16bajtovým identifikátorem, useknutý soubor a major verze jiná než 1 jsou
+  chyba, nová funkce `tzx_generate_block()`.
+- dat2bsd zapisuje blok 0x46 BASIC-1Z016 (typ 04h, bez `--speed`
+  a `--pulseset`), bsd2dat čte bloky 0x45 i 0x46; tmzedit validate
+  kontroluje blok 0x45. Typ 04h se ve výpisech jmenuje "BRD (BASIC data,
+  WOPEN#)".
+- Testy bez adresáře `tstdata/` vypíšou SKIP a skončí úspěšně.
+- Opravy: čtení mimo hranice a pády u poškozených souborů, hranice bufferů
+  TLV a bloku 0x32, jednotka vlastních pulzů (0,1 µs) v nápovědě
+  a dokumentaci.
+- wav2tmz pozná zapisovač: záznam TurboCopy V1.2x (podle délky tónu) uloží jako
+  blok 0x46 `TC-1.21` s poměrem a/b a volbou předzavaděče, záznam Intercopy V10.2
+  NORMAL, TURBO a FAST IPL jako `IC-10.2-NORMAL` / `-TURBO` / `-FASTIPL` s rychlostí
+  `bd` (600 až 3200 Bd).
+- Profil `TC-1.21` umí všech 34 poměrů TurboCopy (a, b z 1..9, 1/2 až 3/1);
+  `mzf2tmz --profile TC-1.21 --speed 9:4`; `tmz2mzf --mzt-unicmt` zapíše TC-1.21 bez
+  předzavaděče s hlavičkou CMTSPEED podle poměru (1:1 jako 1x).
+- wav2tmz: úroveň rychlosti FSK a SLOW z bajtu zpoždění v zavaděči, ZX záznam
+  s pomalým pilotem (Intercopy SINCLAIR 900 Bd) jako blok 0x11, skutečná rychlost
+  Intercopy CPM v souhrnu, původní komentář MZF za předzavaděčem TurboCopy.
+- wav2tmz varuje, když rychlost TMZ vyjádřit neumí (NORMAL daleko od rychlostí
+  bloku 0x41, nerozpoznaná úroveň FSK/SLOW).
+- Profil `IC-10.2-CPM` pro všechny rychlosti Intercopy CPM (1500, 2400, 2800, 3200,
+  3600 Bd, časování změřené v emulátoru); wav2tmz je rozpozná a zapíše.
+- Bajt 11h hlavičky MZF zůstává beze změny celou cestou (mzf2tmz, bloky v1.0 i 0x46,
+  přehrávání, wav2tmz, tmz2mzf, předzavaděč TurboCopy); dřív se v blocích v1.0 a při
+  dekódování WAV přepsal na 0Dh. ROM SAVE zapíše bajt z paměti (např. 00h) a programy
+  pro kopírování hlavičku přenášejí, jak ji načetly. Knihovna mzf: nová funkce
+  `mzf_header_swap_endianity()`. Důsledek: mzf2tmz bez `--profile` dá z MZF s 00h na 11h
+  jiný TMZ než dřív (00h místo 0Dh); blok v1.0 s jiným bajtem než 0Dh se přehraje s ním.
+  Soubory s 0Dh hrají beze změny.
+- Přehrávání bloků TZX jako na ZX: první pulz po pauze (a na začátku přehrávání)
+  vytvoří hranu, takže je vidět celý pilot; TZX 1.20 by ho zapsal na úrovni pauzy.
+  Pásky TZX tak po přehrání mají o pulz pilotu víc než dřív (pro načtení bez vlivu).
+- wav2tmz dekóduje Intercopy NORMAL 2800 a 3200 Bd i z WAV vytvořeného z TMZ
+  (nesouměrné půlvlny tónu a tapemarku se hledají i po periodách).
+- Kontrola TMZ -> WAV -> TMZ na 121 nahrávkách: všechny pásky bajtově shodné.
+
 ## 2026-08-15
 
 ### tmzedit v1.6.0, extract_preloader
@@ -189,7 +270,8 @@
 ### tmzedit v1.2.0
 - `--speed` nyní přijímá i hodnoty baudrate (např. `--speed 2800`)
   kromě poměrů (`--speed 7:3`). Baudrate se mapuje na nejbližší CMTSPEED.
-- FASTIPL rychlost zobrazena jako baudrate v příkazech `convert` a `set`.
+- FASTIPL rychlost zobrazena jako baudrate v příkazech `convert` (příkaz
+  neexistuje, použijte tmzconv) a `set`.
 
 ### tmzinfo v1.1.0
 - FASTIPL rychlost zobrazena jako baudrate (např. "2800 Bd") místo

@@ -1,7 +1,7 @@
 # tmz2mzf - MZF File Extractor from TMZ/TZX
 
-Extracts MZF files from blocks 0x40 (MZ Standard Data) and 0x41 (MZ Turbo Data)
-in TMZ or TZX files. Supports extracting all blocks at once,
+Extracts MZF files from blocks 0x40 (MZ Standard Data), 0x41 (MZ Turbo Data)
+and 0x46 (MZ File, TMZ v1.1) in TMZ or TZX files. Supports extracting all blocks at once,
 selecting a specific block by index, and listing extractable blocks.
 
 ## Usage
@@ -19,6 +19,8 @@ tmz2mzf <input.tmz|input.tzx> [options]
 | `--list` | - | List extractable blocks without extraction |
 | `--overwrite` | - | Overwrite existing output file(s) |
 | `--append` | - | Append to existing output file (multi-MZF) |
+| `--mzt` | - | All MZF files into one classic MZT (default for `--output *.mzt`) |
+| `--mzt-unicmt` | - | MZT with UniCMT CMTSPEED headers |
 | `--charset` | eu, jp, utf8-eu, utf8-jp | Sharp MZ character set for filename display (see below) |
 | `--version` | - | Show program version |
 | `--lib-versions` | - | Show library versions |
@@ -67,6 +69,27 @@ output file (instead of numbered separate files).
 - Multiple blocks with `--output`: output_001.mzf, output_002.mzf, ...
 - Multiple blocks without `--output`: input_001.mzf, input_002.mzf, ...
 - `--append`: all blocks into a single file (`--output` or derived from input)
+
+### MZT (`--mzt`, `--mzt-unicmt`)
+
+Both options write all blocks carrying an MZF into one MZT file
+(`--output`, otherwise the input name with the `.mzt` extension). They
+cannot be combined with `--index`, `--list` or `--append`; an existing
+file is overwritten only with `--overwrite`.
+
+- `--mzt` writes a classic MZT: the MZF files one after another. Timing
+  is lost; for a block that is not a ROM recording at 1x (e.g. TURBO,
+  FASTIPL, speed 2:1) the program prints a warning.
+- `--mzt-unicmt` inserts a UniCMT CMTSPEED header before a file wherever
+  the speed differs from the previous file (default 1x). The block speed
+  comes from its profile: ROM and 0x40 = 1x, 0x41 NORMAL by its speed
+  (2:1 and 3:1 give exactly UniCMT 2x and 3x), `UNICMT` by the CMTSPEED
+  header it came from. The first file must be 1x (UniCMT does not play a
+  leading header) and all blocks must be ROM recordings (header + body);
+  otherwise the program exits with an error and writes nothing.
+
+An MZT converted by `mzf2tmz` and back by `tmz2mzf --mzt-unicmt` is
+byte-identical to the original (verified on the UniCMT samples).
 
 ## Examples
 

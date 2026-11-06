@@ -1,7 +1,7 @@
 /**
  * @file   cmtspeed.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Definice rychlostních poměrů CMT pásky a inline funkce pro výpočet baudových rychlostí.
  *
  * Hlavičkový soubor knihovny cmtspeed poskytuje enum rychlostních režimů,
@@ -10,7 +10,7 @@
  * kazetové pásky počítačů Sharp MZ.
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -44,19 +44,26 @@ extern "C" {
 #include <math.h>
 
 
-    /** @brief Výčet rychlostních poměrů CMT pásky. */
+    /**
+     * @brief Výčet rychlostních poměrů CMT pásky.
+     *
+     * Poměr je nominální násobek rychlosti 1:1 ("1200 Bd"). Skutečné
+     * zapisovače se od nominálu liší: ROM má ~1350 Bd, Intercopy 10.2
+     * "2400/2800/3200 Bd" je skutečně ~1,96x/2,39x/2,75x, TurboCopy škáluje
+     * pulzy afinně (2:1 je ~1,8x).
+     */
     typedef enum en_CMTSPEED {
         CMTSPEED_NONE = 0,  /**< Žádná rychlost (neplatná hodnota) */
-        CMTSPEED_1_1,       /**< Poměr 1:1 — standardní rychlost (1200 Bd) */
-        CMTSPEED_2_1,       /**< Poměr 2:1 — dvojnásobná rychlost */
-        CMTSPEED_2_1_CPM,   /**< Poměr 2:1 — CP/M varianta */
-        CMTSPEED_3_1,       /**< Poměr 3:1 — trojnásobná rychlost */
+        CMTSPEED_1_1,       /**< Poměr 1:1 - rychlost ROM (nominálně 1200 Bd, skutečně ~1350 Bd) */
+        CMTSPEED_2_1,       /**< Poměr 2:1 - dvojnásobná rychlost */
+        CMTSPEED_2_1_CPM,   /**< Poměr 2:1 - CP/M CMT.COM (SOKODI), 2400 Bd s vlastní pulzní sadou */
+        CMTSPEED_3_1,       /**< Poměr 3:1 - trojnásobná rychlost */
         CMTSPEED_3_2,       /**< Poměr 3:2 */
-        CMTSPEED_7_3,       /**< Poměr 7:3 — Intercopy 10.2 */
-        CMTSPEED_8_3,       /**< Poměr 8:3 — CP/M cmt.com */
+        CMTSPEED_7_3,       /**< Poměr 7:3 - nominálně Intercopy 10.2 "2800 Bd" (skutečně ~2,39x) */
+        CMTSPEED_8_3,       /**< Poměr 8:3 - nominálně Intercopy 10.2 "3200 Bd" (skutečně ~2,75x); CP/M cmt.com používá 2:1 */
         CMTSPEED_9_7,       /**< Poměr 9:7 */
         CMTSPEED_25_14,     /**< Poměr 25:14 */
-        CMTSPEED_COUNT      /**< Počet platných hodnot (sentinel — nepoužívat jako rychlost) */
+        CMTSPEED_COUNT      /**< Počet platných hodnot (sentinel - nepoužívat jako rychlost) */
     } en_CMTSPEED;
 
     /** @brief Pole násobitelů rychlosti indexované hodnotami en_CMTSPEED. */
@@ -189,7 +196,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny cmtspeed. */
-#define CMTSPEED_VERSION "2.0.0"
+#define CMTSPEED_VERSION "2.0.1"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny cmtspeed.

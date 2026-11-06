@@ -1,21 +1,22 @@
 /**
  * @file   bsd2dat.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.1
- * @brief  Export BSD/BRD dat z TMZ bloku 0x45 do binarniho souboru.
+ * @version 1.2.1
+ * @brief  Export dat BSD/BRD z TMZ (bloky 0x45 a 0x46 s částmi BSD_CHUNK) do binárního souboru.
  *
- * Nacte TMZ soubor, najde bloky 0x45 (MZ BASIC Data), extrahuje
- * z nich chunky a sestavi binarni vystup. Podporuje dva rezimy:
- * --solid (vychozi) spoji data ze vsech chunku do jednoho souboru,
- * --chunks ulozi kazdy chunk jako samostatny soubor do adresare.
+ * Načte TMZ soubor, najde bloky 0x45 (MZ BASIC Data, v1.0) a 0x46 s částmi
+ * BSD_CHUNK (profil BASIC-1Z016), extrahuje z nich kusy a sestaví
+ * binární výstup. Podporuje dva režimy: výchozí spojí data ze všech kusů
+ * do jednoho souboru, --chunks uloží každý kus jako samostatný soubor do
+ * adresáře. Výchozí výstup leží vedle vstupního souboru.
  *
- * @par Pouziti:
+ * @par Použití:
  * @code
  *   bsd2dat input.tmz [volby]
  * @endcode
  *
  * @par Volby:
- * - --output <cesta>       : vystupni soubor (solid) nebo adresar (chunks) (vychozi: odvozeno ze vstupu)
+ * - --output <cesta>       : výstupní soubor (solid) nebo adresář (chunks) (výchozí: odvozeno ze vstupu, vedle něj)
  * - --index <N>            : extrahovat jen blok na indexu N (0-based)
  * - --list                 : vypsat BSD bloky bez extrakce
  * - --chunks               : kazdy chunk jako samostatny soubor do adresare
@@ -51,6 +52,7 @@
 
 #include "libs/tmz/tmz.h"
 #include "libs/tmz/tmz_blocks.h"
+#include "libs/tmz/tmz_mzfile.h"
 #include "libs/tzx/tzx.h"
 #include "libs/mzf/mzf.h"
 #include "libs/mzf/mzf_tools.h"
@@ -58,7 +60,7 @@
 
 
 /** @brief Verze programu bsd2dat. */
-#define BSD2DAT_VERSION "1.1.0"
+#define BSD2DAT_VERSION "1.2.1"
 
 
 /** @brief Maximalni delka cesty k vystupnimu souboru. */
@@ -76,8 +78,9 @@ static en_MZF_NAME_ENCODING name_encoding = MZF_NAME_ASCII_EU;
  */
 static const char* mzf_ftype_name ( uint8_t ftype ) {
     switch ( ftype ) {
+        /* jména typů podle tabulky ROM !TYP; 04h zapisuje WOPEN# BASICu 1Z-016 */
         case MZF_FTYPE_BSD: return "BSD (BASIC data)";
-        case MZF_FTYPE_BRD: return "BRD (BASIC read-after-run)";
+        case MZF_FTYPE_BRD: return "BRD (BASIC data, WOPEN#)";
         default:            return "Unknown";
     }
 }
@@ -134,108 +137,166 @@ static bool copy_block ( const st_TZX_BLOCK *block, st_TZX_BLOCK *copy, uint8_t 
 
 
 /**
- * @brief Exportuje BSD data z bloku 0x45 do jednoho binarniho souboru.
+ * @brief Adresář cesty včetně posledního oddělovače.
  *
- * Spoji datove casti vsech chunku (vcetne terminacniho) do jednoho
- * binarniho souboru. Terminacni chunk (ID=0xFFFF) nese data stejne
- * jako ostatni chunky - to odpovida chovani BSD dekoderu i realneho
- * hardwaru (MZ-800 BASIC).
+ * Z "path/to/file.tmz" vrátí "path/to/", z "file.tmz" prázdný řetězec.
  *
- * @param block TMZ blok 0x45.
+ * @param path Cesta.
+ * @param[out] buf Výstupní buffer.
+ * @param buf_size Velikost bufferu (> 0); delší adresář se zkrátí.
+ */
+static void extract_dirname ( const char *path, char *buf, size_t buf_size ) {
+    size_t len = 0;
+    for ( const char *p = path; *p; p++ ) {
+        if ( *p == '/' || *p == '\\' ) len = ( size_t ) ( p - path ) + 1;
+    }
+    if ( len >= buf_size ) len = buf_size - 1;
+    memcpy ( buf, path, len );
+    buf[len] = '\0';
+}
+
+
+/**
+ * @brief Hlavička a kusy BSD z bloku 0x45 nebo 0x46 s částmi BSD_CHUNK.
+ *
+ * 0x45: kusy z bloku v1.0. 0x46: data všech částí s rolí BSD_CHUNK v pořadí
+ * částí (profil BASIC-1Z016 nebo TAPEMZ-V1-LEGACY bsd), každá musí mít 258 B.
+ * Hlavička je v pořadí hostitele, bajt 11h zůstává podle bloku.
+ *
+ * @param block Blok.
+ * @param[out] header Hlavička.
+ * @param[out] chunks Kusy po 258 B (alokované, uvolní volající free()).
+ * @param[out] count Počet kusů.
+ * @return EXIT_SUCCESS; EXIT_FAILURE = blok není BSD, je poškozený, nemá žádný
+ *         kus nebo selhala alokace (*chunks je pak NULL).
+ */
+static int bsd_block_chunks ( const st_TZX_BLOCK *block, st_MZF_HEADER *header, uint8_t **chunks, uint16_t *count ) {
+    *chunks = NULL;
+    *count = 0;
+    if ( block->id == TMZ_BLOCK_ID_MZ_BASIC_DATA ) {
+        st_TZX_BLOCK copy;
+        uint8_t *dc;
+        if ( !copy_block ( block, &copy, &dc ) ) return EXIT_FAILURE;
+        en_TZX_ERROR err;
+        uint8_t *cd = NULL;
+        st_TMZ_MZ_BASIC_DATA *bsd = tmz_block_parse_mz_basic_data ( &copy, &cd, &err );
+        int ok = bsd && bsd->chunk_count > 0;
+        if ( ok ) {
+            *header = bsd->mzf_header;
+            *chunks = malloc ( ( size_t ) bsd->chunk_count * TMZ_BASIC_CHUNK_SIZE );
+            ok = ( *chunks != NULL );
+            if ( ok ) {
+                memcpy ( *chunks, cd, ( size_t ) bsd->chunk_count * TMZ_BASIC_CHUNK_SIZE );
+                *count = bsd->chunk_count;
+            }
+        }
+        free ( dc );
+        return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    if ( block->id != TMZ_BLOCK_ID_MZ_FILE ) return EXIT_FAILURE;
+    st_TMZ_MZFILE mf;
+    if ( tmz_mzfile_parse ( block, &mf ) != TZX_OK ) return EXIT_FAILURE;
+    uint32_t n = 0;
+    for ( uint8_t k = 0; k < mf.part_count; k++ ) {
+        if ( mf.parts[k].role == TMZ_PART_ROLE_BSD_CHUNK ) n++;
+    }
+    int ok = ( n > 0 );
+    if ( ok ) {
+        *chunks = malloc ( ( size_t ) n * TMZ_BASIC_CHUNK_SIZE );
+        ok = ( *chunks != NULL );
+    }
+    uint32_t i = 0;
+    for ( uint8_t k = 0; ok && k < mf.part_count; k++ ) {
+        if ( mf.parts[k].role != TMZ_PART_ROLE_BSD_CHUNK ) continue;
+        uint32_t size = 0;
+        const uint8_t *d = tmz_mzfile_part_data ( &mf, &mf.parts[k], &size, NULL );
+        ok = ( d && size == TMZ_BASIC_CHUNK_SIZE );
+        if ( ok ) memcpy ( *chunks + ( size_t ) i++ * TMZ_BASIC_CHUNK_SIZE, d, TMZ_BASIC_CHUNK_SIZE );
+    }
+    if ( ok ) {
+        memcpy ( header, mf.header, sizeof ( st_MZF_HEADER ) );
+        mzf_header_swap_endianity ( header );   /* 11h zůstává podle bloku */
+        *count = ( uint16_t ) n;
+    } else {
+        free ( *chunks );
+        *chunks = NULL;
+    }
+    tmz_mzfile_free ( &mf );
+    return ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+
+/**
+ * @brief Exportuje data BSD z bloku 0x45 nebo 0x46 do jednoho binárního souboru.
+ *
+ * Spojí datové části všech kusů (včetně posledního s ID 0xFFFF, který nese
+ * data jako ostatní) do jednoho souboru.
+ *
+ * @param block Blok 0x45 nebo 0x46 s částmi BSD_CHUNK.
  * @param block_index Index bloku v TMZ souboru (pro diagnostiku).
- * @param output_path Cesta k vystupnimu souboru.
- * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
+ * @param output_path Cesta k výstupnímu souboru.
+ * @return EXIT_SUCCESS při úspěchu, EXIT_FAILURE při chybě.
  */
 static int export_solid ( const st_TZX_BLOCK *block, uint32_t block_index, const char *output_path ) {
-
-    /* kopie bloku pro bezpecne parsovani */
-    st_TZX_BLOCK copy;
-    uint8_t *data_copy;
-    if ( !copy_block ( block, &copy, &data_copy ) ) {
-        fprintf ( stderr, "Error: memory allocation failed for block [%u]\n", block_index );
-        return EXIT_FAILURE;
-    }
-
-    en_TZX_ERROR err;
+    st_MZF_HEADER header;
     uint8_t *chunks_data = NULL;
-    st_TMZ_MZ_BASIC_DATA *bsd = tmz_block_parse_mz_basic_data ( &copy, &chunks_data, &err );
-
-    if ( !bsd ) {
-        fprintf ( stderr, "Error: failed to parse BSD block [%u]: %s\n",
-                  block_index, tzx_error_string ( err ) );
-        free ( data_copy );
+    uint16_t chunk_count = 0;
+    if ( bsd_block_chunks ( block, &header, &chunks_data, &chunk_count ) != EXIT_SUCCESS ) {
+        fprintf ( stderr, "Error: block [%u] is not a valid BSD block\n", block_index );
         return EXIT_FAILURE;
     }
 
-    uint16_t chunk_count = bsd->chunk_count;
-    size_t total_size = (size_t) chunk_count * TMZ_BASIC_CHUNK_DATA_SIZE;
+    size_t total_size = ( size_t ) chunk_count * TMZ_BASIC_CHUNK_DATA_SIZE;
 
-    /* zapis souboru - data vsech chunku vcetne terminacniho */
     FILE *fp = fopen ( output_path, "wb" );
     if ( !fp ) {
         fprintf ( stderr, "Error: cannot create output file '%s'\n", output_path );
-        free ( data_copy );
+        free ( chunks_data );
         return EXIT_FAILURE;
     }
-
     for ( uint16_t i = 0; i < chunk_count; i++ ) {
-        const uint8_t *chunk = chunks_data + (size_t) i * TMZ_BASIC_CHUNK_SIZE;
+        const uint8_t *chunk = chunks_data + ( size_t ) i * TMZ_BASIC_CHUNK_SIZE;
         fwrite ( chunk + 2, 1, TMZ_BASIC_CHUNK_DATA_SIZE, fp );
     }
-
     fclose ( fp );
 
-    /* souhrn */
     char fname[MZF_FNAME_UTF8_BUF_SIZE];
-    mzf_tools_get_fname_ex ( &bsd->mzf_header, fname, sizeof ( fname ), name_encoding );
+    mzf_tools_get_fname_ex ( &header, fname, sizeof ( fname ), name_encoding );
 
     printf ( "  Block [%u] -> %s\n", block_index, output_path );
     printf ( "    Filename : \"%s\"\n", fname );
-    printf ( "    Type     : 0x%02X (%s)\n", bsd->mzf_header.ftype, mzf_ftype_name ( bsd->mzf_header.ftype ) );
-    printf ( "    Chunks   : %u (%u data + termination)\n", chunk_count, chunk_count - 1 );
+    printf ( "    Type     : 0x%02X (%s)\n", header.ftype, mzf_ftype_name ( header.ftype ) );
+    printf ( "    Chunks   : %u (last ID 0xFFFF)\n", chunk_count );
     printf ( "    Data size: %zu bytes\n", total_size );
 
-    free ( data_copy );
+    free ( chunks_data );
     return EXIT_SUCCESS;
 }
 
 
 /**
- * @brief Exportuje BSD data z bloku 0x45 jako jednotlive chunk soubory.
+ * @brief Exportuje data BSD z bloku 0x45 nebo 0x46 jako jednotlivé soubory kusů.
  *
- * Vytvori adresar a do nej ulozi kazdy chunk jako samostatny soubor
- * pojmenovany prefix_NNNN.dat, kde NNNN je chunk ID.
+ * Vytvoří adresář a do něj uloží každý kus jako samostatný soubor
+ * pojmenovaný prefix_NNNN.dat, kde NNNN je ID kusu (do kusu s ID 0xFFFF).
  *
- * @param block TMZ blok 0x45.
+ * @param block Blok 0x45 nebo 0x46 s částmi BSD_CHUNK.
  * @param block_index Index bloku v TMZ souboru (pro diagnostiku).
- * @param output_dir Cesta k vystupnimu adresari.
- * @param prefix Prefix nazvu chunk souboru.
- * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
+ * @param output_dir Cesta k výstupnímu adresáři.
+ * @param prefix Prefix názvu souborů kusů.
+ * @return EXIT_SUCCESS při úspěchu, EXIT_FAILURE při chybě.
  */
 static int export_chunks ( const st_TZX_BLOCK *block, uint32_t block_index,
                             const char *output_dir, const char *prefix ) {
-
-    /* kopie bloku pro bezpecne parsovani */
-    st_TZX_BLOCK copy;
-    uint8_t *data_copy;
-    if ( !copy_block ( block, &copy, &data_copy ) ) {
-        fprintf ( stderr, "Error: memory allocation failed for block [%u]\n", block_index );
-        return EXIT_FAILURE;
-    }
-
-    en_TZX_ERROR err;
+    st_MZF_HEADER header;
     uint8_t *chunks_data = NULL;
-    st_TMZ_MZ_BASIC_DATA *bsd = tmz_block_parse_mz_basic_data ( &copy, &chunks_data, &err );
-
-    if ( !bsd ) {
-        fprintf ( stderr, "Error: failed to parse BSD block [%u]: %s\n",
-                  block_index, tzx_error_string ( err ) );
-        free ( data_copy );
+    uint16_t chunk_count = 0;
+    if ( bsd_block_chunks ( block, &header, &chunks_data, &chunk_count ) != EXIT_SUCCESS ) {
+        fprintf ( stderr, "Error: block [%u] is not a valid BSD block\n", block_index );
         return EXIT_FAILURE;
     }
 
-    /* vytvoreni vystupniho adresare */
-    /* POSIX mkdir() vyzaduje druhy argument (mode), Windows mkdir() ne */
+    /* POSIX mkdir() vyžaduje druhý argument (mode), Windows mkdir() ne */
 #if defined ( _WIN32 )
     if ( mkdir ( output_dir ) != 0 && errno != EEXIST ) {
 #else
@@ -243,31 +304,26 @@ static int export_chunks ( const st_TZX_BLOCK *block, uint32_t block_index,
 #endif
         fprintf ( stderr, "Error: cannot create output directory '%s': %s\n",
                   output_dir, strerror ( errno ) );
-        free ( data_copy );
+        free ( chunks_data );
         return EXIT_FAILURE;
     }
 
-    /* export chunku */
-    uint16_t chunk_count = bsd->chunk_count;
     uint16_t exported = 0;
-
     for ( uint16_t i = 0; i < chunk_count; i++ ) {
-        const uint8_t *chunk = chunks_data + (size_t) i * TMZ_BASIC_CHUNK_SIZE;
+        const uint8_t *chunk = chunks_data + ( size_t ) i * TMZ_BASIC_CHUNK_SIZE;
         uint16_t chunk_id;
         memcpy ( &chunk_id, chunk, 2 );
         chunk_id = endianity_bswap16_LE ( chunk_id );
 
         char chunk_path[MAX_PATH_LENGTH];
-        snprintf ( chunk_path, sizeof ( chunk_path ), "%s/%s_%04X.dat",
-                   output_dir, prefix, chunk_id );
+        snprintf ( chunk_path, sizeof ( chunk_path ), "%s/%s_%04X.dat", output_dir, prefix, chunk_id );
 
         FILE *fp = fopen ( chunk_path, "wb" );
         if ( !fp ) {
             fprintf ( stderr, "Error: cannot create chunk file '%s'\n", chunk_path );
-            free ( data_copy );
+            free ( chunks_data );
             return EXIT_FAILURE;
         }
-
         fwrite ( chunk + 2, 1, TMZ_BASIC_CHUNK_DATA_SIZE, fp );
         fclose ( fp );
         exported++;
@@ -275,17 +331,32 @@ static int export_chunks ( const st_TZX_BLOCK *block, uint32_t block_index,
         if ( chunk_id == TMZ_BASIC_LAST_CHUNK_ID ) break;
     }
 
-    /* souhrn */
     char fname[MZF_FNAME_UTF8_BUF_SIZE];
-    mzf_tools_get_fname_ex ( &bsd->mzf_header, fname, sizeof ( fname ), name_encoding );
+    mzf_tools_get_fname_ex ( &header, fname, sizeof ( fname ), name_encoding );
 
     printf ( "  Block [%u] -> %s/\n", block_index, output_dir );
     printf ( "    Filename : \"%s\"\n", fname );
-    printf ( "    Type     : 0x%02X (%s)\n", bsd->mzf_header.ftype, mzf_ftype_name ( bsd->mzf_header.ftype ) );
+    printf ( "    Type     : 0x%02X (%s)\n", header.ftype, mzf_ftype_name ( header.ftype ) );
     printf ( "    Chunks   : %u files exported\n", exported );
 
-    free ( data_copy );
+    free ( chunks_data );
     return EXIT_SUCCESS;
+}
+
+
+/**
+ * @brief Zjistí, zda blok nese soubor BSD (0x45, nebo 0x46 s částmi BSD_CHUNK).
+ * @param block Blok.
+ * @return true = ano.
+ */
+static bool is_bsd_block ( const st_TZX_BLOCK *block ) {
+    if ( block->id != TMZ_BLOCK_ID_MZ_BASIC_DATA && block->id != TMZ_BLOCK_ID_MZ_FILE ) return false;
+    st_MZF_HEADER h;
+    uint8_t *c = NULL;
+    uint16_t n = 0;
+    bool ok = ( bsd_block_chunks ( block, &h, &c, &n ) == EXIT_SUCCESS );
+    free ( c );
+    return ok;
 }
 
 
@@ -307,10 +378,11 @@ static void print_lib_versions ( void ) {
  */
 static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "Usage: %s <input.tmz> [options]\n\n", prog_name );
-    fprintf ( stderr, "Exports BSD/BRD data from TMZ block 0x45 to binary file(s).\n\n" );
+    fprintf ( stderr, "Exports BSD/BRD data from TMZ blocks 0x45 and 0x46 (BSD chunks,\n" );
+    fprintf ( stderr, "profile BASIC-1Z016) to binary file(s).\n\n" );
     fprintf ( stderr, "Options:\n" );
     fprintf ( stderr, "  --output <path>   Output file (solid) or directory (chunks)\n" );
-    fprintf ( stderr, "                    (default: derived from input)\n" );
+    fprintf ( stderr, "                    (default: derived from input, next to the input file)\n" );
     fprintf ( stderr, "  --index <N>       Extract only block at index N (0-based)\n" );
     fprintf ( stderr, "  --list            List BSD blocks without extracting\n" );
     fprintf ( stderr, "  --chunks          Export each chunk as separate file into directory\n" );
@@ -321,10 +393,12 @@ static void print_usage ( const char *prog_name ) {
 
 
 /**
- * @brief Hlavni funkce - export BSD/BRD dat z TMZ.
+ * @brief Hlavní funkce - export dat BSD/BRD z TMZ.
  *
- * Zpracuje argumenty prikazove radky, nacte TMZ soubor,
- * najde bloky 0x45 a extrahuje z nich data.
+ * Zpracuje argumenty příkazové řádky, načte TMZ soubor, najde bloky
+ * 0x45 a 0x46 s částmi BSD_CHUNK a extrahuje z nich data. Výchozí
+ * výstup leží vedle vstupního souboru, s --output a více bloky vedle
+ * --output.
  *
  * @param argc Pocet argumentu.
  * @param argv Pole argumentu.
@@ -440,7 +514,7 @@ int main ( int argc, char *argv[] ) {
     /* spocitat BSD bloky */
     uint32_t bsd_count = 0;
     for ( uint32_t i = 0; i < file->block_count; i++ ) {
-        if ( file->blocks[i].id == TMZ_BLOCK_ID_MZ_BASIC_DATA ) {
+        if ( is_bsd_block ( &file->blocks[i] ) ) {
             bsd_count++;
         }
     }
@@ -453,8 +527,8 @@ int main ( int argc, char *argv[] ) {
             tzx_free ( file );
             return EXIT_FAILURE;
         }
-        if ( file->blocks[selected_index].id != TMZ_BLOCK_ID_MZ_BASIC_DATA ) {
-            fprintf ( stderr, "Error: block [%d] is 0x%02X (%s), not a BSD block (0x45)\n",
+        if ( !is_bsd_block ( &file->blocks[selected_index] ) ) {
+            fprintf ( stderr, "Error: block [%d] is 0x%02X (%s), not a BSD block (0x45 or 0x46 with BSD chunks)\n",
                       selected_index, file->blocks[selected_index].id,
                       tmz_block_id_name ( file->blocks[selected_index].id ) );
             tzx_free ( file );
@@ -471,32 +545,25 @@ int main ( int argc, char *argv[] ) {
                  file->block_count );
 
         if ( bsd_count == 0 ) {
-            printf ( "No BSD blocks (0x45) found.\n" );
+            printf ( "No BSD blocks (0x45, 0x46) found.\n" );
         } else {
             printf ( "BSD blocks (%u):\n\n", bsd_count );
             for ( uint32_t i = 0; i < file->block_count; i++ ) {
-                if ( file->blocks[i].id != TMZ_BLOCK_ID_MZ_BASIC_DATA ) continue;
-
-                st_TZX_BLOCK copy;
-                uint8_t *dc;
-                if ( !copy_block ( &file->blocks[i], &copy, &dc ) ) continue;
-
-                en_TZX_ERROR parse_err;
+                st_MZF_HEADER hdr;
                 uint8_t *chunks_data = NULL;
-                st_TMZ_MZ_BASIC_DATA *bsd = tmz_block_parse_mz_basic_data ( &copy, &chunks_data, &parse_err );
+                uint16_t chunk_count = 0;
+                if ( bsd_block_chunks ( &file->blocks[i], &hdr, &chunks_data, &chunk_count ) != EXIT_SUCCESS ) continue;
 
-                if ( bsd ) {
-                    char fname[MZF_FNAME_UTF8_BUF_SIZE];
-                    mzf_tools_get_fname_ex ( &bsd->mzf_header, fname, sizeof ( fname ), name_encoding );
+                char fname[MZF_FNAME_UTF8_BUF_SIZE];
+                mzf_tools_get_fname_ex ( &hdr, fname, sizeof ( fname ), name_encoding );
 
-                    printf ( "  [%3u] 0x45 MZ BASIC Data  \"%s\"  type=0x%02X (%s)  chunks=%u  data=%u bytes\n",
-                             i, fname, bsd->mzf_header.ftype,
-                             mzf_ftype_name ( bsd->mzf_header.ftype ),
-                             bsd->chunk_count,
-                             (unsigned) ( bsd->chunk_count * TMZ_BASIC_CHUNK_DATA_SIZE ) );
-                }
+                printf ( "  [%3u] 0x%02X %s  \"%s\"  type=0x%02X (%s)  chunks=%u  data=%u bytes\n",
+                         i, file->blocks[i].id,
+                         file->blocks[i].id == TMZ_BLOCK_ID_MZ_BASIC_DATA ? "MZ BASIC Data" : "MZ File",
+                         fname, hdr.ftype, mzf_ftype_name ( hdr.ftype ), chunk_count,
+                         (unsigned) ( chunk_count * TMZ_BASIC_CHUNK_DATA_SIZE ) );
 
-                free ( dc );
+                free ( chunks_data );
             }
         }
 
@@ -506,17 +573,20 @@ int main ( int argc, char *argv[] ) {
 
     /* extrakce */
     if ( bsd_count == 0 && selected_index < 0 ) {
-        fprintf ( stderr, "Error: no BSD blocks (0x45) found in '%s'\n", input_file );
+        fprintf ( stderr, "Error: no BSD blocks (0x45, 0x46) found in '%s'\n", input_file );
         tzx_free ( file );
         return EXIT_FAILURE;
     }
 
-    /* bazovy nazev pro vystup */
+    /* bázový název a adresář výstupu: vedle --output, jinak vedle vstupu */
     char basename[MAX_PATH_LENGTH / 2];
+    char dirname[MAX_PATH_LENGTH / 2 - 32];
     if ( output_path ) {
         extract_basename ( output_path, basename, sizeof ( basename ) - 16 );
+        extract_dirname ( output_path, dirname, sizeof ( dirname ) );
     } else {
         extract_basename ( input_file, basename, sizeof ( basename ) - 16 );
+        extract_dirname ( input_file, dirname, sizeof ( dirname ) );
     }
 
     printf ( "Extracting from: %s\n\n", input_file );
@@ -530,7 +600,7 @@ int main ( int argc, char *argv[] ) {
         if ( selected_index >= 0 ) {
             if ( (uint32_t) selected_index != i ) continue;
         } else {
-            if ( file->blocks[i].id != TMZ_BLOCK_ID_MZ_BASIC_DATA ) continue;
+            if ( !is_bsd_block ( &file->blocks[i] ) ) continue;
         }
 
         if ( chunks_mode ) {
@@ -543,13 +613,13 @@ int main ( int argc, char *argv[] ) {
                     strncpy ( dir_path, output_path, sizeof ( dir_path ) - 1 );
                     dir_path[sizeof ( dir_path ) - 1] = '\0';
                 } else {
-                    snprintf ( dir_path, sizeof ( dir_path ), "%s_chunks", basename );
+                    snprintf ( dir_path, sizeof ( dir_path ), "%s%s_chunks", dirname, basename );
                 }
                 strncpy ( prefix, basename, sizeof ( prefix ) - 1 );
                 prefix[sizeof ( prefix ) - 1] = '\0';
             } else {
-                snprintf ( dir_path, sizeof ( dir_path ), "%s_%03u_chunks",
-                           basename, extracted + 1 );
+                snprintf ( dir_path, sizeof ( dir_path ), "%s%s_%03u_chunks",
+                           dirname, basename, extracted + 1 );
                 snprintf ( prefix, sizeof ( prefix ), "%s_%03u",
                            basename, extracted + 1 );
             }
@@ -566,11 +636,11 @@ int main ( int argc, char *argv[] ) {
                     strncpy ( out_path, output_path, sizeof ( out_path ) - 1 );
                     out_path[sizeof ( out_path ) - 1] = '\0';
                 } else {
-                    snprintf ( out_path, sizeof ( out_path ), "%s.dat", basename );
+                    snprintf ( out_path, sizeof ( out_path ), "%s%s.dat", dirname, basename );
                 }
             } else {
-                snprintf ( out_path, sizeof ( out_path ), "%s_%03u.dat",
-                           basename, extracted + 1 );
+                snprintf ( out_path, sizeof ( out_path ), "%s%s_%03u.dat",
+                           dirname, basename, extracted + 1 );
             }
 
             if ( export_solid ( &file->blocks[i], i, out_path ) != EXIT_SUCCESS ) {

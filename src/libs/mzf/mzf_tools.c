@@ -1,7 +1,7 @@
 /**
  * @file   mzf_tools.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.2.0
+ * @version 2.2.1
  * @brief  Implementace pomocných funkcí pro MZF hlavičku.
  *
  * Implementace konverze jmen souborů (Sharp MZ ASCII <-> ASCII),
@@ -9,7 +9,7 @@
  * Viz mzf_tools.h pro popis API.
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  * - 2026-08-15: v2.2.0 - hex dump se znakovou sadou (en_MZF_DUMP_CHARSET,
  *   mzf_tools_dump_char, mzf_tools_hex_dump, mzf_tools_parse_dump_charset).
  *

@@ -1,7 +1,7 @@
 /**
  * @file   mzf.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.1.0
  * @brief  Veřejné API knihovny pro MZF souborový formát počítačů Sharp MZ.
  *
  * Knihovna pro práci s MZF souborovým formátem počítačů Sharp MZ
@@ -18,7 +18,7 @@
  * mzf_tools (viz mzf_tools.h).
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -83,7 +83,7 @@ extern "C" {
 #define MZF_FTYPE_BTX           0x02
 /** @brief BASIC datový soubor */
 #define MZF_FTYPE_BSD           0x03
-/** @brief BASIC read-after-run datový soubor */
+/** @brief Datový soubor BASICu (ROM ho jmenuje BRD; zapisuje ho WOPEN# BASICu 1Z-016) */
 #define MZF_FTYPE_BRD           0x04
 /** @brief Read and branch (spuštění po načtení) */
 #define MZF_FTYPE_RB            0x05
@@ -110,7 +110,7 @@ typedef enum en_MZF_ERROR {
     /** @brief Jméno souboru v Sharp MZ ASCII — 16 znaků + terminátor 0x0d */
     typedef struct __attribute__((packed)) st_MZF_FILENAME {
         uint8_t name[MZF_FILE_NAME_LENGTH]; /**< znaky jména souboru v Sharp MZ ASCII */
-        uint8_t terminator;                 /**< terminátorový bajt (vždy 0x0d) */
+        uint8_t terminator;                 /**< bajt 11h: obvykle 0x0d, ROM SAVE zapíše bajt z paměti (např. 0x00) */
     } st_MZF_FILENAME;
 
 /** @brief Plná délka struktury jména (16 znaků + 1 terminátor) */
@@ -155,17 +155,35 @@ typedef enum en_MZF_ERROR {
     /**
      * @brief Konverze endianity uint16 polí hlavičky (LE <-> host byte order).
      *
-     * Funkce je symetrická — volání dvakrát vrátí původní hodnoty.
+     * Funkce je symetrická - volání dvakrát vrátí původní hodnoty.
      * Nastavuje také fname.terminator na 0x0D.
      *
      * @param mzfhdr Ukazatel na hlavičku k úpravě
+     * @see mzf_header_swap_endianity() - totéž bez změny fname.terminator
      */
     extern void mzf_header_items_correction ( st_MZF_HEADER *mzfhdr );
+
+    /**
+     * @brief Konverze endianity fsize, fstrt a fexec (LE <-> host byte order) bez dalších změn.
+     *
+     * Na rozdíl od mzf_header_items_correction() nechá fname.terminator (11h)
+     * i všechny ostatní bajty hlavičky beze změny. Pro cesty, které mají přenést
+     * hlavičku tak, jak je na pásce nebo v souboru (ROM SAVE zapíše 11h tak, jak
+     * je v paměti, např. 00h).
+     *
+     * Funkce je symetrická - volání dvakrát vrátí původní hodnoty.
+     *
+     * @param mzfhdr Ukazatel na hlavičku k úpravě; NULL se ignoruje.
+     */
+    extern void mzf_header_swap_endianity ( st_MZF_HEADER *mzfhdr );
 
     /**
      * @brief Načte MZF hlavičku z handleru na daném byte offsetu.
      *
      * Automaticky provede konverzi endianity přes mzf_header_items_correction().
+     * Vedlejší efekt: bajt 11h (fname.terminator) nastaví na 0Dh (platí i pro
+     * mzf_read_header() a mzf_load()); kdo potřebuje bajt ze souboru, přečte
+     * ho zvlášť.
      *
      * @param h       Otevřený handler (soubor nebo paměť)
      * @param offset  Byte offset v datovém zdroji
@@ -361,7 +379,7 @@ typedef enum en_MZF_ERROR {
 #define MZF_UINT8_FNAME(n) ((uint8_t*)&(n))
 
     /** @brief Verze knihovny mzf. */
-#define MZF_VERSION "2.0.0"
+#define MZF_VERSION "2.1.0"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny mzf.

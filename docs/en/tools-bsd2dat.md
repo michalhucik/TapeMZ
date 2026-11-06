@@ -1,8 +1,9 @@
 # bsd2dat - BSD/BRD Data Export from TMZ
 
-Exports data from blocks 0x45 (MZ BASIC Data) in a TMZ file
-to a binary file. Supports two export modes:
-solid (default) and chunks.
+Exports BASIC data files from a TMZ file to a binary file. Reads
+blocks 0x45 (MZ BASIC Data, TMZ v1.0) and blocks 0x46 with BSD chunk
+parts (profile `BASIC-1Z016`, written by dat2bsd and wav2tmz).
+Supports two export modes: solid (default) and chunks.
 
 ## Usage
 
@@ -51,19 +52,20 @@ Conversion modes:
 
 ### Export Modes
 
-**Solid (default)** - joins data from all data chunks (excluding the termination chunk)
-into a single binary file. Each chunk contributes 256 bytes of data;
-the last chunk may contain zero padding.
+**Solid (default)** - joins data from all chunks including the last one
+(ID 0xFFFF carries data like the others) into a single binary file. Each
+chunk contributes 256 bytes of data; the last chunk may contain zero padding.
 
-Output naming:
+Output naming (without `--output` the output is placed next to the input
+file, not in the current directory):
 - Single block with `--output`: exact name is used
 - Single block without `--output`: input.dat
-- Multiple blocks with `--output`: output_001.dat, output_002.dat, ...
+- Multiple blocks with `--output`: output_001.dat, output_002.dat, ... (in the `--output` directory)
 - Multiple blocks without `--output`: input_001.dat, input_002.dat, ...
 
 **Chunks (--chunks)** - creates a directory and saves each chunk
 as a separate file named `prefix_NNNN.dat`, where NNNN
-is the hexadecimal chunk ID. Including the termination chunk (FFFF).
+is the hexadecimal chunk ID, including the last chunk (FFFF).
 
 Directory naming:
 - Single block with `--output`: exact name is used
@@ -83,11 +85,12 @@ Example `--list` output:
 ```
 === tape.tmz ===
 
-File type: TMZ, Version: 1.0, Blocks: 2
+File type: TMZ, Version: 1.1, Blocks: 2
 
-BSD blocks (1):
+BSD blocks (2):
 
-  [  1] 0x45 MZ BASIC Data  "SAVEGAME"  type=0x03 (BSD (BASIC data))  chunks=4  data=1024 bytes
+  [  0] 0x45 MZ BASIC Data  "OLDDATA"  type=0x03 (BSD (BASIC data))  chunks=2  data=512 bytes
+  [  1] 0x46 MZ File  "SAVEGAME"  type=0x04 (BRD (BASIC data, WOPEN#))  chunks=4  data=1024 bytes
 ```
 
 Exporting BSD data to a single file:
@@ -112,8 +115,7 @@ Result: directory `tape_chunks/` containing:
 - tape_0000.dat (256 B)
 - tape_0001.dat (256 B)
 - tape_0002.dat (256 B)
-- tape_0003.dat (256 B)
-- tape_FFFF.dat (256 B, terminator)
+- tape_FFFF.dat (256 B, last chunk)
 
 Exporting chunks with a custom directory:
 

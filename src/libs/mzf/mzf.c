@@ -1,14 +1,14 @@
 /**
  * @file   mzf.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.1.0
  * @brief  Implementace nízkoúrovňového I/O, validace a lifecycle API pro MZF formát.
  *
  * Implementace nízkoúrovňového I/O, validace a lifecycle API
  * pro MZF souborový formát. Viz mzf.h pro popis formátu.
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -65,6 +65,15 @@ static int mzf_write_word_le ( st_HANDLER *h, uint32_t offset, uint16_t w ) {
 /* ═══════════════════════════════════════════════════════════════════════
  * Konverze endianity
  * ═══════════════════════════════════════════════════════════════════════ */
+
+/** @copydoc mzf_header_swap_endianity */
+void mzf_header_swap_endianity ( st_MZF_HEADER *mzfhdr ) {
+    if ( !mzfhdr ) return;
+    mzfhdr->fsize = endianity_bswap16_LE ( mzfhdr->fsize );
+    mzfhdr->fstrt = endianity_bswap16_LE ( mzfhdr->fstrt );
+    mzfhdr->fexec = endianity_bswap16_LE ( mzfhdr->fexec );
+}
+
 
 /** @copydoc mzf_header_items_correction */
 void mzf_header_items_correction ( st_MZF_HEADER *mzfhdr ) {

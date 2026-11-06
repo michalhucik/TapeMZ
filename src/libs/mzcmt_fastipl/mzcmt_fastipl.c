@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_fastipl.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
+ * @version 1.3.0
  * @brief  Implementace FASTIPL koderu pro Sharp MZ.
  *
  * FASTIPL generuje standardni dvou-blokovy MZF zaznam:
@@ -183,8 +183,8 @@ typedef struct st_fastipl_pulses_length {
 /**
  * @brief MZ-700 pulzy.
  *
- * Symetricke hodnoty - ROM pouziva stejnou delay smycku
- * pro obe poloviny pulzu. Shodne s mzcmt_turbo g_pulses_700.
+ * Symetricke hodnoty TMZ v1.0 bez dolozeneho zdroje [neovereno].
+ * Shodne s mzcmt_turbo g_pulses_700.
  */
 static const st_fastipl_pulses_length g_pulses_700 = {
     { 0.000504, 0.000504 },   /* long: 504 us H + 504 us L */
@@ -194,13 +194,14 @@ static const st_fastipl_pulses_length g_pulses_700 = {
 /**
  * @brief MZ-800 pulzy.
  *
- * Asymetricke hodnoty odvozene z referencni nahravky ic-loader-all.wav.
- * Pri 44100 Hz: SHORT = 10+12=22 smp, LONG = 21+22=43 smp.
+ * Asymetricke hodnoty odvozene z nahravky Intercopy z emulatoru (kvantovane
+ * na vzorky 44100 Hz: SHORT = 10+12=22 smp, LONG = 21+22=43 smp); nejde
+ * o mereni hardwaru. Casovani Intercopy v T-stavech je v profilu IC-10.2-FASTIPL.
  *
  * Asymetricky pulseset je nutny pro spravne skalovani turbo rychlosti:
  * pri 2:1 dava 5+6=11 smp (referencni), symetricke 249/249 dava 5+5=10.
  * Readpoint hodnoty v lookup tabulce g_fastipl_readpoints jsou konzistentni
- * s timto pulsesetem (odvozeno ze stejne referencni nahravky).
+ * s timto pulsesetem.
  */
 static const st_fastipl_pulses_length g_pulses_800 = {
     { 0.000476, 0.000499 },   /* long: 476 us H (21 smp) + 499 us L (22 smp) = 43 smp */
@@ -380,13 +381,13 @@ uint16_t mzcmt_fastipl_compute_checksum ( const uint8_t *data, uint16_t size ) {
 /**
  * @brief Readpoint hodnoty pro jednotlive rychlosti.
  *
- * Odvozeno z referencni nahravky ic-loader-all.wav dekodovanim
- * $BB hlavicky. Readpoint ridi ROM delay smycku na $0A4B -
+ * Hodnoty pro 1:1, 2:1, 7:3 a 8:3 jsou z tabulky programu Intercopy V10.2
+ * (shodne s dekodovanymi $BB hlavickami). Readpoint ridi ROM delay smycku na $0A4B -
  * musi byt konzistentni s pulznimi sirkami body bloku.
  *
  * Intercopy readpoint NENI jednoduchy vzorec 82/divisor.
  * Pocita se pres sub_201C -> sub_1E09 ze sloziteho timing modelu.
- * Proto pouzivame lookup tabulku z referencniho mereni.
+ * Proto pouzivame lookup tabulku.
  */
 static const uint8_t g_fastipl_readpoints[CMTSPEED_COUNT] = {
     0,    /* CMTSPEED_NONE */
@@ -405,7 +406,7 @@ static const uint8_t g_fastipl_readpoints[CMTSPEED_COUNT] = {
 /**
  * @brief Vrati vychozi readpoint pro danou rychlost.
  *
- * Pouziva lookup tabulku odvozenou z referencni nahravky Intercopy 10.2.
+ * Pouziva lookup tabulku (Intercopy 10.2 pro 1:1, 2:1, 7:3, 8:3, jinak odhad).
  */
 uint8_t mzcmt_fastipl_default_readpoint ( en_CMTSPEED speed ) {
     if ( !cmtspeed_is_valid ( speed ) ) return MZCMT_FASTIPL_READPOINT_DEFAULT;
@@ -671,4 +672,14 @@ st_CMT_STREAM* mzcmt_fastipl_create_stream (
 
 const char* mzcmt_fastipl_version ( void ) {
     return MZCMT_FASTIPL_VERSION;
+}
+
+int mzcmt_fastipl_get_pulse_lengths ( en_MZCMT_FASTIPL_PULSESET pulseset, double out[4] ) {
+    if ( !out || ( int ) pulseset < 0 || pulseset >= MZCMT_FASTIPL_PULSESET_COUNT ) return EXIT_FAILURE;
+    const st_fastipl_pulses_length *p = g_pulses[pulseset];
+    out[0] = p->long_pulse.high;
+    out[1] = p->long_pulse.low;
+    out[2] = p->short_pulse.high;
+    out[3] = p->short_pulse.low;
+    return EXIT_SUCCESS;
 }

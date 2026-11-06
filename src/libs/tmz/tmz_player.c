@@ -1,7 +1,7 @@
 /**
  * @file   tmz_player.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.0
+ * @version 1.4.0
  * @brief  Implementace TMZ playeru - generovani CMT audio streamu z TMZ/TZX bloku.
  *
  * Player prehrava jednotlive TMZ/TZX bloky na CMT audio streamy pomoci
@@ -48,12 +48,17 @@
 #include "../mzcmt_fsk/mzcmt_fsk.h"
 #include "../mzcmt_slow/mzcmt_slow.h"
 #include "../mzcmt_direct/mzcmt_direct.h"
-#include "../mzcmt_bsd/mzcmt_bsd.h"
-#include "../mzcmt_cpmtape/mzcmt_cpmtape.h"
 
 #include "tmz.h"
 #include "tmz_blocks.h"
 #include "tmz_player.h"
+#include "tmz_tlv.h"
+#include "tmz_mzfile.h"
+#include "tmz_part_fm.h"
+#include "tmz_part_manchester.h"
+#include "tmz_v1conv.h"
+#include "../mzcmt_fm/mzcmt_fm.h"
+#include "../mzcmt_manchester/mzcmt_manchester.h"
 
 
 /**
@@ -94,6 +99,7 @@ const char* tmz_player_error_string ( en_TMZ_PLAYER_ERROR err ) {
         case TMZ_PLAYER_ERROR_UNSUPPORTED: return "Unsupported block type";
         case TMZ_PLAYER_ERROR_STREAM_CREATE: return "Failed to create CMT stream";
         case TMZ_PLAYER_ERROR_ALLOC:       return "Memory allocation failed";
+        case TMZ_PLAYER_ERROR_UNREADABLE:  return "Signal not readable at this sample rate";
         default:                           return "Unknown player error";
     }
 }
@@ -108,7 +114,7 @@ const char* tmz_player_error_string ( en_TMZ_PLAYER_ERROR err ) {
  *
  * Nastavi: sample_rate = 44100, stream_type = vstream,
  * default_pulseset = MZ-800, default_speed = 1:1,
- * default_formatset = MZ800_SANE.
+ * default_formatset = MZ800_SANE, mz_cpu_clock = 0, v1_convert = 1.
  *
  * @param config Ukazatel na konfiguraci k inicializaci.
  *
@@ -122,6 +128,8 @@ void tmz_player_config_init ( st_TMZ_PLAYER_CONFIG *config ) {
     config->default_pulseset = MZTAPE_PULSESET_800;
     config->default_speed = CMTSPEED_1_1;
     config->default_formatset = MZTAPE_FORMATSET_MZ800_SANE;
+    config->mz_cpu_clock = 0;
+    config->v1_convert = 1;
 }
 
 
@@ -161,39 +169,7 @@ static en_MZCMT_FASTIPL_PULSESET tmz_to_fastipl_pulseset ( uint8_t pulseset ) {
 }
 
 
-/**
- * @brief Prevede en_TMZ_PULSESET na en_MZCMT_BSD_PULSESET.
- *
- * @param pulseset TMZ pulsni sada.
- * @return Odpovidajici BSD encoder pulsni sada.
- */
-static en_MZCMT_BSD_PULSESET tmz_to_bsd_pulseset ( uint8_t pulseset ) {
-    switch ( pulseset ) {
-        case TMZ_PULSESET_700: return MZCMT_BSD_PULSESET_700;
-        case TMZ_PULSESET_800: return MZCMT_BSD_PULSESET_800;
-        case TMZ_PULSESET_80B: return MZCMT_BSD_PULSESET_80B;
-        default: return MZCMT_BSD_PULSESET_800;
-    }
-}
-
-
 /* tmz_to_cpm_pulseset: smazano spolu s mzcmt_cpm */
-
-
-/**
- * @brief Prevede MZF hlavicku z host byte order zpet do LE pro raw kodery.
- *
- * Kodery mzcmt_turbo a mzcmt_bsd ocekavaji 128B hlavicku v originalni
- * endianite (LE). Parse funkce vsak konvertuji do host byte order.
- * Tato funkce vytvori LE kopii.
- *
- * @param header_host MZF hlavicka v host byte order.
- * @param header_le   Vystupni buffer pro 128B LE hlavicku (musi mit >= sizeof(st_MZF_HEADER)).
- */
-static void tmz_player_header_to_le ( const st_MZF_HEADER *header_host, uint8_t *header_le ) {
-    memcpy ( header_le, header_host, sizeof ( st_MZF_HEADER ) );
-    mzf_header_items_correction ( (st_MZF_HEADER*) header_le );
-}
 
 
 /**
@@ -216,8 +192,8 @@ static st_MZTAPE_MZF* tmz_player_create_mztmzf ( const st_MZF_HEADER *mzf_header
 
     /* hlavicka se uklada v raw (LE) formatu pro mztape */
     memcpy ( mztmzf->header, mzf_header, sizeof ( st_MZF_HEADER ) );
-    /* konverze zpet do LE pro mztape, ktera ocekava raw hlavicku */
-    mzf_header_items_correction ( (st_MZF_HEADER*) mztmzf->header );
+    /* zpět do LE pro mztape (raw hlavička); 11h zůstává, jak ho vrátil parser bloku */
+    mzf_header_swap_endianity ( (st_MZF_HEADER*) mztmzf->header );
 
     mztmzf->size = body_size;
 
@@ -262,10 +238,30 @@ static st_MZTAPE_MZF* tmz_player_create_mztmzf ( const st_MZF_HEADER *mzf_header
 /* ========================================================================= */
 
 /**
+ * @brief Připojí za stream bloku v1.0 pauzu pause_ms jako ticho na nízké úrovni.
+ *
+ * Jen u vstreamu; bitstream se nemění. Úroveň LOW odpovídá výchozí úrovni
+ * pauzy převodu v1conv (pause_level 0).
+ *
+ * @param s Stream bloku (smí být NULL, pak nic). @param pause_ms Pauza v ms.
+ * @param config Konfigurace (vzorkovací frekvence).
+ * @return EXIT_SUCCESS, nebo EXIT_FAILURE při selhání zápisu do vstreamu.
+ */
+static int append_v1_pause ( st_CMT_STREAM *s, uint32_t pause_ms, const st_TMZ_PLAYER_CONFIG *config ) {
+    if ( !s || pause_ms == 0 || s->stream_type != CMT_STREAM_TYPE_VSTREAM ) return EXIT_SUCCESS;
+    uint32_t rate = config->sample_rate ? config->sample_rate : CMTSTREAM_DEFAULT_RATE;
+    uint32_t n = ( uint32_t ) ( ( uint64_t ) pause_ms * rate / 1000u );
+    if ( n == 0 ) return EXIT_SUCCESS;
+    return cmt_vstream_add_value ( s->str.vstream, 0, n );
+}
+
+
+/**
  * @brief Prehaje blok 0x40 (MZ Standard Data) na CMT stream.
  *
  * Naparsuje blok, vytvori st_MZTAPE_MZF a pouzije mztape knihovnu
- * pro generovani CMT streamu ve standardni rychlosti 1:1.
+ * pro generovani CMT streamu ve standardni rychlosti 1:1. Za signál
+ * připojí pause_ms bloku jako ticho na nízké úrovni (jen vstream).
  *
  * @param block TMZ blok s ID 0x40.
  * @param config Konfigurace playeru.
@@ -309,6 +305,8 @@ st_CMT_STREAM* tmz_player_play_mz_standard ( const st_TZX_BLOCK *block,
         return NULL;
     }
 
+    uint16_t pause_ms = std_data->pause_ms;   /* std_data ukazuje do data_copy */
+
     /* vytvoreni mztape MZF */
     st_MZTAPE_MZF *mztmzf = tmz_player_create_mztmzf ( &std_data->mzf_header, body_data, std_data->body_size );
     free ( data_copy );
@@ -325,8 +323,9 @@ st_CMT_STREAM* tmz_player_play_mz_standard ( const st_TZX_BLOCK *block,
 
     mztape_mztmzf_destroy ( mztmzf );
 
-    if ( !stream ) {
+    if ( !stream || append_v1_pause ( stream, pause_ms, config ) != EXIT_SUCCESS ) {
         g_player_error_cb ( __func__, __LINE__, "Failed to create CMT stream from MZ Standard Data\n" );
+        cmt_stream_destroy ( stream );
         *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
         return NULL;
     }
@@ -536,31 +535,72 @@ static st_CMT_STREAM* play_turbo_fmt_direct ( const st_TMZ_MZ_TURBO_DATA *td,
 /*  Prehravani jednotlivych bloku                                            */
 /* ========================================================================= */
 
+/** @brief Úroveň v g_fsl_bad platná pro všechny úrovně (DIRECT nemá úrovně rychlosti). */
+#define FSL_ANY_LEVEL 0xFF
+
 /**
- * @brief Prehaje blok 0x41 s formatem CPM-TAPE (Pezik/MarVan).
+ * @brief Vzorkovací frekvence, na kterých se FSK/SLOW/DIRECT měřily v emulátoru.
  *
- * Pouzije mzcmt_cpmtape koder - manchesterske kodovani, LSB first,
- * bez stop bitu. Kompletni signal: header blok + gap + body blok.
- * Na pasce neni loader (TAPE.COM bezi pod CP/M).
- *
- * @param td         Rozparsovana turbo data (host byte order).
- * @param body_data  Datove telo.
- * @param config     Konfigurace playeru.
- * @return Novy CMT stream, nebo NULL pri chybe.
+ * Zdroj: měření zavedení v emulátoru (mz800emu 2.0.6, emulace MZ-800).
  */
-static st_CMT_STREAM* play_turbo_fmt_cpmtape ( const st_TMZ_MZ_TURBO_DATA *td,
-                                                 const uint8_t *body_data,
-                                                 const st_TMZ_PLAYER_CONFIG *config ) {
+static const uint32_t g_fsl_measured_rates[] = { 22050, 32000, 44100, 48000, 88200, 96000 };
 
-    /* konfigurace CPM-TAPE koderu */
-    st_MZCMT_CPMTAPE_CONFIG ccfg;
-    memset ( &ccfg, 0, sizeof ( ccfg ) );
-    ccfg.speed = (en_MZCMT_CPMTAPE_SPEED) td->speed;
-    if ( ccfg.speed >= MZCMT_CPMTAPE_SPEED_COUNT ) ccfg.speed = MZCMT_CPMTAPE_SPEED_2400;
+/**
+ * @brief Kombinace FSK/SLOW/DIRECT, které zavaděč v emulátoru nepřečetl (TIMEOUT/FAIL).
+ *
+ * Zdroj: měření v emulátoru. level je pole speed bloku
+ * 0x41, FSL_ANY_LEVEL = libovolná úroveň. Při 44100 Hz prošly všechny
+ * kombinace.
+ */
+static const struct {
+    uint8_t format;   /**< en_TMZ_FORMAT */
+    uint8_t level;    /**< úroveň rychlosti (pole speed), nebo FSL_ANY_LEVEL */
+    uint32_t rate;    /**< vzorkovací frekvence (Hz) */
+} g_fsl_bad[] = {
+    { TMZ_FORMAT_FSK, 2, 48000 },
+    { TMZ_FORMAT_FSK, 4, 22050 },
+    { TMZ_FORMAT_FSK, 5, 22050 },
+    { TMZ_FORMAT_FSK, 5, 32000 },
+    { TMZ_FORMAT_FSK, 6, 22050 },
+    { TMZ_FORMAT_FSK, 6, 32000 },
+    { TMZ_FORMAT_FSK, 6, 48000 },
+    { TMZ_FORMAT_FSK, 6, 88200 },
+    { TMZ_FORMAT_FSK, 6, 96000 },
+    { TMZ_FORMAT_SLOW, 0, 22050 },
+    { TMZ_FORMAT_SLOW, 1, 22050 },
+    { TMZ_FORMAT_SLOW, 1, 88200 },
+    { TMZ_FORMAT_SLOW, 1, 96000 },
+    { TMZ_FORMAT_SLOW, 2, 22050 },
+    { TMZ_FORMAT_SLOW, 2, 32000 },
+    { TMZ_FORMAT_SLOW, 3, 22050 },
+    { TMZ_FORMAT_SLOW, 4, 22050 },
+    { TMZ_FORMAT_SLOW, 4, 32000 },
+    { TMZ_FORMAT_SLOW, 4, 88200 },
+    { TMZ_FORMAT_SLOW, 4, 96000 },
+    { TMZ_FORMAT_DIRECT, FSL_ANY_LEVEL, 22050 },
+    { TMZ_FORMAT_DIRECT, FSL_ANY_LEVEL, 32000 },
+    { TMZ_FORMAT_DIRECT, FSL_ANY_LEVEL, 48000 },
+    { TMZ_FORMAT_DIRECT, FSL_ANY_LEVEL, 88200 },
+    { TMZ_FORMAT_DIRECT, FSL_ANY_LEVEL, 96000 },
+};
 
-    return mzcmt_cpmtape_create_stream (
-        &td->mzf_header, body_data, td->body_size,
-        &ccfg, config->stream_type, config->sample_rate );
+
+/**
+ * @brief Ověří, zda zavaděč FSK/SLOW/DIRECT přečte signál při dané frekvenci.
+ * @param format en_TMZ_FORMAT. @param level Úroveň (pole speed bloku). @param rate Frekvence (Hz).
+ * @return 1 = změřeno PASS, nebo jiný formát; 0 = změřeno TIMEOUT/FAIL;
+ *         -1 = frekvence nezměřená (přehrát s varováním).
+ */
+static int fsl_rate_ok ( uint8_t format, uint8_t level, uint32_t rate ) {
+    if ( format != TMZ_FORMAT_FSK && format != TMZ_FORMAT_SLOW && format != TMZ_FORMAT_DIRECT ) return 1;
+    for ( size_t i = 0; i < sizeof ( g_fsl_bad ) / sizeof ( g_fsl_bad[0] ); i++ ) {
+        if ( g_fsl_bad[i].format == format && g_fsl_bad[i].rate == rate
+             && ( g_fsl_bad[i].level == FSL_ANY_LEVEL || g_fsl_bad[i].level == level ) ) return 0;
+    }
+    for ( size_t i = 0; i < sizeof ( g_fsl_measured_rates ) / sizeof ( g_fsl_measured_rates[0] ); i++ ) {
+        if ( g_fsl_measured_rates[i] == rate ) return 1;
+    }
+    return -1;
 }
 
 
@@ -574,8 +614,15 @@ static st_CMT_STREAM* play_turbo_fmt_cpmtape ( const st_TMZ_MZ_TURBO_DATA *td,
  * - FSK: Frequency Shift Keying (mzcmt_fsk)
  * - SLOW: 2 bity na pulz (mzcmt_slow)
  * - DIRECT: primy bitovy zapis (mzcmt_direct)
- * - CPM-TAPE: Manchester kodovani, LSB first (mzcmt_cpmtape)
+ * - CPM-TAPE: vždy převod na 0x46 PEZIK-2.0A (tmz_v1conv) a přehrání jako 0x46
  * - SINCLAIR: nepodporovano (vyzaduje TZX blokovou generaci)
+ *
+ * Za signál připojí pause_ms bloku jako ticho na nízké úrovni (jen vstream).
+ *
+ * FSK, SLOW a DIRECT při vzorkovací frekvenci, kterou emulátor změřil jako
+ * nečitelnou (g_fsl_bad), vrátí
+ * TMZ_PLAYER_ERROR_UNREADABLE; při nezměřené frekvenci varují přes error
+ * callback a přehrají se.
  *
  * @param block TMZ blok s ID 0x41.
  * @param config Konfigurace playeru.
@@ -618,6 +665,42 @@ st_CMT_STREAM* tmz_player_play_mz_turbo ( const st_TZX_BLOCK *block,
         return NULL;
     }
 
+    /*
+     * CPM-TAPE nemá cestu v1.0. Blok se převede na 0x46 PEZIK-2.0A i při v1_convert = 0;
+     * pauza bloku je v něm jako pauza poslední části.
+     */
+    if ( turbo_data->format == TMZ_FORMAT_CPM_TAPE ) {
+        free ( data_copy );
+        st_TMZ_V1CONV_CONFIG vc;
+        tmz_v1conv_config_init ( &vc );
+        st_TZX_BLOCK *conv = NULL;
+        if ( tmz_v1conv_block ( block, &vc, &conv ) != TMZ_V1CONV_OK ) {
+            g_player_error_cb ( __func__, __LINE__, "CPM-TAPE block cannot be converted to PEZIK-2.0A\n" );
+            *err = TMZ_PLAYER_ERROR_UNSUPPORTED;
+            return NULL;
+        }
+        st_CMT_STREAM *cs = tmz_player_play_mz_file ( conv, config, err );
+        tmz_block_free ( conv );
+        return cs;
+    }
+
+    /* FSK/SLOW/DIRECT: čitelnost podle měření v emulátoru */
+    uint32_t rate = config->sample_rate ? config->sample_rate : CMTSTREAM_DEFAULT_RATE;
+    int rok = fsl_rate_ok ( turbo_data->format, turbo_data->speed, rate );
+    if ( rok <= 0 ) {
+        const char *fname = ( turbo_data->format == TMZ_FORMAT_FSK ) ? "FSK"
+                            : ( turbo_data->format == TMZ_FORMAT_SLOW ) ? "SLOW" : "DIRECT";
+        if ( rok == 0 ) {
+            g_player_error_cb ( __func__, __LINE__, "Format %s level %u is not readable at %u Hz (measured in the emulator)\n",
+                                fname, turbo_data->speed, rate );
+            free ( data_copy );
+            *err = TMZ_PLAYER_ERROR_UNREADABLE;
+            return NULL;
+        }
+        g_player_error_cb ( __func__, __LINE__, "Warning: format %s level %u is not verified at %u Hz\n",
+                            fname, turbo_data->speed, rate );
+    }
+
     /* dispatching podle formatu zaznamu */
     st_CMT_STREAM *stream = NULL;
 
@@ -647,10 +730,6 @@ st_CMT_STREAM* tmz_player_play_mz_turbo ( const st_TZX_BLOCK *block,
             stream = play_turbo_fmt_direct ( turbo_data, body_data, config );
             break;
 
-        case TMZ_FORMAT_CPM_TAPE:
-            stream = play_turbo_fmt_cpmtape ( turbo_data, body_data, config );
-            break;
-
         case TMZ_FORMAT_SINCLAIR:
             g_player_error_cb ( __func__, __LINE__,
                 "SINCLAIR format in MZ Turbo Data block not yet supported\n" );
@@ -662,10 +741,16 @@ st_CMT_STREAM* tmz_player_play_mz_turbo ( const st_TZX_BLOCK *block,
             break;
     }
 
+    uint16_t pause_ms = turbo_data->pause_ms;   /* turbo_data ukazuje do data_copy */
     free ( data_copy );
 
     if ( !stream ) {
         *err = TMZ_PLAYER_ERROR_UNSUPPORTED;
+        return NULL;
+    }
+    if ( append_v1_pause ( stream, pause_ms, config ) != EXIT_SUCCESS ) {
+        cmt_stream_destroy ( stream );
+        *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
         return NULL;
     }
 
@@ -675,20 +760,23 @@ st_CMT_STREAM* tmz_player_play_mz_turbo ( const st_TZX_BLOCK *block,
 
 
 /**
- * @brief Prehaje blok 0x45 (MZ BASIC Data) na CMT stream.
+ * @brief Přehraje blok 0x45 (MZ BASIC Data) na CMT stream.
  *
- * BSD/BRD format - chunkovany datovy zaznam. Pouzije mzcmt_bsd koder,
- * ktery generuje kompletni signal vcetne hlavicky a chunku.
- * Kazdy chunk (258 B = 2B ID + 256B data) se na pasce odesila jako
- * samostatny body blok s kratkym tapemarkem.
+ * Generátor v1.0 (mzcmt_bsd) psal tón jen před první kus a BASIC soubor za
+ * prvním kusem nepřečetl. Blok se proto vždy převede
+ * na 0x46 s profilem BASIC-1Z016 (tmz_v1conv_block, spec 9.2) a přehraje
+ * jako 0x46; pauza bloku je pauzou poslední části. Platí i při
+ * v1_convert = 0.
  *
  * @param block TMZ blok s ID 0x45.
  * @param config Konfigurace playeru.
- * @param err Vystupni chybovy kod (muze byt NULL).
- * @return Novy CMT stream, nebo NULL pri chybe.
+ * @param err Výstupní chybový kód (může být NULL): TMZ_PLAYER_ERROR_UNSUPPORTED,
+ *        když blok nejde převést (poškozený, žádný kus nebo víc než 254 kusů),
+ *        jinak jako tmz_player_play_mz_file().
+ * @return Nový CMT stream, nebo NULL při chybě.
  *
- * @pre block nesmi byt NULL a musi mit id == TMZ_BLOCK_ID_MZ_BASIC_DATA.
- * @post Volajici je vlastnikem vraceneho streamu a musi ho uvolnit pres cmt_stream_destroy().
+ * @pre block nesmí být NULL a musí mít id == TMZ_BLOCK_ID_MZ_BASIC_DATA.
+ * @post Volající je vlastníkem vráceného streamu a musí ho uvolnit přes cmt_stream_destroy().
  */
 st_CMT_STREAM* tmz_player_play_mz_basic ( const st_TZX_BLOCK *block,
                                             const st_TMZ_PLAYER_CONFIG *config,
@@ -702,51 +790,17 @@ st_CMT_STREAM* tmz_player_play_mz_basic ( const st_TZX_BLOCK *block,
         return NULL;
     }
 
-    /* parsovani bloku (kopie kvuli endianite) */
-    en_TZX_ERROR parse_err;
-    uint8_t *chunks_data = NULL;
-
-    st_TZX_BLOCK block_copy = *block;
-    uint8_t *data_copy = malloc ( block->length );
-    if ( !data_copy ) {
-        *err = TMZ_PLAYER_ERROR_ALLOC;
+    st_TMZ_V1CONV_CONFIG vc;
+    tmz_v1conv_config_init ( &vc );
+    st_TZX_BLOCK *conv = NULL;
+    if ( tmz_v1conv_block ( block, &vc, &conv ) != TMZ_V1CONV_OK ) {
+        g_player_error_cb ( __func__, __LINE__,
+                            "Block 0x45 cannot be converted to BASIC-1Z016 (invalid block, no chunk or more than 254 chunks)\n" );
+        *err = TMZ_PLAYER_ERROR_UNSUPPORTED;
         return NULL;
     }
-    memcpy ( data_copy, block->data, block->length );
-    block_copy.data = data_copy;
-
-    st_TMZ_MZ_BASIC_DATA *basic_data = tmz_block_parse_mz_basic_data ( &block_copy, &chunks_data, &parse_err );
-    if ( !basic_data ) {
-        g_player_error_cb ( __func__, __LINE__, "Failed to parse MZ BASIC Data block\n" );
-        free ( data_copy );
-        *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
-        return NULL;
-    }
-
-    /* hlavicka v LE pro raw kodovani */
-    uint8_t raw_header[sizeof ( st_MZF_HEADER )];
-    tmz_player_header_to_le ( &basic_data->mzf_header, raw_header );
-
-    /* konfigurace BSD koderu */
-    st_MZCMT_BSD_CONFIG bsd_cfg;
-    memset ( &bsd_cfg, 0, sizeof ( bsd_cfg ) );
-    bsd_cfg.pulseset = tmz_to_bsd_pulseset ( basic_data->pulseset );
-    bsd_cfg.speed = CMTSPEED_1_1;
-
-    /* generovani CMT streamu */
-    st_CMT_STREAM *stream = mzcmt_bsd_create_stream (
-        raw_header, chunks_data, basic_data->chunk_count,
-        &bsd_cfg, config->stream_type, config->sample_rate );
-
-    free ( data_copy );
-
-    if ( !stream ) {
-        g_player_error_cb ( __func__, __LINE__, "Failed to create CMT stream from MZ BASIC Data\n" );
-        *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
-        return NULL;
-    }
-
-    *err = TMZ_PLAYER_OK;
+    st_CMT_STREAM *stream = tmz_player_play_mz_file ( conv, config, err );
+    tmz_block_free ( conv );
     return stream;
 }
 
@@ -784,18 +838,284 @@ static st_CMT_STREAM* tmz_player_wrap_vstream ( st_CMT_VSTREAM *vs ) {
 }
 
 
+/** @copydoc tmz_player_play_mz_file */
+st_CMT_STREAM* tmz_player_play_mz_file ( const st_TZX_BLOCK *block, const st_TMZ_PLAYER_CONFIG *config,
+                                         en_TMZ_PLAYER_ERROR *err ) {
+    en_TMZ_PLAYER_ERROR local_err = TMZ_PLAYER_OK;
+    if ( !err ) err = &local_err;
+    if ( !block || !config ) {
+        *err = TMZ_PLAYER_ERROR_NULL_INPUT;
+        return NULL;
+    }
+    st_TMZ_MZFILE mf;
+    if ( tmz_mzfile_parse ( block, &mf ) != TZX_OK ) {
+        g_player_error_cb ( __func__, __LINE__, "Invalid MZ File block 0x46\n" );
+        *err = TMZ_PLAYER_ERROR_UNSUPPORTED;
+        return NULL;
+    }
+    uint32_t rate = config->sample_rate ? config->sample_rate : CMTSTREAM_DEFAULT_RATE;
+    uint32_t tb = config->mz_cpu_clock ? config->mz_cpu_clock : MZCMT_FM_DEFAULT_TIMEBASE;
+    st_MZCMT_FM_PARAMS *p = malloc ( sizeof ( st_MZCMT_FM_PARAMS ) );
+    st_MZCMT_MANCH_PARAMS *mp = malloc ( sizeof ( st_MZCMT_MANCH_PARAMS ) );
+    if ( !p || !mp ) {
+        free ( p );
+        free ( mp );
+        tmz_mzfile_free ( &mf );
+        *err = TMZ_PLAYER_ERROR_ALLOC;
+        return NULL;
+    }
+    st_CMT_VSTREAM *vs = NULL;
+    int played = 0;
+    for ( uint8_t i = 0; i < mf.part_count; i++ ) {
+        const st_TMZ_PART *pt = &mf.parts[i];
+        if ( pt->family != TMZ_FAMILY_FM && pt->family != TMZ_FAMILY_MANCHESTER ) {
+            g_player_error_cb ( __func__, __LINE__, "Part %u: %s (family %u)\n", i,
+                                tmz_part_error_string ( TMZ_PART_ERROR_UNSUPPORTED_FAMILY ), pt->family );
+            continue;
+        }
+        uint32_t size = 0;
+        en_TMZ_PART_ERROR pe = TMZ_PART_OK;
+        const uint8_t *data = tmz_mzfile_part_data ( &mf, pt, &size, &pe );
+        st_TMZ_PART_COMMON c;
+        if ( pt->family == TMZ_FAMILY_MANCHESTER ) {
+            /* rodina MANCHESTER: READER se nekontroluje (spec 7.2) */
+            if ( pe == TMZ_PART_OK ) pe = tmz_part_manchester_decode ( pt->tlv, pt->tlv_length, tb, mp, &c );
+            if ( pe != TMZ_PART_OK ) {
+                g_player_error_cb ( __func__, __LINE__, "Part %u: %s\n", i, tmz_part_error_string ( pe ) );
+                continue;
+            }
+            if ( !vs ) vs = cmt_vstream_new ( rate, CMT_VSTREAM_BYTELENGTH8, mzcmt_manch_first_level ( mp, data, size ),
+                                              CMT_STREAM_POLARITY_NORMAL );
+            if ( !vs || mzcmt_manch_append_vstream ( vs, mp, data, size ) != EXIT_SUCCESS ) {
+                g_player_error_cb ( __func__, __LINE__, "Part %u: signal generation failed\n", i );
+                if ( vs ) cmt_vstream_destroy ( vs );
+                free ( p );
+                free ( mp );
+                tmz_mzfile_free ( &mf );
+                *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
+                return NULL;
+            }
+            played++;
+            continue;
+        }
+        if ( pe == TMZ_PART_OK ) pe = tmz_part_fm_decode ( pt->tlv, pt->tlv_length, tb, p, &c );
+        if ( pe != TMZ_PART_OK ) {
+            g_player_error_cb ( __func__, __LINE__, "Part %u: %s\n", i, tmz_part_error_string ( pe ) );
+            continue;
+        }
+        /* čtecí bod po převodu na vzorky: pod 0 nečitelné = chyba bloku, pod 10 µs varování */
+        st_TMZ_READER_MARGINS m;
+        en_TMZ_READER_CHECK rc = tmz_part_fm_check_reader ( p, &c, rate, &m );
+        if ( rc == TMZ_READER_UNREADABLE ) {
+            g_player_error_cb ( __func__, __LINE__, "Part %u: not readable at %u Hz (margins %.1f/%.1f/%.1f us)\n", i,
+                                rate, m.short_high_us, m.long_high_us, m.short_period_us );
+            if ( vs ) cmt_vstream_destroy ( vs );
+            free ( p );
+            free ( mp );
+            tmz_mzfile_free ( &mf );
+            *err = TMZ_PLAYER_ERROR_UNREADABLE;
+            return NULL;
+        }
+        if ( rc == TMZ_READER_LOW_MARGIN ) {
+            g_player_error_cb ( __func__, __LINE__, "Warning: part %u: low reader margin at %u Hz (%.1f/%.1f/%.1f us, min %.1f)\n",
+                                i, rate, m.short_high_us, m.long_high_us, m.short_period_us, TMZ_READER_MIN_MARGIN_US );
+        }
+        if ( !vs ) vs = cmt_vstream_new ( rate, CMT_VSTREAM_BYTELENGTH8, p->level ? 1 : 0, CMT_STREAM_POLARITY_NORMAL );
+        if ( !vs || mzcmt_fm_append_vstream ( vs, p, data, size ) != EXIT_SUCCESS ) {
+            g_player_error_cb ( __func__, __LINE__, "Part %u: signal generation failed\n", i );
+            if ( vs ) cmt_vstream_destroy ( vs );
+            free ( p );
+            free ( mp );
+            tmz_mzfile_free ( &mf );
+            *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
+            return NULL;
+        }
+        played++;
+    }
+    free ( p );
+    free ( mp );
+    tmz_mzfile_free ( &mf );
+    if ( !played ) {
+        g_player_error_cb ( __func__, __LINE__, "MZ File block has no playable part\n" );
+        *err = TMZ_PLAYER_ERROR_UNSUPPORTED;
+        return NULL;
+    }
+
+    st_CMT_STREAM *stream = cmt_stream_new ( config->stream_type );
+    if ( !stream ) {
+        cmt_vstream_destroy ( vs );
+        *err = TMZ_PLAYER_ERROR_ALLOC;
+        return NULL;
+    }
+    if ( stream->stream_type == CMT_STREAM_TYPE_BITSTREAM ) {
+        st_CMT_BITSTREAM *bs = cmt_bitstream_new_from_vstream ( vs, rate );
+        cmt_vstream_destroy ( vs );
+        if ( !bs ) {
+            cmt_stream_destroy ( stream );
+            *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
+            return NULL;
+        }
+        stream->str.bitstream = bs;
+    } else {
+        stream->str.vstream = vs;
+    }
+    *err = TMZ_PLAYER_OK;
+    return stream;
+}
+
+
+/**
+ * @brief Zjistí, zda jde o audio blok TZX, který generuje tzx_generate_block().
+ * @param id ID bloku.
+ * @return 1 = 0x10-0x15 nebo 0x20, jinak 0.
+ */
+static int is_tzx_audio ( uint8_t id ) {
+    return id == TZX_BLOCK_ID_STANDARD_SPEED || id == TZX_BLOCK_ID_TURBO_SPEED || id == TZX_BLOCK_ID_PURE_TONE
+           || id == TZX_BLOCK_ID_PULSE_SEQUENCE || id == TZX_BLOCK_ID_PURE_DATA || id == TZX_BLOCK_ID_DIRECT_RECORDING
+           || id == TZX_BLOCK_ID_PAUSE;
+}
+
+
+/**
+ * @brief Zjistí, zda signál bloku MZ končí tichem (pauzou).
+ *
+ * Podle dat bloku, ne podle signálu (ticho nejde od dlouhé půlvlny spolehlivě
+ * odlišit): 0x40, 0x41 a 0x45 končí tichem při pause_ms > 0 (pauzu na konec
+ * dává převod na 0x46 i cesta v1.0); 0x46 při pause > 0 poslední části
+ * rodiny FM nebo MANCHESTER, kterou jde dekódovat (tu player přehraje poslední). Pauza
+ * kratší než vzorek, kterou generátor FM vynechá, se počítá také.
+ *
+ * @param block Blok MZ.
+ * @param config Konfigurace (mz_cpu_clock = výchozí časová základna částí 0x46).
+ * @return 1 = končí tichem, 0 = nekončí, jiný blok nebo chyba (kopie, parse).
+ */
+static int mz_block_ends_with_pause ( const st_TZX_BLOCK *block, const st_TMZ_PLAYER_CONFIG *config ) {
+    if ( !block->data || !block->length ) return 0;
+    if ( block->id == TMZ_BLOCK_ID_MZ_FILE ) {
+        st_TMZ_MZFILE mf;
+        if ( tmz_mzfile_parse ( block, &mf ) != TZX_OK ) return 0;
+        st_MZCMT_FM_PARAMS *p = malloc ( sizeof ( st_MZCMT_FM_PARAMS ) );
+        st_MZCMT_MANCH_PARAMS *mp = malloc ( sizeof ( st_MZCMT_MANCH_PARAMS ) );
+        int ends = 0;
+        uint32_t tb = config->mz_cpu_clock ? config->mz_cpu_clock : MZCMT_FM_DEFAULT_TIMEBASE;
+        for ( int i = ( int ) mf.part_count - 1; p && mp && i >= 0; i-- ) {
+            const st_TMZ_PART *pt = &mf.parts[i];
+            st_TMZ_PART_COMMON c;
+            if ( pt->family == TMZ_FAMILY_FM && tmz_part_fm_decode ( pt->tlv, pt->tlv_length, tb, p, &c ) == TMZ_PART_OK ) {
+                ends = ( p->pause > 0 );
+                break;
+            }
+            if ( pt->family == TMZ_FAMILY_MANCHESTER
+                 && tmz_part_manchester_decode ( pt->tlv, pt->tlv_length, tb, mp, &c ) == TMZ_PART_OK ) {
+                ends = ( mp->pause > 0 );
+                break;
+            }
+        }
+        free ( p );
+        free ( mp );
+        tmz_mzfile_free ( &mf );
+        return ends;
+    }
+    if ( block->id != TMZ_BLOCK_ID_MZ_STANDARD_DATA && block->id != TMZ_BLOCK_ID_MZ_TURBO_DATA
+         && block->id != TMZ_BLOCK_ID_MZ_BASIC_DATA ) return 0;
+
+    /* parse bloků v1.0 mění data (endianita), proto kopie */
+    st_TZX_BLOCK copy = *block;
+    uint8_t *data = malloc ( block->length );
+    if ( !data ) return 0;
+    memcpy ( data, block->data, block->length );
+    copy.data = data;
+    en_TZX_ERROR pe;
+    uint8_t *payload = NULL;
+    uint32_t pause_ms = 0;
+    if ( block->id == TMZ_BLOCK_ID_MZ_STANDARD_DATA ) {
+        st_TMZ_MZ_STANDARD_DATA *d = tmz_block_parse_mz_standard ( &copy, &payload, &pe );
+        if ( d ) pause_ms = d->pause_ms;
+    } else if ( block->id == TMZ_BLOCK_ID_MZ_TURBO_DATA ) {
+        st_TMZ_MZ_TURBO_DATA *d = tmz_block_parse_mz_turbo ( &copy, &payload, &pe );
+        if ( d ) pause_ms = d->pause_ms;
+    } else {
+        st_TMZ_MZ_BASIC_DATA *d = tmz_block_parse_mz_basic_data ( &copy, &payload, &pe );
+        if ( d ) pause_ms = d->pause_ms;
+    }
+    free ( data );
+    return pause_ms > 0;
+}
+
+
+/**
+ * @brief Přehraje blok s úrovní signálu na vstupu a výstupu.
+ *
+ * Audio bloky TZX (0x10-0x15, 0x20) generuje tzx_generate_block() od úrovně
+ * *level a vrátí úroveň po bloku (pravidla TZX 1.20, po pauze ale
+ * TZX_LEVEL_AFTER_PAUSE: další pulz s hranou jako na ZX). Ostatní bloky přehraje
+ * tmz_player_play_block(); vrátí-li vstream, nastaví *level na opak poslední
+ * hodnoty, aby další blok TZX začal hranou; po bloku MZ, který končí tichem
+ * na nízké úrovni (mz_block_ends_with_pause()), na TZX_LEVEL_AFTER_PAUSE
+ * jako po pauze TZX.
+ * U bitstreamu a bloků bez streamu se úroveň nemění.
+ *
+ * @param block Blok.
+ * @param config Konfigurace playeru.
+ * @param[in,out] level Aktuální úroveň signálu (0|1|TZX_LEVEL_AFTER_PAUSE).
+ * @param[out] err TMZ_PLAYER_OK; Pause 0 vrátí NULL s OK. U bloků TZX chyba
+ *        parseru nebo generátoru = TMZ_PLAYER_ERROR_STREAM_CREATE, selhání
+ *        obalení streamu = TMZ_PLAYER_ERROR_ALLOC; jinak kód z tmz_player_play_block().
+ * @return Nový stream (uvolnit cmt_stream_destroy()), nebo NULL.
+ *
+ * @pre block, config, level a err nesmí být NULL.
+ */
+static st_CMT_STREAM* play_with_level ( const st_TZX_BLOCK *block, const st_TMZ_PLAYER_CONFIG *config, uint8_t *level,
+                                        en_TMZ_PLAYER_ERROR *err ) {
+    if ( is_tzx_audio ( block->id ) ) {
+        st_TZX_CONFIG tzx_cfg = tmz_player_to_tzx_config ( config );
+        en_TZX_ERROR tzx_err = TZX_OK;
+        st_CMT_VSTREAM *vs = tzx_generate_block ( block, &tzx_cfg, level, &tzx_err );
+        if ( !vs ) {
+            if ( tzx_err == TZX_OK ) {   /* Pause 0: žádný signál */
+                *err = TMZ_PLAYER_OK;
+                return NULL;
+            }
+            if ( tzx_err != TZX_ERROR_INVALID_BLOCK ) {   /* chybu struktury bloku hlásí už parser */
+                g_player_error_cb ( __func__, __LINE__, "TZX block 0x%02X: failed to generate audio\n", block->id );
+            }
+            *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
+            return NULL;
+        }
+        st_CMT_STREAM *stream = tmz_player_wrap_vstream ( vs );
+        *err = stream ? TMZ_PLAYER_OK : TMZ_PLAYER_ERROR_ALLOC;
+        return stream;
+    }
+    st_CMT_STREAM *stream = tmz_player_play_block ( block, config, err );
+    if ( stream && stream->stream_type == CMT_STREAM_TYPE_VSTREAM && stream->str.vstream ) {
+        /*
+         * Další blok TZX začne hranou: opak poslední úrovně MZ streamu. Ticho na konci
+         * na nízké úrovni = jako pauza TZX (TZX_LEVEL_AFTER_PAUSE: další pauza bez 1 ms vysoko).
+         */
+        uint8_t last = stream->str.vstream->last_set_value ? 1 : 0;
+        *level = ( mz_block_ends_with_pause ( block, config ) && !last ) ? TZX_LEVEL_AFTER_PAUSE : ( uint8_t ) !last;
+    }
+    return stream;
+}
+
+
 /**
  * @brief Prehaje libovolny TZX audio blok (0x10-0x15, 0x20) na CMT stream.
  *
- * Pouzije TZX knihovnu pro parsovani bloku a generovani vstreamu.
- * Podporuje bloky: Standard Speed (0x10), Turbo Speed (0x11),
+ * Pouzije TZX knihovnu (tzx_generate_block) pro parsovani bloku a generovani
+ * vstreamu. Podporuje bloky: Standard Speed (0x10), Turbo Speed (0x11),
  * Pure Tone (0x12), Pulse Sequence (0x13), Pure Data (0x14),
- * Direct Recording (0x15) a Pause (0x20).
+ * Direct Recording (0x15) a Pause (0x20). Signál začíná nízko a první pulz
+ * je vysoko, tedy s hranou (TZX_LEVEL_AFTER_PAUSE, jako ZX); úroveň mezi
+ * bloky drží jen tmz_player_play_next().
  *
  * @param block TMZ blok s TZX audio ID.
  * @param config Konfigurace playeru.
- * @param err Vystupni chybovy kod (muze byt NULL).
- * @return Novy CMT stream, nebo NULL pri chybe / ridici blok bez audia.
+ * @param err Vystupni chybovy kod (muze byt NULL): TMZ_PLAYER_OK (i Pause 0,
+ *        kdy se vrátí NULL); TMZ_PLAYER_ERROR_NULL_INPUT;
+ *        TMZ_PLAYER_ERROR_UNSUPPORTED (jiné ID); TMZ_PLAYER_ERROR_STREAM_CREATE;
+ *        TMZ_PLAYER_ERROR_ALLOC.
+ * @return Novy CMT stream, nebo NULL pri chybe / Pause 0.
  *
  * @pre block nesmi byt NULL.
  * @post Volajici je vlastnikem vraceneho streamu a musi ho uvolnit pres cmt_stream_destroy().
@@ -811,96 +1131,13 @@ st_CMT_STREAM* tmz_player_play_tzx_block ( const st_TZX_BLOCK *block,
         *err = TMZ_PLAYER_ERROR_NULL_INPUT;
         return NULL;
     }
-
-    st_TZX_CONFIG tzx_cfg = tmz_player_to_tzx_config ( config );
-    en_TZX_ERROR tzx_err;
-    st_CMT_VSTREAM *vs = NULL;
-
-    switch ( block->id ) {
-
-        case TZX_BLOCK_ID_STANDARD_SPEED:
-        {
-            st_TZX_STANDARD_SPEED parsed;
-            tzx_err = tzx_parse_standard_speed ( block->data, block->length, &parsed );
-            if ( tzx_err != TZX_OK ) { *err = TMZ_PLAYER_ERROR_STREAM_CREATE; return NULL; }
-            vs = tzx_generate_standard_speed ( &parsed, &tzx_cfg, &tzx_err );
-            break;
-        }
-
-        case TZX_BLOCK_ID_TURBO_SPEED:
-        {
-            st_TZX_TURBO_SPEED parsed;
-            tzx_err = tzx_parse_turbo_speed ( block->data, block->length, &parsed );
-            if ( tzx_err != TZX_OK ) { *err = TMZ_PLAYER_ERROR_STREAM_CREATE; return NULL; }
-            vs = tzx_generate_turbo_speed ( &parsed, &tzx_cfg, &tzx_err );
-            break;
-        }
-
-        case TZX_BLOCK_ID_PURE_TONE:
-        {
-            st_TZX_PURE_TONE parsed;
-            tzx_err = tzx_parse_pure_tone ( block->data, block->length, &parsed );
-            if ( tzx_err != TZX_OK ) { *err = TMZ_PLAYER_ERROR_STREAM_CREATE; return NULL; }
-            vs = tzx_generate_pure_tone ( &parsed, &tzx_cfg, &tzx_err );
-            break;
-        }
-
-        case TZX_BLOCK_ID_PULSE_SEQUENCE:
-        {
-            st_TZX_PULSE_SEQUENCE parsed;
-            tzx_err = tzx_parse_pulse_sequence ( block->data, block->length, &parsed );
-            if ( tzx_err != TZX_OK ) { *err = TMZ_PLAYER_ERROR_STREAM_CREATE; return NULL; }
-            vs = tzx_generate_pulse_sequence ( &parsed, &tzx_cfg, &tzx_err );
-            break;
-        }
-
-        case TZX_BLOCK_ID_PURE_DATA:
-        {
-            st_TZX_PURE_DATA parsed;
-            tzx_err = tzx_parse_pure_data ( block->data, block->length, &parsed );
-            if ( tzx_err != TZX_OK ) { *err = TMZ_PLAYER_ERROR_STREAM_CREATE; return NULL; }
-            vs = tzx_generate_pure_data ( &parsed, &tzx_cfg, &tzx_err );
-            break;
-        }
-
-        case TZX_BLOCK_ID_DIRECT_RECORDING:
-        {
-            st_TZX_DIRECT_RECORDING parsed;
-            tzx_err = tzx_parse_direct_recording ( block->data, block->length, &parsed );
-            if ( tzx_err != TZX_OK ) { *err = TMZ_PLAYER_ERROR_STREAM_CREATE; return NULL; }
-            vs = tzx_generate_direct_recording ( &parsed, &tzx_cfg, &tzx_err );
-            break;
-        }
-
-        case TZX_BLOCK_ID_PAUSE:
-        {
-            st_TZX_PAUSE parsed;
-            tzx_err = tzx_parse_pause ( block->data, block->length, &parsed );
-            if ( tzx_err != TZX_OK ) { *err = TMZ_PLAYER_ERROR_STREAM_CREATE; return NULL; }
-            if ( parsed.pause_ms == 0 ) { *err = TMZ_PLAYER_OK; return NULL; } /* stop tape */
-            vs = tzx_generate_pause ( parsed.pause_ms, &tzx_cfg, &tzx_err );
-            break;
-        }
-
-        default:
-            *err = TMZ_PLAYER_ERROR_UNSUPPORTED;
-            return NULL;
-    }
-
-    if ( !vs ) {
-        g_player_error_cb ( __func__, __LINE__, "TZX block 0x%02X: failed to generate audio\n", block->id );
-        *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
+    if ( !is_tzx_audio ( block->id ) ) {
+        *err = TMZ_PLAYER_ERROR_UNSUPPORTED;
         return NULL;
     }
 
-    st_CMT_STREAM *stream = tmz_player_wrap_vstream ( vs );
-    if ( !stream ) {
-        *err = TMZ_PLAYER_ERROR_ALLOC;
-        return NULL;
-    }
-
-    *err = TMZ_PLAYER_OK;
-    return stream;
+    uint8_t lv = TZX_LEVEL_AFTER_PAUSE;   /* start: signál nízko, první pulz s hranou */
+    return play_with_level ( block, config, &lv, err );
 }
 
 
@@ -910,6 +1147,17 @@ st_CMT_STREAM* tmz_player_play_tzx_block ( const st_TZX_BLOCK *block,
  * Dispatcher - podle ID bloku zavola prislusnou specializovanou funkci.
  * Ridici bloky (pause, group, loop) jsou zpracovany, ale nevytvareji stream
  * (vraci NULL s TMZ_PLAYER_OK).
+ *
+ * Bloky v1.0 0x40, 0x41 a 0x45 se při config->v1_convert převedou v paměti
+ * na 0x46 (tmz_v1conv_block, spec 9.1, 9.2) a přehrají jako 0x46. Blok,
+ * který převést nejde (nebo při v1_convert = 0), se přehraje cestou v1.0;
+ * výjimkou jsou 0x41 CPM_TAPE a 0x45, které cestu v1.0 nemají a převádějí
+ * se vždy.
+ * Cestou v1.0 se přehraje i převedený blok, jehož signál generátor FM
+ * nevyrobí; výjimkou je TMZ_PLAYER_ERROR_UNREADABLE, ta se vrátí.
+ * Bloky 0x42 a 0x44 se přeskočí s varováním přes error callback (spec 9.3):
+ * NULL a TMZ_PLAYER_OK. Stejně rezervované bloky 0x47-0x4F. Pause 0
+ * vrátí NULL a TMZ_PLAYER_OK (signál zastavení dává jen tmz_player_play_next()).
  *
  * @param block TMZ blok k prehrani.
  * @param config Konfigurace playeru.
@@ -936,14 +1184,43 @@ st_CMT_STREAM* tmz_player_play_block ( const st_TZX_BLOCK *block,
 
         /* MZ-specificke bloky */
         case TMZ_BLOCK_ID_MZ_STANDARD_DATA:
-            return tmz_player_play_mz_standard ( block, config, err );
-
         case TMZ_BLOCK_ID_MZ_TURBO_DATA:
+        case TMZ_BLOCK_ID_MZ_BASIC_DATA: {
+            /* spec 9.1: převod v paměti na 0x46; co převést nejde, hraje cestou v1.0 */
+            if ( config->v1_convert ) {
+                st_TMZ_V1CONV_CONFIG vc;
+                vc.formatset = config->default_formatset;
+                vc.default_speed = config->default_speed;
+                st_TZX_BLOCK *conv = NULL;
+                if ( tmz_v1conv_block ( block, &vc, &conv ) == TMZ_V1CONV_OK ) {
+                    st_CMT_STREAM *s = tmz_player_play_mz_file ( conv, config, err );
+                    tmz_block_free ( conv );
+                    /*
+                     * Nečitelnost je chyba; jiné selhání generátoru FM (např. půlvlna
+                     * kratší než vzorek při nízké frekvenci) hraje cestou v1.0, která
+                     * půlvlny zaokrouhluje nejméně na 1 vzorek.
+                     */
+                    if ( s || *err == TMZ_PLAYER_ERROR_UNREADABLE ) return s;
+                    g_player_error_cb ( __func__, __LINE__, "Block 0x%02X: converted signal failed, using the v1.0 path\n",
+                                        block->id );
+                }
+            }
+            if ( block->id == TMZ_BLOCK_ID_MZ_STANDARD_DATA ) return tmz_player_play_mz_standard ( block, config, err );
+            /* BSD/BRD: vždy převod na BASIC-1Z016 */
+            if ( block->id == TMZ_BLOCK_ID_MZ_BASIC_DATA ) return tmz_player_play_mz_basic ( block, config, err );
             return tmz_player_play_mz_turbo ( block, config, err );
+        }
 
-        /* BSD/BRD - chunkovany datovy zaznam pres mzcmt_bsd */
-        case TMZ_BLOCK_ID_MZ_BASIC_DATA:
-            return tmz_player_play_mz_basic ( block, config, err );
+        /* TMZ v1.1: MZF + seznam částí */
+        case TMZ_BLOCK_ID_MZ_FILE:
+            return tmz_player_play_mz_file ( block, config, err );
+
+        /* spec 9.3: ve v1.1 nepodporované, přeskočí se s varováním */
+        case TMZ_BLOCK_ID_MZ_EXTRA_BODY:
+        case TMZ_BLOCK_ID_MZ_LOADER:
+            g_player_error_cb ( __func__, __LINE__, "Warning: block 0x%02X is not supported, skipped\n", block->id );
+            *err = TMZ_PLAYER_OK;
+            return NULL;
 
         /* TZX audio bloky - delegovano na TZX knihovnu */
         case TZX_BLOCK_ID_STANDARD_SPEED:
@@ -974,8 +1251,13 @@ st_CMT_STREAM* tmz_player_play_block ( const st_TZX_BLOCK *block,
             *err = TMZ_PLAYER_OK;
             return NULL;
 
-        /* nepodporovane bloky (CSW, Generalized Data, ...) */
+        /* nepodporovane bloky (CSW, Generalized Data, ...); rezervované MZ bloky se přeskočí */
         default:
+            if ( block->id >= TMZ_BLOCK_ID_RESERVED_FIRST && block->id <= TMZ_BLOCK_ID_RESERVED_LAST ) {
+                g_player_error_cb ( __func__, __LINE__, "Warning: reserved block 0x%02X skipped\n", block->id );
+                *err = TMZ_PLAYER_OK;
+                return NULL;
+            }
             g_player_error_cb ( __func__, __LINE__, "Unsupported block ID 0x%02X for playback\n", block->id );
             *err = TMZ_PLAYER_ERROR_UNSUPPORTED;
             return NULL;
@@ -992,7 +1274,7 @@ st_CMT_STREAM* tmz_player_play_block ( const st_TZX_BLOCK *block,
  * @brief Inicializuje stav playeru pro prehrani daneho souboru.
  *
  * Nastavi pocatecni pozici na blok 0, prazdne zasobniky,
- * signal_level = 0 (LOW), finished = false.
+ * signal_level = TZX_LEVEL_AFTER_PAUSE, finished = false.
  *
  * @param state   Stav k inicializaci.
  * @param file    TMZ/TZX soubor (musi zustat platny po celou dobu prehravani).
@@ -1008,7 +1290,7 @@ void tmz_player_state_init ( st_TMZ_PLAYER_STATE *state,
     memset ( state, 0, sizeof ( *state ) );
     state->file = file;
     state->config = *config;
-    state->signal_level = 0; /* LOW */
+    state->signal_level = TZX_LEVEL_AFTER_PAUSE; /* signál nízko, první pulz TZX vytvoří hranu (jako ZX) */
     state->finished = ( file->block_count == 0 );
 }
 
@@ -1022,6 +1304,12 @@ void tmz_player_state_init ( st_TMZ_PLAYER_STATE *state,
 bool tmz_player_state_finished ( const st_TMZ_PLAYER_STATE *state ) {
     if ( !state ) return true;
     return state->finished;
+}
+
+
+/** @copydoc tmz_player_state_stopped */
+bool tmz_player_state_stopped ( const st_TMZ_PLAYER_STATE *state ) {
+    return state ? state->stopped : false;
 }
 
 
@@ -1218,14 +1506,15 @@ static void handle_return ( st_TMZ_PLAYER_STATE *state ) {
 /**
  * @brief Zpracuje blok Set Signal Level (0x2B).
  *
- * Nastavi uroven signalu (0=LOW, 1=HIGH) pro nasledujici audio blok.
+ * Nastavi uroven signalu (0=LOW, 1=HIGH) pro nasledujici audio blok;
+ * hodnota různá od 0 je vysoká. Blok kratší než 5 B úroveň nemění.
  *
  * @param state Stav playeru.
  * @param block Blok 0x2B.
  */
 static void handle_set_signal_level ( st_TMZ_PLAYER_STATE *state, const st_TZX_BLOCK *block ) {
     if ( block->data && block->length >= 5 ) {
-        state->signal_level = block->data[4];
+        state->signal_level = ( block->data[4] != 0 );   /* jiná hodnota než 0 = vysoká (otáčení úrovně počítá s 0|1) */
     }
     state->current_block++;
 }
@@ -1236,7 +1525,12 @@ static void handle_set_signal_level ( st_TMZ_PLAYER_STATE *state, const st_TZX_B
  *
  * Interně zpracovava ridici bloky (Loop Start/End, Jump,
  * Call Sequence/Return, Set Signal Level, Group Start/End)
- * a vraci CMT stream az pri narazeni na audio blok.
+ * a vraci CMT stream az pri narazeni na audio blok. Úroveň signálu
+ * drží mezi bloky ve state->signal_level (play_with_level).
+ *
+ * Pause 0 (0x20 s délkou 0) a 0x2A zastaví pásku: funkce vrátí NULL
+ * s TMZ_PLAYER_OK, nastaví state->stopped a last_played_block na blok
+ * zastavení; další volání pokračuje za ním a stopped vynuluje.
  *
  * Ochrana proti nekonecne smycce: max 1 000 000 iteraci vnitrni smycky.
  *
@@ -1257,6 +1551,8 @@ st_CMT_STREAM* tmz_player_play_next ( st_TMZ_PLAYER_STATE *state,
         *err = TMZ_PLAYER_ERROR_NULL_INPUT;
         return NULL;
     }
+
+    state->stopped = false;
 
     /* ochrana proti nekonecne smycce */
     uint32_t iterations = 0;
@@ -1304,14 +1600,28 @@ st_CMT_STREAM* tmz_player_play_next ( st_TMZ_PLAYER_STATE *state,
             case TZX_BLOCK_ID_GROUP_START:
             case TZX_BLOCK_ID_GROUP_END:
             case TZX_BLOCK_ID_SELECT_BLOCK:
-            case TZX_BLOCK_ID_STOP_48K:
             case TZX_BLOCK_ID_TEXT_DESCRIPTION:
             case TZX_BLOCK_ID_MESSAGE:
             case TZX_BLOCK_ID_ARCHIVE_INFO:
             case TZX_BLOCK_ID_HARDWARE_TYPE:
             case TZX_BLOCK_ID_CUSTOM_INFO:
             case TZX_BLOCK_ID_GLUE:
+                state->current_block++;
+                continue;
+
+            /* zastavení pásky: 0x2A vždy (Sharp MZ nemá režim 128K) */
+            case TZX_BLOCK_ID_STOP_48K:
+                state->last_played_block = state->current_block;
+                state->current_block++;
+                state->stopped = true;
+                *err = TMZ_PLAYER_OK;
+                return NULL;
+
+            /* takt CPU = výchozí časová základna dalších bloků 0x46 (spec 5.3); blok se nemění */
             case TMZ_BLOCK_ID_MZ_MACHINE_INFO:
+                if ( block->data && block->length >= 4 + 1 + 4 ) {
+                    state->config.mz_cpu_clock = tmz_rd32 ( block->data + 4 + 1 );
+                }
                 state->current_block++;
                 continue;
 
@@ -1319,7 +1629,14 @@ st_CMT_STREAM* tmz_player_play_next ( st_TMZ_PLAYER_STATE *state,
             default:
             {
                 state->last_played_block = state->current_block;
-                st_CMT_STREAM *stream = tmz_player_play_block ( block, &state->config, err );
+                /* Pause 0 = zastavení pásky, úroveň se nemění */
+                if ( block->id == TZX_BLOCK_ID_PAUSE && block->data && block->length >= 2 && tmz_rd16 ( block->data ) == 0 ) {
+                    state->current_block++;
+                    state->stopped = true;
+                    *err = TMZ_PLAYER_OK;
+                    return NULL;
+                }
+                st_CMT_STREAM *stream = play_with_level ( block, &state->config, &state->signal_level, err );
                 state->current_block++;
 
                 if ( stream ) {

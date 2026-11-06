@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_slow.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  Implementace SLOW koderu pro Sharp MZ (2 bity na pulz).
  *
  * SLOW modulace koduje 2 bity jednim pulzem. Kazdy ze 4 symbolu
@@ -224,7 +224,7 @@ static void slow_prepare_pulses ( st_slow_symbol_pulses *pulses, en_MZCMT_SLOW_S
 /**
  * @brief Prida GAP (leader) sekvenci do vstreamu.
  *
- * GAP slouzi jako leader ton pro kalibraci SLOW dekoderu na Z80.
+ * GAP slouzi jako leader ton pred daty (dekoder na Z80 ma pevny prah z tabulky).
  * Dekoder meri sirku GAP pulzu, detekuje synchronizacni sekvenci
  * a pripravuje lookup tabulku pro rozpoznavani symbolu.
  *
@@ -351,7 +351,7 @@ static int slow_add_fadeout ( st_CMT_VSTREAM *vstream, uint32_t rate ) {
  * @brief Vytvori CMT vstream z datoveho bloku SLOW kodovanim.
  *
  * Generuje kompletni SLOW signal:
- * 1. GAP (200 cyklu leader tonu pro kalibraci dekoderu)
+ * 1. GAP (200 cyklu leader tonu)
  * 2. Polaritni pulz (detekce polarity signalu)
  * 3. Sync kod (oznaceni zacatku dat)
  * 4. Datove bajty (4 SLOW pulzy na bajt, po 2 bitech, MSB first)

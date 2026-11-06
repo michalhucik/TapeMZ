@@ -1,28 +1,26 @@
 /**
  * @file   wav_decode_turbo.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
+ * @version 1.3.1
  * @brief  Implementace vrstvy 4b - TURBO dekoder.
  *
  * TURBO signal ma dve casti:
  * - Cast 1: preloader hlavicka + telo (NORMAL 1:1)
  * - Cast 2: skutecna data v TURBO rychlosti (FM, kompletni MZF ramec)
  *
- * Dekoder najde prechod z preloader rychlosti (~249 us) na TURBO
- * rychlost (kratsi pulzy) a dekoduje Cast 2 pomoci FM dekoderu.
+ * Postup dekódování těla (turbo_decode_body_only):
+ * 1. Detektor leaderu po celých periodách (nezávislý na rychlosti
+ *    i na asymetrii půlvln) najde TURBO LGAP nejvýš TURBO_MAX_GAP pulzů
+ *    za předzavaděčem.
+ * 2. Hned za ním (nejvýš TURBO_TAPEMARK_MAX_SKIP period) musí být krátký
+ *    tapemark (20+20, nejvýš TURBO_TAPEMARK_MAX_LONG dlouhých period, po
+ *    periodách) bez ticha mezi; jinak se zkusí další leader do stejné meze.
+ *    LGAP a LTM 40+40 cizí nahrávky NORMAL se tak za TURBO nevezme.
+ * 3. FM dekodér přečte tělo a checksum (tělo může mít 0 B).
  *
- * Postup dekodovani:
- * 1. Posuvne okno najde oblast s kratkymi pulzy (TURBO)
- * 2. Leader detektor najde skutecny TURBO LGAP
- * 3. Vlastni tapemark detekce (TURBO pouziva kratky tapemark 20+20
- *    pulzu misto standardniho 40+40)
- * 4. FM dekoder dekoduje hlavicku + telo
- *
- * Dva typy TURBO preloaderu:
- * a) mzftools (fsize=0, loader v comment): pouziva ROM rutinu $04F8 (RDATA),
- *    standardni FM kodovani. Dekoduje wav_decode_turbo_decode_mzf().
- * b) TurboCopy (fsize=90, fstrt=$D400): 90B loader patchne ROM rychlost
- *    a vola CMT read $002A - cte pouze body (bez hlavicky), standardni FM.
+ * Dva typy TURBO předzavaděče, oba čtou jen tělo přes ROM:
+ * a) mzftools (fsize=0, loader v comment, parametry v cmnt[1..6]);
+ * b) TurboCopy (fsize=90, fstrt=$D400, parametry na $D44D).
  *    Dekoduje wav_decode_turbo_turbocopy_mzf().
  *
  * @par Licence:
@@ -57,18 +55,37 @@
 
 
 /**
- * @brief Max delka pulzu pro TURBO data (us).
+ * @brief Nejvyšší vzdálenost začátku TURBO LGAP od konce předzavaděče (pulzy).
  *
- * Pulzy kratsi nez tato hodnota jsou povazovany za TURBO.
- * Preloader ma SHORT ~227-278 us, TURBO data maji SHORT < 150 us.
+ * Empirická mez: ve všech záznamech tstdata a z vlastních nástrojů
+ * je mezi předzavaděčem a LGAP 1 až 199 půlvln. Leader dál je už další
+ * nahrávka (bez meze by 1. soubor vzal data 2. nahrávky).
  */
-#define TURBO_SHORT_MAX_US  150.0
+#define TURBO_MAX_GAP               4000
 
-/** @brief Velikost posuvneho okna pro detekci prechodu (pulzy). */
-#define TURBO_WINDOW        500
+/** @brief Minimální počet dlouhých i krátkých period krátkého tapemarku (STM 20+20). */
+#define TURBO_TAPEMARK_MIN_PERIODS  18
 
-/** @brief Minimalni podil kratkych pulzu v okne pro detekci TURBO oblasti. */
-#define TURBO_MIN_RATIO     0.90
+/**
+ * @brief Nejvyšší počet dlouhých period tapemarku TURBO.
+ *
+ * Část TURBO má STM (20 dlouhých period). Mez leží mezi STM a LTM (40):
+ * delší běh je hlavička cizí nahrávky NORMAL.
+ */
+#define TURBO_TAPEMARK_MAX_LONG     30
+
+/**
+ * @brief Nejvýš tolik period smí ležet mezi koncem TURBO LGAP a tapemarkem.
+ *
+ * Detektor leaderu může skončit o pár period dřív (tolerance). Mez váže
+ * tapemark na leader, aby se nevzal vzdálený běh dlouhých period.
+ * Hodnota 64 je odhad s rezervou [neověřeno na analogových
+ * nahrávkách mimo tstdata].
+ */
+#define TURBO_TAPEMARK_MAX_SKIP     64
+
+/** @brief Půlvlna delší než tato hodnota (us) je ticho mezi nahrávkami, ne součást LGAP a tapemarku. */
+#define TURBO_SILENCE_US            20000.0
 
 /**
  * @brief Minimalni pocet pulzu pro detekci TURBO leaderu.
@@ -77,159 +94,6 @@
  * aby detektor zachytil i kratsi leadery (napr. body LGAP).
  */
 #define TURBO_LEADER_MIN_PULSES     500
-
-
-en_WAV_ANALYZER_ERROR wav_decode_turbo_decode_mzf (
-    const st_WAV_PULSE_SEQUENCE *seq,
-    uint32_t search_from_pulse,
-    st_MZF **out_mzf,
-    st_WAV_DECODE_RESULT *out_header_result,
-    st_WAV_DECODE_RESULT *out_body_result,
-    uint32_t *out_consumed_until
-) {
-    if ( !seq || !out_mzf ) {
-        return WAV_ANALYZER_ERROR_INVALID_PARAM;
-    }
-
-    *out_mzf = NULL;
-    if ( out_consumed_until ) *out_consumed_until = 0;
-
-    /*
-     * === 1. Detekce prechodu preloader -> TURBO ===
-     *
-     * Preloader data maji pulzy 227-499 us. TURBO LGAP ma ~116 us.
-     * Pouzijeme posuvne okno TURBO_WINDOW pulzu a hledame oblast
-     * kde >= 90 % pulzu je < 150 us.
-     */
-    uint32_t turbo_start = search_from_pulse;
-    int found = 0;
-
-    if ( search_from_pulse + TURBO_WINDOW < seq->count ) {
-        uint32_t short_count = 0;
-        uint32_t win_end = search_from_pulse + TURBO_WINDOW;
-
-        for ( uint32_t p = search_from_pulse; p < win_end; p++ ) {
-            if ( seq->pulses[p].duration_us < TURBO_SHORT_MAX_US ) short_count++;
-        }
-
-        if ( ( double ) short_count / TURBO_WINDOW >= TURBO_MIN_RATIO ) {
-            turbo_start = search_from_pulse;
-            found = 1;
-        } else {
-            for ( uint32_t p = search_from_pulse; p + TURBO_WINDOW < seq->count; p++ ) {
-                if ( seq->pulses[p + TURBO_WINDOW].duration_us < TURBO_SHORT_MAX_US )
-                    short_count++;
-                if ( seq->pulses[p].duration_us < TURBO_SHORT_MAX_US )
-                    short_count--;
-
-                if ( ( double ) short_count / TURBO_WINDOW >= TURBO_MIN_RATIO ) {
-                    turbo_start = p + 1;
-                    found = 1;
-                    break;
-                }
-            }
-        }
-    }
-
-    if ( !found ) {
-        return WAV_ANALYZER_ERROR_NO_LEADER;
-    }
-
-    /*
-     * === 2. Detekce skutecneho TURBO leaderu ===
-     *
-     * Sliding window vraci pribliznou pozici TURBO oblasti, ale
-     * turbo_start muze byt pred zacatkem skutecneho LGAP.
-     * Leader detektor najde presny zacatek a delku TURBO LGAP.
-     */
-    st_WAV_LEADER_INFO turbo_leader;
-    en_WAV_ANALYZER_ERROR lerr = wav_leader_detect (
-        seq, turbo_start, TURBO_LEADER_MIN_PULSES,
-        WAV_ANALYZER_DEFAULT_TOLERANCE, &turbo_leader
-    );
-
-    if ( lerr != WAV_ANALYZER_OK ) {
-        return WAV_ANALYZER_ERROR_NO_LEADER;
-    }
-
-    /* === 3. FM dekodovani od konce TURBO leaderu === */
-
-    st_MZF *mzf = NULL;
-    st_WAV_DECODE_RESULT hdr_res, body_res;
-    memset ( &hdr_res, 0, sizeof ( hdr_res ) );
-    memset ( &body_res, 0, sizeof ( body_res ) );
-
-    en_WAV_ANALYZER_ERROR err = wav_decode_fm_decode_mzf (
-                  seq, &turbo_leader, &mzf,
-                  &hdr_res, &body_res
-              );
-
-    if ( err != WAV_ANALYZER_OK || !mzf ) {
-        free ( hdr_res.data );
-        free ( body_res.data );
-        return ( err != WAV_ANALYZER_OK ) ? err : WAV_ANALYZER_ERROR_NO_LEADER;
-    }
-
-    /* Pokud jsme nasli preloader copy2, preskocime a zkusime znovu */
-    if ( mzf->header.fstrt == 0xD400 && mzf->header.fsize <= 500 ) {
-        uint32_t retry_from = body_res.pulse_end > 0
-                              ? body_res.pulse_end : hdr_res.pulse_end;
-        mzf_free ( mzf ); mzf = NULL;
-        free ( hdr_res.data );
-        free ( body_res.data );
-        memset ( &hdr_res, 0, sizeof ( hdr_res ) );
-        memset ( &body_res, 0, sizeof ( body_res ) );
-
-        /*
-         * Pro retry pouzijeme novy leader detect - za preloader copy2
-         * by mel byt dalsi TURBO LGAP.
-         */
-        st_WAV_LEADER_INFO retry_leader;
-        lerr = wav_leader_detect (
-            seq, retry_from, TURBO_LEADER_MIN_PULSES,
-            WAV_ANALYZER_DEFAULT_TOLERANCE, &retry_leader
-        );
-
-        if ( lerr != WAV_ANALYZER_OK ) {
-            return WAV_ANALYZER_ERROR_NO_LEADER;
-        }
-
-        err = wav_decode_fm_decode_mzf (
-                  seq, &retry_leader, &mzf,
-                  &hdr_res, &body_res
-              );
-
-        if ( err != WAV_ANALYZER_OK || !mzf ) {
-            free ( hdr_res.data );
-            free ( body_res.data );
-            return ( err != WAV_ANALYZER_OK ) ? err : WAV_ANALYZER_ERROR_NO_LEADER;
-        }
-    }
-
-    /* === 4. Vysledek === */
-
-    *out_mzf = mzf;
-    if ( out_header_result ) {
-        *out_header_result = hdr_res;
-    } else {
-        free ( hdr_res.data );
-    }
-    if ( out_body_result ) {
-        *out_body_result = body_res;
-    } else {
-        free ( body_res.data );
-    }
-
-    if ( out_consumed_until ) {
-        if ( body_res.pulse_end > 0 ) {
-            *out_consumed_until = body_res.pulse_end;
-        } else if ( hdr_res.pulse_end > 0 ) {
-            *out_consumed_until = hdr_res.pulse_end;
-        }
-    }
-
-    return WAV_ANALYZER_OK;
-}
 
 
 /* =========================================================================
@@ -245,6 +109,9 @@ en_WAV_ANALYZER_ERROR wav_decode_turbo_decode_mzf (
  *   $D451: fexec (2B LE)
  */
 #define TC_LOADER_PARAMS_OFFSET     0x4D
+
+/** @brief Offset původního cmnt[0..6] programu v těle předzavaděče TurboCopy ($D453, 7 B). */
+#define TC_LOADER_CMNT_OFFSET       0x53
 
 /** @brief Minimalni velikost TurboCopy preloader body pro extrakci parametru. */
 #define TC_LOADER_MIN_SIZE          ( TC_LOADER_PARAMS_OFFSET + 6 )
@@ -263,22 +130,31 @@ en_WAV_ANALYZER_ERROR wav_decode_turbo_decode_mzf (
 
 
 /**
- * @brief Dekoduje TURBO body-only signal.
+ * @brief Dekóduje část TURBO (jen tělo, bez hlavičky) za předzavaděčem.
  *
- * Sdilena implementace pro oba typy TURBO preloaderu (TurboCopy i mzftools).
- * Oba loadery patchnou ROM a volaji RDATA, ktera cte pouze body data.
+ * Sdílená implementace pro oba typy TURBO předzavaděče (TurboCopy
+ * i mzftools). Oba zavaděče upraví ROM a volají RDATA, která čte jen tělo.
+ * Leader TURBO se hledá nejvýš TURBO_MAX_GAP pulzů za search_from_pulse,
+ * hned za ním musí být krátký tapemark (TURBO_TAPEMARK_MIN_PERIODS až
+ * TURBO_TAPEMARK_MAX_LONG dlouhých period, nejvýš TURBO_TAPEMARK_MAX_SKIP
+ * period od leaderu) bez ticha delšího než TURBO_SILENCE_US.
  *
- * @param seq Sekvence pulzu.
- * @param search_from_pulse Pozice od ktere hledat TURBO LGAP.
- * @param preloader_header Hlavicka preloaderu (ftype, fname).
- * @param user_body_size Velikost uzivatelskeho programu (bajty).
+ * @param seq Sekvence pulzů.
+ * @param search_from_pulse Pozice za předzavaděčem, od které se hledá TURBO LGAP.
+ * @param preloader_header Hlavička předzavaděče (ftype, fname).
+ * @param user_body_size Velikost uživatelského programu v bajtech; 0 je
+ *        platné prázdné tělo (přečte se jen checksum).
  * @param user_fstrt Load adresa programu.
  * @param user_fexec Exec adresa programu.
- * @param[out] out_mzf Vystupni MZF. Nesmi byt NULL.
- * @param[out] out_body_result Vysledek dekodovani tela. Muze byt NULL.
- * @param[out] out_consumed_until Pozice za poslednim pulzem. Muze byt NULL.
- * @param[out] out_turbo_leader Detekovany TURBO leader. Muze byt NULL.
- * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
+ * @param[out] out_mzf Výstupní MZF (volající uvolní přes mzf_free). Nesmí být NULL.
+ * @param[out] out_body_result Výsledek dekódování těla (data alokuje funkce,
+ *             uvolní volající). Může být NULL.
+ * @param[out] out_consumed_until Pozice za posledním pulzem. Může být NULL.
+ * @param[out] out_turbo_leader Detekovaný TURBO leader. Může být NULL.
+ * @return WAV_ANALYZER_OK při úspěchu (i při chybě CRC těla, ta je
+ *         v out_body_result); WAV_ANALYZER_ERROR_NO_LEADER, když vhodný
+ *         leader s tapemarkem v mezích není; WAV_ANALYZER_ERROR_DECODE_DATA
+ *         při chybě čtení těla; WAV_ANALYZER_ERROR_ALLOC.
  */
 static en_WAV_ANALYZER_ERROR turbo_decode_body_only (
     const st_WAV_PULSE_SEQUENCE *seq,
@@ -297,91 +173,57 @@ static en_WAV_ANALYZER_ERROR turbo_decode_body_only (
     if ( out_body_result ) memset ( out_body_result, 0, sizeof ( *out_body_result ) );
     if ( out_turbo_leader ) memset ( out_turbo_leader, 0, sizeof ( *out_turbo_leader ) );
 
-    if ( user_body_size == 0 ) {
-        return WAV_ANALYZER_ERROR_DECODE_DATA;
-    }
+    /* fsize 0 je platné prázdné tělo: přečte se jen checksum */
 
-    /* === 1. Nalezeni TURBO LGAP leaderu === */
-
-    uint32_t turbo_start = search_from_pulse;
-    int found = 0;
-
-    if ( search_from_pulse + TURBO_WINDOW < seq->count ) {
-        uint32_t short_count = 0;
-        uint32_t win_end = search_from_pulse + TURBO_WINDOW;
-
-        for ( uint32_t p = search_from_pulse; p < win_end; p++ ) {
-            if ( seq->pulses[p].duration_us < TURBO_SHORT_MAX_US ) short_count++;
-        }
-
-        if ( ( double ) short_count / TURBO_WINDOW >= TURBO_MIN_RATIO ) {
-            turbo_start = search_from_pulse;
-            found = 1;
-        } else {
-            for ( uint32_t p = search_from_pulse; p + TURBO_WINDOW < seq->count; p++ ) {
-                if ( seq->pulses[p + TURBO_WINDOW].duration_us < TURBO_SHORT_MAX_US )
-                    short_count++;
-                if ( seq->pulses[p].duration_us < TURBO_SHORT_MAX_US )
-                    short_count--;
-
-                if ( ( double ) short_count / TURBO_WINDOW >= TURBO_MIN_RATIO ) {
-                    turbo_start = p + 1;
-                    found = 1;
+    /*
+     * === 1.+2. TURBO LGAP a krátký tapemark ===
+     * Leader hledá detektor nezávislý na rychlosti (dřív okno "90 % půlvln
+     * pod 150 us" nenašlo 1:1, 3:2 ani TC-1.21 2:1), leader
+     * i tapemark po celých periodách kvůli asymetrickým pulzům Intercopy
+     * 2800/3200 Bd. Kandidát se
+     * přijme, jen když začíná do TURBO_MAX_GAP pulzů za předzavaděčem, hned
+     * za ním je krátký tapemark (ne LTM) a mezi nimi není ticho (jinak jde
+     * o další nahrávku).
+     */
+    st_WAV_LEADER_INFO turbo_leader;
+    st_WAV_FM_DECODER dec;
+    uint32_t from = search_from_pulse;
+    for ( ;; ) {
+        en_WAV_ANALYZER_ERROR lerr = wav_leader_detect_period ( seq, from, TURBO_LEADER_MIN_PULSES,
+                                                                WAV_ANALYZER_DEFAULT_TOLERANCE, &turbo_leader );
+        if ( lerr != WAV_ANALYZER_OK ) return WAV_ANALYZER_ERROR_NO_LEADER;
+        if ( turbo_leader.start_index > search_from_pulse + TURBO_MAX_GAP ) return WAV_ANALYZER_ERROR_NO_LEADER;
+        uint32_t data_start = turbo_leader.start_index + turbo_leader.pulse_count;
+        wav_decode_fm_init ( &dec, seq, data_start, turbo_leader.avg_period_us );
+        if ( wav_decode_fm_find_tapemark_period ( &dec, TURBO_TAPEMARK_MIN_PERIODS, TURBO_TAPEMARK_MIN_PERIODS,
+                                                  TURBO_TAPEMARK_MAX_LONG,
+                                                  TURBO_TAPEMARK_MAX_SKIP ) == WAV_ANALYZER_OK ) {
+            int silence = 0;
+            for ( uint32_t q = turbo_leader.start_index; q < dec.pos && q < seq->count; q++ ) {
+                if ( seq->pulses[q].duration_us > TURBO_SILENCE_US ) {
+                    silence = 1;
                     break;
                 }
             }
+            if ( !silence ) break;
         }
-    }
-
-    if ( !found ) {
-        return WAV_ANALYZER_ERROR_NO_LEADER;
-    }
-
-    st_WAV_LEADER_INFO turbo_leader;
-    en_WAV_ANALYZER_ERROR lerr = wav_leader_detect (
-        seq, turbo_start, TURBO_LEADER_MIN_PULSES,
-        WAV_ANALYZER_DEFAULT_TOLERANCE, &turbo_leader
-    );
-
-    if ( lerr != WAV_ANALYZER_OK ) {
-        return WAV_ANALYZER_ERROR_NO_LEADER;
+        from = data_start;   /* další kandidát za tímto leaderem */
     }
 
     if ( out_turbo_leader ) {
         *out_turbo_leader = turbo_leader;
     }
 
-    /* === 2. Tapemark (STM) + sync === */
-
-    uint32_t data_start = turbo_leader.start_index + turbo_leader.pulse_count;
-
-    st_WAV_FM_DECODER dec;
-    wav_decode_fm_init ( &dec, seq, data_start, turbo_leader.avg_period_us );
-
-    en_WAV_ANALYZER_ERROR err = wav_decode_fm_find_tapemark ( &dec, WAV_TAPEMARK_SHORT );
-    if ( err != WAV_ANALYZER_OK ) {
-        return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
-    }
-
-    /* sync skip */
-    {
-        int sync_skip = 0;
-        while ( dec.pos < seq->count &&
-                seq->pulses[dec.pos].duration_us >= dec.threshold_us &&
-                sync_skip < 4 ) {
-            dec.pos++;
-            sync_skip++;
-        }
-    }
+    /* synchronizaci 2L přeskočila už wav_decode_fm_find_tapemark_period */
 
     /* === 3. Dekodovani body dat === */
 
     uint32_t body_pulse_start = dec.pos;
-    uint8_t *body_data = ( uint8_t* ) malloc ( user_body_size );
+    uint8_t *body_data = ( uint8_t* ) malloc ( user_body_size ? user_body_size : 1 );
     if ( !body_data ) return WAV_ANALYZER_ERROR_ALLOC;
 
     dec.crc_accumulator = 0;
-    err = wav_decode_fm_read_block ( &dec, body_data, user_body_size );
+    en_WAV_ANALYZER_ERROR err = wav_decode_fm_read_block ( &dec, body_data, user_body_size );
     if ( err != WAV_ANALYZER_OK ) {
         free ( body_data );
         return WAV_ANALYZER_ERROR_DECODE_DATA;
@@ -402,7 +244,7 @@ static en_WAV_ANALYZER_ERROR turbo_decode_body_only (
 
     if ( out_body_result ) {
         out_body_result->format = WAV_TAPE_FORMAT_TURBO;
-        out_body_result->data = ( uint8_t* ) malloc ( user_body_size );
+        out_body_result->data = ( uint8_t* ) malloc ( user_body_size ? user_body_size : 1 );
         if ( out_body_result->data ) {
             memcpy ( out_body_result->data, body_data, user_body_size );
         }
@@ -470,8 +312,18 @@ en_WAV_ANALYZER_ERROR wav_decode_turbo_turbocopy_mzf (
     uint16_t fstrt     = ( uint16_t ) params[2] | ( ( uint16_t ) params[3] << 8 );
     uint16_t fexec     = ( uint16_t ) params[4] | ( ( uint16_t ) params[5] << 8 );
 
+    /*
+     * Hlavička předzavaděče má v cmnt[0..6] signaturu TurboCopy; původních 7 B
+     * komentáře nese tělo předzavaděče hned za fsize/fstrt/fexec (53h-59h).
+     */
+    st_MZF_HEADER hdr;
+    memcpy ( &hdr, preloader_header, sizeof ( hdr ) );
+    if ( preloader_body_size >= TC_LOADER_CMNT_OFFSET + 7 ) {
+        memcpy ( &hdr.cmnt[0], preloader_body + TC_LOADER_CMNT_OFFSET, 7 );
+    }
+
     return turbo_decode_body_only (
-        seq, search_from_pulse, preloader_header,
+        seq, search_from_pulse, &hdr,
         body_size, fstrt, fexec,
         out_mzf, out_body_result, out_consumed_until, out_turbo_leader
     );

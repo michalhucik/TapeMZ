@@ -1,12 +1,17 @@
 /**
  * @file   tmzconv.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
- * @brief  Konverze hlavicky mezi TMZ a TZX formaty.
+ * @version 1.1.0
+ * @brief  Konverze hlavicky mezi TMZ a TZX formaty, prevod TMZ v1.0 na v1.1.
  *
  * Nacte TMZ nebo TZX soubor a prepise signaturu v hlavicce
  * na opacny format: TZX ("ZXTape!") -> TMZ ("TapeMZ!") a naopak.
  * Bloky a data zustavaji beze zmeny.
+ *
+ * S volbou --upgrade převede bloky v1.0 (0x40, 0x41, 0x45) na blok 0x46
+ * podle spec 9.2 (tmz_v1conv_file) a zapíše soubor TMZ verze 1.1
+ * (spec 9.4). Nepřevoditelné bloky zůstanou beze změny; bloky 0x42 a 0x44
+ * zůstanou s varováním (spec 9.3). Při chybě převodu se soubor neuloží.
  *
  * @par Pouziti:
  * @code
@@ -14,11 +19,13 @@
  *   tmzconv input.tmz output.tzx    (TMZ -> TZX)
  *   tmzconv --to-tmz input.tzx output.tmz
  *   tmzconv --to-tzx input.tmz output.tzx
+ *   tmzconv --upgrade input.tmz output.tmz
  * @endcode
  *
  * @par Volby:
  * - --to-tmz        : vynutit konverzi na TMZ format
  * - --to-tzx        : vynutit konverzi na TZX format
+ * - --upgrade       : převést bloky v1.0 na 0x46, zapsat TMZ v1.1
  * - --version       : zobrazit verzi programu
  * - --lib-versions  : zobrazit verze knihoven
  *
@@ -48,10 +55,11 @@
 
 #include "libs/tmz/tmz.h"
 #include "libs/tzx/tzx.h"
+#include "libs/tmz/tmz_v1conv.h"
 
 
 /** @brief Verze programu tmzconv. */
-#define TMZCONV_VERSION "1.0.0"
+#define TMZCONV_VERSION "1.1.0"
 
 
 /**
@@ -69,9 +77,10 @@ static void print_lib_versions ( void ) {
  * @param prog_name Nazev spusteneho programu (argv[0]).
  */
 static void print_usage ( const char *prog_name ) {
-    fprintf ( stderr, "Usage: %s [--to-tmz|--to-tzx] <input> <output>\n\n", prog_name );
+    fprintf ( stderr, "Usage: %s [--to-tmz|--to-tzx|--upgrade] <input> <output>\n\n", prog_name );
     fprintf ( stderr, "Converts between TMZ and TZX file formats (signature swap).\n\n" );
     fprintf ( stderr, "Without --to-tmz/--to-tzx, automatically converts to the opposite format.\n\n" );
+    fprintf ( stderr, "  --upgrade             Convert TMZ v1.0 blocks (0x40, 0x41, 0x45) to 0x46, write TMZ v1.1\n" );
     fprintf ( stderr, "  --version             Show program version\n" );
     fprintf ( stderr, "  --lib-versions        Show library versions\n" );
 }
@@ -111,6 +120,7 @@ int main ( int argc, char *argv[] ) {
     const char *input_file = NULL;
     const char *output_file = NULL;
     int force_tmz = -1; /* -1 = auto, 0 = to-tzx, 1 = to-tmz */
+    bool upgrade = false;
 
     /* parsovani argumentu */
     int positional = 0;
@@ -119,6 +129,8 @@ int main ( int argc, char *argv[] ) {
             force_tmz = 1;
         } else if ( strcmp ( argv[i], "--to-tzx" ) == 0 ) {
             force_tmz = 0;
+        } else if ( strcmp ( argv[i], "--upgrade" ) == 0 ) {
+            upgrade = true;
         } else if ( argv[i][0] == '-' ) {
             fprintf ( stderr, "Error: unknown option '%s'\n", argv[i] );
             return EXIT_FAILURE;
@@ -135,6 +147,11 @@ int main ( int argc, char *argv[] ) {
 
     if ( !input_file || !output_file ) {
         print_usage ( argv[0] );
+        return EXIT_FAILURE;
+    }
+
+    if ( upgrade && force_tmz == 0 ) {
+        fprintf ( stderr, "Error: --upgrade cannot be combined with --to-tzx\n" );
         return EXIT_FAILURE;
     }
 
@@ -157,6 +174,28 @@ int main ( int argc, char *argv[] ) {
     if ( !file ) {
         fprintf ( stderr, "Error: %s\n", tzx_error_string ( err ) );
         return EXIT_FAILURE;
+    }
+
+    /* --upgrade: bloky v1.0 -> 0x46 (spec 9.4), výsledek je vždy TMZ v1.1 */
+    if ( upgrade ) {
+        for ( uint32_t i = 0; i < file->block_count; i++ ) {
+            uint8_t id = file->blocks[i].id;
+            if ( id == TMZ_BLOCK_ID_MZ_EXTRA_BODY || id == TMZ_BLOCK_ID_MZ_LOADER ) {
+                fprintf ( stderr, "Warning: block [%u] 0x%02X is not supported in TMZ v1.1, kept unchanged\n", i, id );
+            }
+        }
+        st_TMZ_V1CONV_CONFIG vcfg;
+        tmz_v1conv_config_init ( &vcfg );
+        st_TMZ_V1CONV_REPORT rep;
+        tmz_v1conv_file ( file, &vcfg, &rep );
+        printf ( "Upgraded: %u block(s) converted to 0x46, %u kept as v1.0, %u error(s)\n",
+                 rep.converted, rep.kept, rep.errors );
+        if ( rep.errors > 0 ) {
+            fprintf ( stderr, "Error: some blocks could not be converted, output not written\n" );
+            tzx_free ( file );
+            return EXIT_FAILURE;
+        }
+        force_tmz = 1;
     }
 
     /* urcit cilovy format */
@@ -206,9 +245,8 @@ int main ( int argc, char *argv[] ) {
     }
 
     printf ( "Converted: %s -> %s\n", input_file, output_file );
-    printf ( "  %s -> %s\n",
-             to_tmz ? "TZX (ZXTape!)" : "TMZ (TapeMZ!)",
-             to_tmz ? "TMZ (TapeMZ!) v1.0" : "TZX (ZXTape!) v1.20" );
+    printf ( "  -> %s v%u.%u\n", to_tmz ? "TMZ (TapeMZ!)" : "TZX (ZXTape!)",
+             file->header.ver_major, file->header.ver_minor );
     printf ( "  Blocks: %u\n", file->block_count );
 
     tzx_free ( file );

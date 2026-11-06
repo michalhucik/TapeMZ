@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_fastipl.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
+ * @version 1.3.0
  * @brief  FASTIPL koder pro kazetovy zaznam Sharp MZ ($BB prefix, Intercopy).
  *
  * Knihovna implementuje FASTIPL (Fast IPL) kodovani pouzivane programy
@@ -17,25 +17,18 @@
  * @par Struktura FASTIPL zaznamu na pasce:
  * @verbatim
  *   === Cast 1: $BB hlavicka (standardni rychlost 1:1) ===
- *   [LGAP]      22000 kratkych pulzu
+ *   [LGAP]      11000 kratkych pulzu
  *   [LTM]       40 long + 40 short (dlouhy tapemark)
  *   [2L]        2 long pulzy
  *   [HDR]       128 bajtu $BB hlavicky (s loaderem v komentari)
  *   [CHKH]      2 bajty checksum hlavicky
  *   [2L]        2 long pulzy
- *   [SGAP]      11000 kratkych pulzu
+ *
+ *   === Cast 2: Datove telo (turbo rychlost), bez pauzy ===
+ *   [LGAP]      lgap_length kratkych pulzu (vychozi 5500)
  *   [STM]       20 long + 20 short (kratky tapemark)
  *   [2L]        2 long pulzy
- *   [CHKB]      2 bajty checksum prazdneho body (= 0)
- *   [2L]        2 long pulzy
- *
- *   === Pauza (konfigurovatelna) ===
- *
- *   === Cast 2: Datove telo (turbo rychlost) ===
- *   [LGAP]      lgap_length kratkych pulzu (vychozi 22000)
- *   [LTM]       40 long + 40 short (dlouhy tapemark)
- *   [2L]        2 long pulzy
- *   [BODY]      N bajtu dat (8 bitu + 1 stop bit na bajt, MSB first)
+ *   [BODY]      N bajtu dat (start bit LONG + 8 bitu na bajt, MSB first)
  *   [CHKB]      2 bajty checksum tela
  *   [2L]        2 long pulzy
  * @endverbatim
@@ -52,12 +45,13 @@
  *   offset 0x1A-0x1B: skutecny fsize (LE)
  *   offset 0x1C-0x1D: skutecny fstrt (LE)
  *   offset 0x1E-0x1F: skutecny fexec (LE)
- *   offset 0x20-0x7F: kod loaderu (96 bajtu)
+ *   offset 0x20-0x7F: kod loaderu (pole loaderu ma 110 B od $12; $12-$1F
+ *                     prepise hlavicka a parametry, vlastni kod je od $20)
  * @endverbatim
  *
  * @par Referencni implementace:
- * - docs/detailne-prozkoumat/cmttool/src/libs/cmttool/cmttool_fastipl.c
- * - docs/detailne-prozkoumat/mz800-programs/disassembled/Intercopy-10.2/
+ * - cmttool: cmttool_fastipl.c
+ * - disassembly Intercopy 10.2
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -102,8 +96,8 @@ extern "C" {
      * loaderu (LD (HL),$01 u V07, bez ni u V02).
      */
     typedef enum en_MZCMT_FASTIPL_VERSION {
-        MZCMT_FASTIPL_VERSION_V02 = 0, /**< InterCopy v2 (96 bajtu loaderu). */
-        MZCMT_FASTIPL_VERSION_V07,      /**< InterCopy v7+ (96 bajtu loaderu). */
+        MZCMT_FASTIPL_VERSION_V02 = 0, /**< InterCopy v2 (loader 110 B od $12). */
+        MZCMT_FASTIPL_VERSION_V07,      /**< InterCopy v7+ (loader 110 B od $12). */
         MZCMT_FASTIPL_VERSION_COUNT     /**< Pocet platnych hodnot (sentinel). */
     } en_MZCMT_FASTIPL_VERSION;
 
@@ -195,7 +189,7 @@ extern "C" {
      * @par Vychozi hodnoty (pri 0):
      * - lgap_length: 5500 (body LGAP, Intercopy sub_19EE body mode)
      * - blcount: 1 (bez opakovani)
-     * - readpoint: automaticky z rychlosti (82/divisor)
+     * - readpoint: automaticky z rychlosti (mzcmt_fastipl_default_readpoint)
      * - *_us100: vychozi z pulsesetu + rychlosti
      */
     typedef struct st_MZCMT_FASTIPL_CONFIG {
@@ -203,10 +197,10 @@ extern "C" {
         en_MZCMT_FASTIPL_PULSESET pulseset; /**< pulzni sada pro casovani */
         en_CMTSPEED speed;                  /**< rychlost datoveho tela (turbo) */
         uint32_t lgap_length;               /**< body LGAP delka v pulzech (0 = 5500) */
-        uint16_t long_high_us100;           /**< explicitni long HIGH (us*100, 0 = default) */
-        uint16_t long_low_us100;            /**< explicitni long LOW (us*100, 0 = default) */
-        uint16_t short_high_us100;          /**< explicitni short HIGH (us*100, 0 = default) */
-        uint16_t short_low_us100;           /**< explicitni short LOW (us*100, 0 = default) */
+        uint16_t long_high_us100;           /**< explicitni long HIGH (0,1 us, 0 = default) */
+        uint16_t long_low_us100;            /**< explicitni long LOW (0,1 us, 0 = default) */
+        uint16_t short_high_us100;          /**< explicitni short HIGH (0,1 us, 0 = default) */
+        uint16_t short_low_us100;           /**< explicitni short LOW (0,1 us, 0 = default) */
         uint8_t blcount;                    /**< pocet opakovani bloku (0 = 1) */
         uint8_t readpoint;                  /**< readpoint prodleva (0 = auto z rychlosti) */
     } st_MZCMT_FASTIPL_CONFIG;
@@ -315,14 +309,27 @@ extern "C" {
     /**
      * @brief Vrati vychozi readpoint pro danou rychlost.
      *
-     * Vypocet: round(82 / cmtspeed_divisor). Hodnota 82 ($52) odpovida
-     * standardnimu ROM readpointu MZ-800. Pro vyssi rychlosti je
-     * readpoint nizsi (kratsi prodleva = kratsi rozhodovaci okno).
+     * Tabulka podle rychlosti: 1:1, 2:1, 7:3 a 8:3 (77, 32, 22, 17) jsou
+     * hodnoty z tabulky programu Intercopy V10.2, ostatni rychlosti jsou
+     * odhad. 82 ($52) je cteci bod ROM MZ-800 (vychozi pro neplatnou
+     * rychlost).
      *
      * @param speed Rychlostni pomer.
      * @return Vychozi readpoint (1-82). Pro neplatne hodnoty vraci 82.
      */
     extern uint8_t mzcmt_fastipl_default_readpoint ( en_CMTSPEED speed );
+
+    /**
+     * @brief Délky půlvln pulzní sady při rychlosti 1:1.
+     *
+     * Hodnoty vnitřní tabulky pulzů (výstup v1.0) pro převod bloků v1.0
+     * na TMZ v1.1 (tmz_profile, profil TAPEMZ-V1-LEGACY).
+     *
+     * @param pulseset Pulzní sada.
+     * @param[out] out LONG H, LONG L, SHORT H, SHORT L v sekundách.
+     * @return EXIT_SUCCESS, nebo EXIT_FAILURE (out je NULL, neplatná sada).
+     */
+    extern int mzcmt_fastipl_get_pulse_lengths ( en_MZCMT_FASTIPL_PULSESET pulseset, double out[4] );
 
 
     /** @brief Uzivatelsky alokator. */
@@ -349,7 +356,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny mzcmt_fastipl. */
-#define MZCMT_FASTIPL_VERSION "1.2.0"
+#define MZCMT_FASTIPL_VERSION "1.3.0"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny mzcmt_fastipl.

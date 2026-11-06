@@ -1,7 +1,7 @@
 /**
  * @file   mztape.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.1.0
+ * @version 2.2.0
  * @brief  Implementace knihovny mztape — generování CMT audio streamů z MZF souborů.
  *
  * Obsahuje logiku konverze MZF dat na CMT bitstream/vstream, výpočet pulzů,
@@ -42,7 +42,7 @@
  * - MZ-800: změna polarity zadním přepínačem ovlivňuje pouze vstupní data
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -180,10 +180,11 @@ en_MZTAPE_BLOCK g_mztape_format_sharp[] = {
 };
 
 /**
- * @brief Symetricke pulzni konstanty pro MZ-700, MZ-80K, MZ-80A.
+ * @brief Symetricke pulzni konstanty TMZ v1.0 pro MZ-700, MZ-80K, MZ-80A.
  *
- * MZ-700 ROM pouziva stejnou delay smycku pro HIGH i LOW cast pulzu.
  * Zakladni casovani: SHORT = 252 us, LONG = 504 us (pomer 1:2).
+ * Hodnoty bez dolozeneho zdroje [neovereno]; casovani ROM MZ-700 nebylo
+ * zmereno.
  * Shodne s mzcmt_turbo a mzcmt_bsd g_pulses_700.
  */
 const st_MZTAPE_PULSES_LENGTH g_mztape_pulses_700 = {
@@ -192,10 +193,11 @@ const st_MZTAPE_PULSES_LENGTH g_mztape_pulses_700 = {
 };
 
 /**
- * @brief Symetricke pulzni konstanty pro MZ-800, MZ-1500.
+ * @brief Symetricke pulzni konstanty TMZ v1.0 pro MZ-800, MZ-1500.
  *
- * MZ-800 ROM pouziva stejnou delay smycku pro HIGH i LOW cast pulzu.
- * Zakladni casovani: SHORT = 249 us, LONG = 498 us (pomer 1:2).
+ * Zakladni casovani: SHORT = 249 us, LONG = 498 us (pomer 1:2). ROM MZ-800
+ * zapisuje asymetricky: SHORT asi 238/259 us, LONG asi 469/491 us (zmereno
+ * v emulatoru, profil ROM-800-EXACT); 249 us je prumer pulvln SHORT.
  * Shodne s mzcmt_turbo a mzcmt_bsd g_pulses_800.
  */
 const st_MZTAPE_PULSES_LENGTH g_mztape_pulses_800 = {
@@ -1008,18 +1010,19 @@ st_CMT_STREAM* mztape_create_stream_from_mztapemzf ( st_MZTAPE_MZF *mztmzf, en_C
  *
  * Pokud jsou hodnoty long_high_us100 .. short_low_us100 nenulové,
  * přepíší se výchozí délky pulzů (jinak se použije standardní
- * výpočet z pulseset + speed). Hodnoty jsou v us*100 jednotkách
- * (seconds = value / 1e7), shodná konvence s mzcmt_turbo.
+ * výpočet z pulseset + speed). Hodnoty jsou v jednotkách 0,1 µs
+ * (seconds = value / 1e7), shodná konvence s mzcmt_turbo; přípona
+ * _us100 ve jménech je historická.
  *
  * @param mztmzf MZF data.
  * @param cmtspeed Rychlost záznamu (ignorována pokud pulse fields != 0).
  * @param type Typ výstupního streamu (bitstream/vstream).
  * @param mztape_fset Formátová varianta záznamu.
  * @param rate Vzorkovací frekvence (Hz).
- * @param long_high_us100  Délka HIGH části dlouhého pulzu (us*100, 0 = výchozí).
- * @param long_low_us100   Délka LOW části dlouhého pulzu (us*100, 0 = výchozí).
- * @param short_high_us100 Délka HIGH části krátkého pulzu (us*100, 0 = výchozí).
- * @param short_low_us100  Délka LOW části krátkého pulzu (us*100, 0 = výchozí).
+ * @param long_high_us100  Délka HIGH části dlouhého pulzu (0,1 µs, 0 = výchozí).
+ * @param long_low_us100   Délka LOW části dlouhého pulzu (0,1 µs, 0 = výchozí).
+ * @param short_high_us100 Délka HIGH části krátkého pulzu (0,1 µs, 0 = výchozí).
+ * @param short_low_us100  Délka LOW části krátkého pulzu (0,1 µs, 0 = výchozí).
  * @return Ukazatel na nový stream, nebo NULL při chybě.
  */
 st_CMT_STREAM* mztape_create_stream_from_mztapemzf_ex ( st_MZTAPE_MZF *mztmzf, en_CMTSPEED cmtspeed, en_CMT_STREAM_TYPE type, en_MZTAPE_FORMATSET mztape_fset, uint32_t rate,
@@ -1041,7 +1044,7 @@ st_CMT_STREAM* mztape_create_stream_from_mztapemzf_ex ( st_MZTAPE_MZF *mztmzf, e
         return NULL;
     };
 
-    /* konverze us*100 -> pocet vzorku (seconds = value / 1e7) */
+    /* konverze 0,1 us -> pocet vzorku (seconds = value / 1e7) */
     st_MZTAPE_PULSES_SAMPLES gpulses;
     gpulses.long_pulse.high = ( uint32_t ) round ( ( double ) long_high_us100 / 10000000.0 * rate );
     gpulses.long_pulse.low = ( uint32_t ) round ( ( double ) long_low_us100 / 10000000.0 * rate );
@@ -1162,4 +1165,15 @@ st_CMT_STREAM* mztape_create_stream_from_mztapemzf_ex ( st_MZTAPE_MZF *mztmzf, e
 
 const char* mztape_version ( void ) {
     return MZTAPE_VERSION;
+}
+
+
+int mztape_get_pulse_lengths ( en_MZTAPE_PULSESET pulseset, double out[4] ) {
+    if ( !out || ( int ) pulseset < 0 || pulseset >= MZTAPE_PULSESET_COUNT ) return EXIT_FAILURE;
+    const st_MZTAPE_PULSES_LENGTH *p = g_pulses_length[pulseset];
+    out[0] = p->long_pulse.high;
+    out[1] = p->long_pulse.low;
+    out[2] = p->short_pulse.high;
+    out[3] = p->short_pulse.low;
+    return EXIT_SUCCESS;
 }

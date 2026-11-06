@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_bsd.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.0
+ * @version 1.2.0
  * @brief  Implementace vrstvy 4d - BSD dekoder.
  *
  * BSD signal: hlavicka (fsize=0) nasledovana sekvenci chunku.
@@ -55,13 +55,16 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
     st_MZF **out_mzf,
     st_WAV_DECODE_RESULT *out_body_result,
     uint32_t *out_consumed_until,
-    uint32_t *out_recovery_status
+    uint32_t *out_recovery_status,
+    st_WAV_BSD_INFO *out_info
 ) {
     if ( !seq || !leader || !header || !out_mzf ) {
         return WAV_ANALYZER_ERROR_INVALID_PARAM;
     }
 
     *out_mzf = NULL;
+    st_WAV_BSD_INFO info = { 0, 0, 0 };
+    if ( out_info ) *out_info = info;
     if ( out_consumed_until ) *out_consumed_until = 0;
     if ( out_recovery_status ) *out_recovery_status = WAV_RECOVERY_NONE;
 
@@ -83,8 +86,8 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
     uint32_t body_capacity = BSD_BODY_INITIAL_CAPACITY;
     uint32_t chunk_count = 0;
 
-    en_WAV_CRC_STATUS last_crc_status = WAV_CRC_NOT_AVAILABLE;
-    uint16_t last_crc_stored = 0, last_crc_computed = 0;
+    /* CRC prvního kusu bez platné kopie (hlásí se chyba kteréhokoli kusu) */
+    uint16_t first_err_stored = 0, first_err_computed = 0;
     uint32_t first_chunk_pulse_start = 0;
 
     int found_terminator = 0;
@@ -128,6 +131,7 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
         if ( chunk_count == 0 ) {
             first_chunk_pulse_start = dec.pos;
         }
+        uint32_t chunk_data_start = dec.pos;   /* první datová půlvlna 1. kopie kusu */
 
         /* precteme 258B chunk (2B ID + 256B data) */
         uint8_t chunk[WAV_BSD_CHUNK_SIZE];
@@ -151,9 +155,42 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
             return WAV_ANALYZER_ERROR_DECODE_DATA;
         }
 
-        /* verifikace CRC chunku */
-        wav_decode_fm_verify_checksum ( &dec, &last_crc_status,
-                                        &last_crc_stored, &last_crc_computed );
+        /*
+         * CRC každého kusu. BASIC 1Z-016 zapisuje za kusem
+         * kopii za oddělovačem 256 S; při chybě CRC
+         * 1. kopie se použije kopie s platným checksumem. Konec kopie se
+         * hledá vždy, aby se oddělovač ani kopie nehlásily jako další kus.
+         * Nahrávka bez kopií (basic-bsd.wav) kopii nenajde: hledání skončí
+         * na tónu dalšího kusu.
+         */
+        en_WAV_CRC_STATUS crc;
+        uint16_t crc_stored = 0, crc_computed = 0;
+        wav_decode_fm_verify_checksum ( &dec, &crc, &crc_stored, &crc_computed );
+        /* počty se přičtou až po kontrole ID (zahozený cizí kus se nepočítá) */
+        int chunk_from_copy = 0;
+        int chunk_crc_error = 0;
+        {
+            uint8_t *copy = NULL;
+            en_WAV_CRC_STATUS copy_crc = WAV_CRC_NOT_AVAILABLE;
+            uint32_t copy_end = dec.pos;
+            en_WAV_ANALYZER_ERROR cerr = wav_decode_fm_try_copy2 ( seq, chunk_data_start, dec.threshold_us,
+                                                                   WAV_BSD_CHUNK_SIZE, &copy, &copy_crc,
+                                                                   NULL, NULL, &copy_end );
+            if ( cerr == WAV_ANALYZER_ERROR_ALLOC ) {
+                free ( body_data );
+                return WAV_ANALYZER_ERROR_ALLOC;
+            }
+            if ( cerr == WAV_ANALYZER_OK && copy_end > dec.pos ) dec.pos = copy_end;
+            if ( crc != WAV_CRC_OK ) {
+                if ( copy_crc == WAV_CRC_OK && copy ) {
+                    memcpy ( chunk, copy, WAV_BSD_CHUNK_SIZE );
+                    chunk_from_copy = 1;
+                } else {
+                    chunk_crc_error = 1;
+                }
+            }
+            free ( copy );
+        }
 
         /* extrakce chunk ID (prvni 2 bajty, LE) */
         uint16_t chunk_id;
@@ -188,6 +225,16 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
         }
 
         /* pripojime datovou cast chunku (256 bajtu za ID) */
+        /* kus je přijatý: započítat použitou kopii nebo chybu CRC */
+        if ( chunk_from_copy ) info.from_copy++;
+        if ( chunk_crc_error ) {
+            if ( info.crc_errors == 0 ) {
+                first_err_stored = crc_stored;
+                first_err_computed = crc_computed;
+            }
+            info.crc_errors++;
+        }
+
         memcpy ( &body_data[body_size], &chunk[2], WAV_BSD_CHUNK_DATA_SIZE );
         body_size += WAV_BSD_CHUNK_DATA_SIZE;
         chunk_count++;
@@ -239,14 +286,16 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
 
     *out_mzf = mzf;
 
-    /* vyplnime body result (posledni chunk) */
+    /* výsledek těla: chyba, když některý kus nemá platnou kopii */
+    info.chunks = chunk_count;
+    if ( out_info ) *out_info = info;
     if ( out_body_result ) {
         out_body_result->format = WAV_TAPE_FORMAT_BSD;
         out_body_result->data = NULL;   /* data jsou primo v mzf->body */
         out_body_result->data_size = body_size;
-        out_body_result->crc_status = last_crc_status;
-        out_body_result->crc_stored = last_crc_stored;
-        out_body_result->crc_computed = last_crc_computed;
+        out_body_result->crc_status = info.crc_errors ? WAV_CRC_ERROR : WAV_CRC_OK;
+        out_body_result->crc_stored = first_err_stored;
+        out_body_result->crc_computed = first_err_computed;
         out_body_result->pulse_start = first_chunk_pulse_start;
         out_body_result->pulse_end = dec.pos;
         out_body_result->is_header = 0;

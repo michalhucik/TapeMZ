@@ -1,7 +1,7 @@
 /**
  * @file   tmz_blocks.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Implementace parsovani a vytvareni TMZ MZ-specifickych bloku (0x40-0x4F).
  *
  * Obsahuje funkce pro parsovani surových dat bloku na typovane struktury,
@@ -42,6 +42,7 @@
 
 #include "tmz.h"
 #include "tmz_blocks.h"
+#include "tmz_mzfile.h"
 
 
 /* ========================================================================= */
@@ -98,6 +99,9 @@ static void (*g_tmzblocks_error_cb)( const char*, int, const char*, ... ) = tmz_
  * @param[out] body_data Ukazatel na data tela (ukazuje do block->data).
  * @param[out] err Vystupni chybovy kod (muze byt NULL).
  * @return Ukazatel na st_TMZ_MZ_STANDARD_DATA uvnitr dat bloku, nebo NULL pri chybe.
+ *         Chybou (NULL, err = TZX_ERROR_INVALID_BLOCK) je i deklarovaná
+ *         velikost dat (body_size) větší než data bloku - validuje se před
+ *         konverzí endianity, poškozený blok se tedy nemodifikuje.
  *
  * @pre block nesmi byt NULL, block->id musi byt TMZ_BLOCK_ID_MZ_STANDARD_DATA.
  * @note Vraceny ukazatel ukazuje primo do block->data - nealokuje novou pamet.
@@ -120,6 +124,18 @@ st_TMZ_MZ_STANDARD_DATA* tmz_block_parse_mz_standard ( const st_TZX_BLOCK *block
         return NULL;
     }
 
+    /* deklarovaná velikost těla se musí vejít do bloku (validace před mutací dat) */
+    {
+        const st_TMZ_MZ_STANDARD_DATA *raw = ( const st_TMZ_MZ_STANDARD_DATA* ) ( block->data + 4 );
+        uint32_t declared = endianity_bswap16_LE ( raw->body_size );
+        uint32_t available = block->length - ( uint32_t ) ( 4 + sizeof ( st_TMZ_MZ_STANDARD_DATA ) );
+        if ( declared > available ) {
+            g_tmzblocks_error_cb ( __func__, __LINE__, "Block 0x40 body_size %u exceeds block data (%u bytes)\n", declared, available );
+            *err = TZX_ERROR_INVALID_BLOCK;
+            return NULL;
+        }
+    }
+
     /* data bloku zacinaji za 4B DWORD delkou */
     st_TMZ_MZ_STANDARD_DATA *std_data = (st_TMZ_MZ_STANDARD_DATA*) ( block->data + 4 );
 
@@ -127,8 +143,8 @@ st_TMZ_MZ_STANDARD_DATA* tmz_block_parse_mz_standard ( const st_TZX_BLOCK *block
     std_data->pause_ms = endianity_bswap16_LE ( std_data->pause_ms );
     std_data->body_size = endianity_bswap16_LE ( std_data->body_size );
 
-    /* korekce MZF hlavicky */
-    mzf_header_items_correction ( &std_data->mzf_header );
+    /* MZF hlavička: jen pořadí bajtů, 11h (fname.terminator) zůstává podle bloku */
+    mzf_header_swap_endianity ( &std_data->mzf_header );
 
     if ( body_data ) {
         *body_data = block->data + 4 + sizeof ( st_TMZ_MZ_STANDARD_DATA );
@@ -146,6 +162,9 @@ st_TMZ_MZ_STANDARD_DATA* tmz_block_parse_mz_standard ( const st_TZX_BLOCK *block
  * @param[out] body_data Ukazatel na data tela (ukazuje do block->data).
  * @param[out] err Vystupni chybovy kod (muze byt NULL).
  * @return Ukazatel na st_TMZ_MZ_TURBO_DATA uvnitr dat bloku, nebo NULL pri chybe.
+ *         Chybou (NULL, err = TZX_ERROR_INVALID_BLOCK) je i deklarovaná
+ *         velikost dat (body_size) větší než data bloku - validuje se před
+ *         konverzí endianity, poškozený blok se tedy nemodifikuje.
  *
  * @pre block nesmi byt NULL, block->id musi byt TMZ_BLOCK_ID_MZ_TURBO_DATA.
  * @note Vraceny ukazatel ukazuje primo do block->data - nealokuje novou pamet.
@@ -166,6 +185,18 @@ st_TMZ_MZ_TURBO_DATA* tmz_block_parse_mz_turbo ( const st_TZX_BLOCK *block, uint
         return NULL;
     }
 
+    /* deklarovaná velikost těla se musí vejít do bloku (validace před mutací dat) */
+    {
+        const st_TMZ_MZ_TURBO_DATA *raw = ( const st_TMZ_MZ_TURBO_DATA* ) ( block->data + 4 );
+        uint32_t declared = endianity_bswap16_LE ( raw->body_size );
+        uint32_t available = block->length - ( uint32_t ) ( 4 + sizeof ( st_TMZ_MZ_TURBO_DATA ) );
+        if ( declared > available ) {
+            g_tmzblocks_error_cb ( __func__, __LINE__, "Block 0x41 body_size %u exceeds block data (%u bytes)\n", declared, available );
+            *err = TZX_ERROR_INVALID_BLOCK;
+            return NULL;
+        }
+    }
+
     st_TMZ_MZ_TURBO_DATA *turbo_data = (st_TMZ_MZ_TURBO_DATA*) ( block->data + 4 );
 
     /* konverze endianity */
@@ -178,7 +209,7 @@ st_TMZ_MZ_TURBO_DATA* tmz_block_parse_mz_turbo ( const st_TZX_BLOCK *block, uint
     turbo_data->short_low = endianity_bswap16_LE ( turbo_data->short_low );
     turbo_data->body_size = endianity_bswap16_LE ( turbo_data->body_size );
 
-    mzf_header_items_correction ( &turbo_data->mzf_header );
+    mzf_header_swap_endianity ( &turbo_data->mzf_header );
 
     if ( body_data ) {
         *body_data = block->data + 4 + sizeof ( st_TMZ_MZ_TURBO_DATA );
@@ -196,6 +227,9 @@ st_TMZ_MZ_TURBO_DATA* tmz_block_parse_mz_turbo ( const st_TZX_BLOCK *block, uint
  * @param[out] body_data Ukazatel na data tela (ukazuje do block->data).
  * @param[out] err Vystupni chybovy kod (muze byt NULL).
  * @return Ukazatel na st_TMZ_MZ_EXTRA_BODY uvnitr dat bloku, nebo NULL pri chybe.
+ *         Chybou (NULL, err = TZX_ERROR_INVALID_BLOCK) je i deklarovaná
+ *         velikost dat (body_size) větší než data bloku - validuje se před
+ *         konverzí endianity, poškozený blok se tedy nemodifikuje.
  *
  * @pre block nesmi byt NULL, block->id musi byt TMZ_BLOCK_ID_MZ_EXTRA_BODY.
  * @note Vraceny ukazatel ukazuje primo do block->data - nealokuje novou pamet.
@@ -214,6 +248,18 @@ st_TMZ_MZ_EXTRA_BODY* tmz_block_parse_mz_extra_body ( const st_TZX_BLOCK *block,
         g_tmzblocks_error_cb ( __func__, __LINE__, "Block 0x42 too short: %u bytes\n", block->length );
         *err = TZX_ERROR_INVALID_BLOCK;
         return NULL;
+    }
+
+    /* deklarovaná velikost těla se musí vejít do bloku (validace před mutací dat) */
+    {
+        const st_TMZ_MZ_EXTRA_BODY *raw = ( const st_TMZ_MZ_EXTRA_BODY* ) ( block->data + 4 );
+        uint32_t declared = endianity_bswap16_LE ( raw->body_size );
+        uint32_t available = block->length - ( uint32_t ) ( 4 + sizeof ( st_TMZ_MZ_EXTRA_BODY ) );
+        if ( declared > available ) {
+            g_tmzblocks_error_cb ( __func__, __LINE__, "Block 0x42 body_size %u exceeds block data (%u bytes)\n", declared, available );
+            *err = TZX_ERROR_INVALID_BLOCK;
+            return NULL;
+        }
     }
 
     st_TMZ_MZ_EXTRA_BODY *extra = (st_TMZ_MZ_EXTRA_BODY*) ( block->data + 4 );
@@ -272,6 +318,9 @@ st_TMZ_MZ_MACHINE_INFO* tmz_block_parse_mz_machine_info ( const st_TZX_BLOCK *bl
  * @param[out] loader_data Ukazatel na loader data (ukazuje do block->data).
  * @param[out] err Vystupni chybovy kod (muze byt NULL).
  * @return Ukazatel na st_TMZ_MZ_LOADER uvnitr dat bloku, nebo NULL pri chybe.
+ *         Chybou (NULL, err = TZX_ERROR_INVALID_BLOCK) je i deklarovaná
+ *         velikost dat (loader_size) větší než data bloku - validuje se před
+ *         konverzí endianity, poškozený blok se tedy nemodifikuje.
  *
  * @pre block nesmi byt NULL, block->id musi byt TMZ_BLOCK_ID_MZ_LOADER.
  * @note Vraceny ukazatel ukazuje primo do block->data - nealokuje novou pamet.
@@ -292,10 +341,22 @@ st_TMZ_MZ_LOADER* tmz_block_parse_mz_loader ( const st_TZX_BLOCK *block, uint8_t
         return NULL;
     }
 
+    /* deklarovaná velikost loaderu se musí vejít do bloku (validace před mutací dat) */
+    {
+        const st_TMZ_MZ_LOADER *raw = ( const st_TMZ_MZ_LOADER* ) ( block->data + 4 );
+        uint32_t declared = endianity_bswap16_LE ( raw->loader_size );
+        uint32_t available = block->length - ( uint32_t ) ( 4 + sizeof ( st_TMZ_MZ_LOADER ) );
+        if ( declared > available ) {
+            g_tmzblocks_error_cb ( __func__, __LINE__, "Block 0x44 loader_size %u exceeds block data (%u bytes)\n", declared, available );
+            *err = TZX_ERROR_INVALID_BLOCK;
+            return NULL;
+        }
+    }
+
     st_TMZ_MZ_LOADER *loader = (st_TMZ_MZ_LOADER*) ( block->data + 4 );
 
     loader->loader_size = endianity_bswap16_LE ( loader->loader_size );
-    mzf_header_items_correction ( &loader->mzf_header );
+    mzf_header_swap_endianity ( &loader->mzf_header );
 
     if ( loader_data ) {
         *loader_data = block->data + 4 + sizeof ( st_TMZ_MZ_LOADER );
@@ -342,8 +403,8 @@ st_TMZ_MZ_BASIC_DATA* tmz_block_parse_mz_basic_data ( const st_TZX_BLOCK *block,
     bsd->pause_ms = endianity_bswap16_LE ( bsd->pause_ms );
     bsd->chunk_count = endianity_bswap16_LE ( bsd->chunk_count );
 
-    /* korekce MZF hlavicky */
-    mzf_header_items_correction ( &bsd->mzf_header );
+    /* MZF hlavička: jen pořadí bajtů, 11h (fname.terminator) zůstává podle bloku */
+    mzf_header_swap_endianity ( &bsd->mzf_header );
 
     /* validace: musi byt alespon 1 chunk a data musi byt dostatecne velka */
     uint32_t expected_size = 4 + sizeof ( st_TMZ_MZ_BASIC_DATA )
@@ -416,8 +477,8 @@ st_TZX_BLOCK* tmz_block_create_mz_standard ( en_TMZ_MACHINE machine, en_TMZ_PULS
     std_data->pulseset = (uint8_t) pulseset;
     std_data->pause_ms = endianity_bswap16_LE ( pause_ms );
     memcpy ( &std_data->mzf_header, mzf_header, sizeof ( st_MZF_HEADER ) );
-    /* hlavicka v LE formatu - zavolat korekci pro prevod do LE */
-    mzf_header_items_correction ( &std_data->mzf_header );
+    /* hlavička do LE (jen pořadí bajtů, 11h beze změny) */
+    mzf_header_swap_endianity ( &std_data->mzf_header );
     std_data->body_size = endianity_bswap16_LE ( body_size );
 
     /* zapis tela */
@@ -473,7 +534,7 @@ st_TZX_BLOCK* tmz_block_create_mz_turbo ( const st_TMZ_MZ_TURBO_DATA *params, co
     turbo->short_high = endianity_bswap16_LE ( turbo->short_high );
     turbo->short_low = endianity_bswap16_LE ( turbo->short_low );
     turbo->body_size = endianity_bswap16_LE ( body_size );
-    mzf_header_items_correction ( &turbo->mzf_header );
+    mzf_header_swap_endianity ( &turbo->mzf_header );
 
     if ( body && body_size > 0 ) {
         memcpy ( block->data + 4 + sizeof ( st_TMZ_MZ_TURBO_DATA ), body, body_size );
@@ -582,7 +643,7 @@ st_TZX_BLOCK* tmz_block_create_mz_loader ( en_TMZ_LOADER_TYPE loader_type, en_CM
     loader->speed = (uint8_t) speed;
     loader->loader_size = endianity_bswap16_LE ( loader_size );
     memcpy ( &loader->mzf_header, mzf_header, sizeof ( st_MZF_HEADER ) );
-    mzf_header_items_correction ( &loader->mzf_header );
+    mzf_header_swap_endianity ( &loader->mzf_header );
 
     /* zapis dat loaderu */
     if ( loader_data && loader_size > 0 ) {
@@ -679,7 +740,7 @@ st_TZX_BLOCK* tmz_block_create_mz_basic_data ( en_TMZ_MACHINE machine, en_TMZ_PU
     bsd->pulseset = (uint8_t) pulseset;
     bsd->pause_ms = endianity_bswap16_LE ( pause_ms );
     memcpy ( &bsd->mzf_header, mzf_header, sizeof ( st_MZF_HEADER ) );
-    mzf_header_items_correction ( &bsd->mzf_header );
+    mzf_header_swap_endianity ( &bsd->mzf_header );
     bsd->chunk_count = endianity_bswap16_LE ( chunk_count );
 
     /* zapis chunku */
@@ -761,6 +822,27 @@ st_MZF* tmz_block_to_mzf ( const st_TZX_BLOCK *block, en_TZX_ERROR *err ) {
         src_header = &turbo_data->mzf_header;
         src_body = body_data;
         body_size = turbo_data->body_size;
+    } else if ( block->id == TMZ_BLOCK_ID_MZ_FILE ) {
+        st_TMZ_MZFILE mf;
+        *err = tmz_mzfile_parse ( block, &mf );
+        if ( *err != TZX_OK ) return NULL;
+        tmz_mzfile_free ( &mf );   /* header a body ukazují do dat bloku, pole částí není potřeba */
+        if ( mf.body_size > 0xFFFF ) {
+            g_tmzblocks_error_cb ( __func__, __LINE__, "Block 0x46 body too large for MZF: %u bytes\n", mf.body_size );
+            *err = TZX_ERROR_INVALID_BLOCK;
+            return NULL;
+        }
+        /* MZF nese délku těla ve fsize; blok 0x46 ji smí mít jinou (spec 4.1, rozhoduje N) */
+        uint16_t hdr_fsize = ( uint16_t ) ( mf.header[0x12] | ( mf.header[0x13] << 8 ) );
+        if ( hdr_fsize != mf.body_size ) {
+            g_tmzblocks_error_cb ( __func__, __LINE__, "Block 0x46 MZF fsize %u differs from body size %u\n",
+                                   hdr_fsize, mf.body_size );
+            *err = TZX_ERROR_INVALID_BLOCK;
+            return NULL;
+        }
+        src_header = ( const st_MZF_HEADER* ) mf.header;
+        src_body = mf.body;
+        body_size = ( uint16_t ) mf.body_size;
     } else {
         g_tmzblocks_error_cb ( __func__, __LINE__, "Unsupported block ID 0x%02X for MZF extraction\n", block->id );
         *err = TZX_ERROR_INVALID_BLOCK;
@@ -775,6 +857,12 @@ st_MZF* tmz_block_to_mzf ( const st_TZX_BLOCK *block, en_TZX_ERROR *err ) {
     }
 
     memcpy ( &mzf->header, src_header, sizeof ( st_MZF_HEADER ) );
+    if ( block->id == TMZ_BLOCK_ID_MZ_FILE ) {
+        /* hlavička bloku 0x46 je v pořadí souboru (LE): do pořadí hostitele jako u 0x40/0x41, 11h beze změny */
+        mzf->header.fsize = endianity_bswap16_LE ( mzf->header.fsize );
+        mzf->header.fstrt = endianity_bswap16_LE ( mzf->header.fstrt );
+        mzf->header.fexec = endianity_bswap16_LE ( mzf->header.fexec );
+    }
 
     if ( body_size > 0 && src_body ) {
         mzf->body = g_tmzblocks_allocator->alloc ( body_size );

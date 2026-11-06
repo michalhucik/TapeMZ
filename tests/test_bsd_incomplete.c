@@ -19,6 +19,7 @@
  * GNU General Public License v3 (GPLv3)
  *
  * Copyright (C) 2026 Michal Hucik <hucik@ordoz.com>
+ * Bez tstdata/ vypíše SKIP a skončí 0 (tests/tstdata_skip.h).
  */
 
 #include <stdio.h>
@@ -32,6 +33,7 @@
 #include "libs/tmz/tmz.h"
 #include "libs/tmz/tmz_blocks.h"
 #include "libs/tzx/tzx.h"
+#include "tstdata_skip.h"
 
 
 /** @brief Cesta k testovaci nahravce (relativni z build/). */
@@ -251,6 +253,20 @@ static int test_with_recovery ( void ) {
             } else {
                 printf ( "OK: file #2 ftype = 0x%02X\n", f->mzf->header.ftype );
             }
+
+            /*
+             * Kus s cizím ID, který recovery zahodí,
+             * se nesmí počítat do chyb CRC; zachráněné kusy mají CRC OK.
+             */
+            if ( f->bsd_crc_errors != 0 || f->body_crc != WAV_CRC_OK
+                 || f->bsd_chunks != ( f->mzf->body_size + 255 ) / 256 ) {
+                printf ( "FAIL: file #2 chunks %u, CRC errors %u, body CRC %d (expected all chunks OK)\n",
+                         f->bsd_chunks, f->bsd_crc_errors, f->body_crc );
+                failures++;
+            } else {
+                printf ( "OK: file #2 %u chunks, no CRC error (rejected foreign chunk not counted)\n",
+                         f->bsd_chunks );
+            }
         } else {
             printf ( "FAIL: file #2 has no MZF\n" );
             failures++;
@@ -373,6 +389,7 @@ static int test_datafile1_consistency ( void ) {
  * @return 0 pri uspechu (vsechny testy PASS), 1 pri selhani.
  */
 int main ( int argc, char *argv[] ) {
+    if ( argc < 2 && tstdata_skip ( "test_bsd_incomplete" ) ) return 0;   /* argv[1] dává vstup místo tstdata/ */
     memory_driver_init ();
 
     if ( argc > 1 ) g_wav_path = argv[1];

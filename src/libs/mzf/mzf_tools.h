@@ -1,14 +1,14 @@
 /**
  * @file   mzf_tools.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.2.0
+ * @version 2.2.1
  * @brief  Pomocné funkce pro práci s MZF hlavičkou.
  *
  * Konverze jmen souborů mezi Sharp MZ ASCII a standardním ASCII,
  * tovární funkce pro vytvoření hlavičky, debug výpis.
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)

@@ -5,8 +5,14 @@ Uses the TMZ player to play selected (or all) audio blocks and generate
 the resulting signal.
 
 Supports all blocks that the TMZ player can play:
-- MZ blocks 0x40 (Standard Data) and 0x41 (Turbo Data) via mztape encoders
-- TZX blocks 0x10-0x15 and 0x20 via the TZX library
+- MZ blocks 0x40 (Standard Data), 0x41 (Turbo Data) and 0x45 (BASIC Data): converted
+  in memory to block 0x46 (TMZ v1.1); formats that cannot be converted (FSK, SLOW,
+  DIRECT and others, see tmzconv `--upgrade`) via the mzcmt_* encoders. 0x41
+  CPM-TAPE and 0x45 are always converted (0x45 as `BASIC-1Z016`, more than 254 chunks are not played)
+- TZX blocks 0x10-0x15 and 0x20 via the TZX library; a ZX Spectrum (SINCLAIR) recording
+  is played as TZX block 0x10/0x11. The player does not play block 0x41 with the
+  SINCLAIR format and the tools do not create it
+- block 0x46 (MZ File, TMZ v1.1) via the FM and MANCHESTER generators
 
 Control and information blocks (0x21, 0x30, 0x32 etc.) are automatically skipped.
 
@@ -21,7 +27,7 @@ tmz2wav <input.tmz|input.tzx> <output.wav> [options]
 | Option | Value | Default | Description |
 |--------|-------|---------|-------------|
 | `--rate` | 8000-192000 | 44100 | Sampling frequency in Hz |
-| `--pulseset` | 700, 800, 80b | 800 | Default pulse set |
+| `--pulseset` | 700, 800, 80b | 800 | Default pulse set [ignored by the player] |
 | `--blocks` | specification | all | Select blocks to export |
 | `--append` | - | - | Append to existing WAV file |
 | `--version` | - | - | Show program version |
@@ -33,11 +39,15 @@ tmz2wav <input.tmz|input.tzx> <output.wav> [options]
 mean more accurate signal reproduction but larger files.
 Common values: 22050, 44100, 48000.
 
-**--pulseset** - default pulse set for blocks that do not have one
-explicitly specified. Affects pulse timing:
-- `700` - MZ-700/80K/80A timing
-- `800` - MZ-800/1500 timing
-- `80b` - MZ-80B timing
+For block 0x46 the player checks that the read routine can still read
+the signal after conversion to samples. A pulse edge moves by up to one
+sample, which at a low rate is enough to break fast transfers. If a
+block is not readable (e.g. TurboCopy 8:3 or 3:1 at 22050 Hz), no WAV is
+saved and the program exits with an error; use a higher `--rate`. For a
+margin below 10 us the program only prints a warning and saves the WAV.
+
+**--pulseset** - the program accepts and prints the value (`700`, `800`, `80b`),
+but the player does not use it [ignored by the player]. It takes the pulse set from the block.
 
 **--blocks** - select specific blocks to export (indices as shown by tmzinfo).
 Specification format:
@@ -52,6 +62,13 @@ affects only audio blocks.
 The existing WAV must be mono PCM and its sample rate must match
 `--rate` (or the default 44100 Hz). If the file does not exist,
 the program reports an error.
+
+### Exit code
+
+The program exits with code 1 on an option or input error, on a block that
+cannot be read at the chosen `--rate` (the WAV is then not saved), and also
+on a block that failed to play for another reason (e.g. an unsupported TZX
+block). In that case the WAV is saved without that block.
 
 ## Examples
 
@@ -71,12 +88,6 @@ Conversion of a TZX file (ZX Spectrum):
 
 ```
 tmz2wav spectrum.tzx spectrum.wav
-```
-
-Conversion with MZ-700 pulse set:
-
-```
-tmz2wav old_tape.tmz old_tape.wav --pulseset 700
 ```
 
 Conversion with lower sampling frequency (smaller file):

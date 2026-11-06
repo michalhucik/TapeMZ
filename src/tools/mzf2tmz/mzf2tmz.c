@@ -1,7 +1,7 @@
 /**
  * @file   mzf2tmz.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
+ * @version 1.11.0
  * @brief  Konverzni utility MZF -> TMZ.
  *
  * Nacte MZF soubor (nebo MZT soubor s vice MZF) a vytvori z nej
@@ -12,6 +12,9 @@
  *
  * Vstupni soubor s priponou .mzt/.MZT je zpracovan jako sekvence
  * vice MZF souboru poskladanych za sebou (kazdy 128B hlavicka + telo).
+ * Bez voleb formátu a --machine (nebo s --profile UNICMT) dá každý soubor blok 0x46
+ * s profilem UNICMT a rychlostí z hlaviček CMTSPEED UniCMT (spec 10.2,
+ * tmz_mzt_build_unicmt_blocks). MZT s CMTSPEED a jinými volbami je chyba.
  *
  * @par Pouziti:
  * @code
@@ -22,15 +25,26 @@
  * @par Volby:
  * - --machine <typ>        : generic, mz700, mz800, mz1500, mz80b (vychozi: mz800)
  * - --pulseset <sada>      : 700, 800, 80b, auto (vychozi: auto z machine)
- * - --format <format>      : normal, turbo, fastipl, sinclair, fsk, slow, direct, cpm-tape
+ * - --format <format>      : normal, turbo, fastipl, fsk, slow, direct, cpm-tape
+ *                            (sinclair se odmítne: ZX záznam patří do bloků TZX 0x10/0x11)
  *                            (vychozi: normal)
- * - --speed <rychlost>     : 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14
+ * - --speed <rychlost>     : 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3, 8:3, 9:7, 25:14;
+ *                            s --profile TC-1.21 i jiný poměr TurboCopy a:b (číslice 1-9, 1/2 až 3/1)
  *                            (vychozi: 1:1; neplatny pro FSK a SLOW formaty)
  * - --fsk-speed <level>    : rychlostni uroven FSK koderu 0-6 (0=nejpomalejsi,
  *                            6=nejrychlejsi; vychozi: 0; pouze pro --format fsk)
  * - --slow-speed <level>   : rychlostni uroven SLOW koderu 0-4 (0=nejpomalejsi,
  *                            4=nejrychlejsi; vychozi: 0; pouze pro --format slow)
- * - --pause <ms>           : pauza po bloku v ms (vychozi: 1000)
+ * - --pause <ms>           : pauza po bloku v ms (vychozi: 1000); s --profile pauza za
+ *                            posledním dílem bloku 0x46
+ * - --profile <ID>         : vytvořit blok 0x46 (TMZ v1.1) podle profilu z registru
+ *                            (ROM-800-NOMINAL, ROM-800-EXACT, TC-1.21); "list" vypíše registr.
+ *                            Nelze kombinovat s --format, --pulseset, --fsk-speed, --slow-speed.
+ * - --loader y|n           : TC-1.21: s předzavaděčem (y, výchozí) nebo bez (n)
+ * - --gap rom|short        : ROM profily: tóny ROM 22000/11000, nebo poloviční 11000/5500
+ * - --bd <rychlost>        : profily IC-10.2-*: 600, 1200 (výchozí), 2400, 2800, 3200;
+ *                            IC-10.2-CPM 1500, 2400 (výchozí), 2800, 3200, 3600;
+ *                            PEZIK-2.0A (i --format cpm-tape) 2400 nebo 3200
  * - --charset <mode>       : znakova sada: eu (vychozi), jp, utf8-eu, utf8-jp
  * - --version              : zobrazit verzi programu
  * - --lib-versions         : zobrazit verze knihoven
@@ -64,10 +78,13 @@
 #include "libs/mzf/mzf.h"
 #include "libs/mzf/mzf_tools.h"
 #include "libs/cmtspeed/cmtspeed.h"
+#include "libs/tmz/tmz_profile.h"
+#include "libs/tmz/tmz_mzt.h"
 #include "libs/endianity/endianity.h"
+#include "libs/mzcmt_turbo/mzcmt_turbo.h"
 
 /** @brief Verze programu mzf2tmz (z @version v hlavicce souboru). */
-#define MZF2TMZ_VERSION  "1.3.0"
+#define MZF2TMZ_VERSION  "1.11.0"
 
 
 /**
@@ -112,7 +129,7 @@ static const char* mzf_ftype_name ( uint8_t ftype ) {
         case 0x01: return "OBJ (machine code)";
         case 0x02: return "BTX (BASIC text)";
         case 0x03: return "BSD (BASIC data)";
-        case 0x04: return "BRD (BASIC read-after-run)";
+        case 0x04: return "BRD (BASIC data, WOPEN#)";   /* zapisuje WOPEN# BASICu 1Z-016 */
         case 0x05: return "RB (read and branch)";
         default:   return "Unknown";
     }
@@ -182,8 +199,9 @@ static int parse_pulseset ( const char *str, en_TMZ_PULSESET *pulseset ) {
 /**
  * @brief Naparsuje retezec na hodnotu en_TMZ_FORMAT.
  *
- * Rozpoznava: "normal", "turbo", "fastipl", "sinclair", "fsk",
- * "slow", "direct", "cpm-tape".
+ * Rozpoznava: "normal", "turbo", "fastipl", "fsk", "slow", "direct",
+ * "cpm-tape". "sinclair" nerozpozná: blok 0x41 SINCLAIR player nepřehraje
+ *, volající vypíše vlastní hlášku.
  * Porovnani je case-insensitive.
  *
  * @param str Vstupni retezec.
@@ -194,7 +212,6 @@ static int parse_format ( const char *str, en_TMZ_FORMAT *format ) {
     if ( strcasecmp ( str, "normal" ) == 0 )   { *format = TMZ_FORMAT_NORMAL;   return 0; }
     if ( strcasecmp ( str, "turbo" ) == 0 )    { *format = TMZ_FORMAT_TURBO;    return 0; }
     if ( strcasecmp ( str, "fastipl" ) == 0 )  { *format = TMZ_FORMAT_FASTIPL;  return 0; }
-    if ( strcasecmp ( str, "sinclair" ) == 0 ) { *format = TMZ_FORMAT_SINCLAIR; return 0; }
     if ( strcasecmp ( str, "fsk" ) == 0 )      { *format = TMZ_FORMAT_FSK;      return 0; }
     if ( strcasecmp ( str, "slow" ) == 0 )     { *format = TMZ_FORMAT_SLOW;     return 0; }
     if ( strcasecmp ( str, "direct" ) == 0 )   { *format = TMZ_FORMAT_DIRECT;   return 0; }
@@ -274,6 +291,112 @@ static int has_mzt_extension ( const char *path ) {
 
 
 /**
+ * @brief Ověří, že volby zadané k --profile profil opravdu používá.
+ *
+ * Pravidla odpovídají knihovně (tmz_profile_build_block() odmítne parametr,
+ * který profil nepoužívá); tady jen s hláškou, která jmenuje volbu.
+ *
+ * @param id ID profilu (existující v registru).
+ * @param speed_set Zadáno --speed.
+ * @param loader_set Zadáno --loader.
+ * @param gap_set Zadáno --gap.
+ * @return Text chyby (anglicky, bez "Error: "), nebo NULL, když volby sedí.
+ */
+static const char* profile_option_error ( const char *id, int speed_set, int loader_set, int gap_set ) {
+    int rom = ( strncmp ( id, "ROM-800-", 8 ) == 0 );
+    int unicmt = ( strcmp ( id, "UNICMT" ) == 0 );
+    int tc = ( strcmp ( id, "TC-1.21" ) == 0 );
+    int ic = ( strncmp ( id, "IC-10.2-", 8 ) == 0 );
+    int pezik = ( strcmp ( id, "PEZIK-2.0A" ) == 0 );
+    if ( strcmp ( id, "TAPEMZ-V1-LEGACY" ) == 0 ) {
+        return "profile TAPEMZ-V1-LEGACY is produced only by block conversion (tmzconv --upgrade)";
+    }
+    if ( speed_set && ic ) return "--speed is not used with the IC-10.2-* profiles (use --bd)";
+    if ( speed_set && pezik ) return "--speed is not used with PEZIK-2.0A (use --bd 2400 or 3200)";
+    if ( speed_set && unicmt ) return "UNICMT takes the speed from the CMTSPEED headers of an MZT input; --speed is not used";
+    if ( loader_set && !tc ) return "--loader is only valid with TC-1.21";
+    if ( gap_set && !rom && !unicmt ) return "--gap is only valid with the ROM-800-* and UNICMT profiles";
+    return NULL;
+}
+
+
+/**
+ * @brief Uvolní načtené MZF a bloky UNICMT, které nepřevzal soubor TMZ.
+ * @param mzfs MZF. @param n Počet MZF.
+ * @param blocks Bloky UNICMT (smí být NULL; převzaté jsou NULL). @param nb Počet bloků.
+ * @param speed Rychlosti UNICMT (smí být NULL).
+ */
+static void free_inputs ( st_MZF **mzfs, uint32_t n, st_TZX_BLOCK **blocks, uint32_t nb, void *speed ) {
+    for ( uint32_t j = 0; j < n; j++ ) mzf_free ( mzfs[j] );
+    for ( uint32_t j = 0; blocks && j < nb; j++ ) {
+        if ( blocks[j] ) tmz_block_free ( blocks[j] );
+    }
+    free ( blocks );
+    free ( speed );
+}
+
+
+/**
+ * @brief Spočítá hlavičky CMTSPEED v MZT tolerantně (zastaví se u useknutého konce).
+ * @param data MZT. @param size Délka.
+ * @return Počet hlaviček CMTSPEED v přečtené části.
+ */
+static uint32_t mzt_count_cmtspeed ( const uint8_t *data, uint32_t size ) {
+    uint32_t pos = 0, n = 0;
+    while ( size - pos >= TMZ_MZT_HEADER_SIZE ) {
+        const uint8_t *h = data + pos;
+        if ( tmz_mzt_is_cmtspeed ( h, NULL ) ) n++;
+        uint32_t fsize = ( uint32_t ) ( h[0x12] | ( h[0x13] << 8 ) );
+        if ( size - pos - TMZ_MZT_HEADER_SIZE < fsize ) break;
+        pos += TMZ_MZT_HEADER_SIZE + fsize;
+    }
+    return n;
+}
+
+
+/**
+ * @brief Načte celý soubor do paměti.
+ * @param path Cesta.
+ * @param[out] size Velikost.
+ * @return Data (uvolnit free), nebo NULL při chybě (soubor nejde otevřít, je prázdný, přes 16 MB, alokace).
+ */
+static uint8_t* read_whole_file ( const char *path, uint32_t *size ) {
+    *size = 0;
+    FILE *fp = fopen ( path, "rb" );
+    if ( !fp ) return NULL;
+    uint8_t *data = NULL;
+    if ( fseek ( fp, 0, SEEK_END ) == 0 ) {
+        long n = ftell ( fp );
+        if ( n > 0 && n <= 16L * 1024 * 1024 && fseek ( fp, 0, SEEK_SET ) == 0 ) {
+            data = malloc ( ( size_t ) n );
+            if ( data && fread ( data, 1, ( size_t ) n, fp ) != ( size_t ) n ) {
+                free ( data );
+                data = NULL;
+            }
+            if ( data ) *size = ( uint32_t ) n;
+        }
+    }
+    fclose ( fp );
+    return data;
+}
+
+
+/**
+ * @brief Popis rychlosti UniCMT pro výpis.
+ * @param us Pulzy LONG H, LONG L, SHORT H, SHORT L v µs.
+ * @return "1x", "2x", "3x" (sady UniCMT), nebo "custom".
+ */
+static const char* unicmt_speed_name ( const uint16_t us[4] ) {
+    static const uint16_t sets[3][4] = { { 470, 494, 240, 278 }, { 235, 247, 120, 139 }, { 156, 164, 80, 92 } };
+    static const char *const names[3] = { "1x", "2x", "3x" };
+    for ( int i = 0; i < 3; i++ ) {
+        if ( memcmp ( us, sets[i], sizeof ( sets[i] ) ) == 0 ) return names[i];
+    }
+    return "custom";
+}
+
+
+/**
  * @brief Vytvori TMZ blok z MZF podle zadaneho formatu a rychlosti.
  *
  * Pokud format == NORMAL a speed_byte odpovida CMTSPEED_1_1, vytvori
@@ -343,16 +466,31 @@ static void print_usage ( const char *prog_name ) {
     fprintf ( stderr, "  --machine <type>    Target machine: generic, mz700, mz800, mz1500, mz80b\n" );
     fprintf ( stderr, "                      (default: mz800)\n" );
     fprintf ( stderr, "  --pulseset <set>    Pulse set: 700, 800, 80b, auto (default: auto)\n" );
-    fprintf ( stderr, "  --format <fmt>      Recording format: normal, turbo, fastipl, sinclair,\n" );
-    fprintf ( stderr, "                      fsk, slow, direct, cpm-tape (default: normal)\n" );
+    fprintf ( stderr, "  --format <fmt>      Recording format: normal, turbo, fastipl, fsk, slow,\n" );
+    fprintf ( stderr, "                      direct, cpm-tape (default: normal);\n" );
+    fprintf ( stderr, "                      cpm-tape = --profile PEZIK-2.0A (block 0x46, speed --bd)\n" );
     fprintf ( stderr, "  --speed <ratio>     Speed ratio: 1:1, 2:1, 2:1cpm, 3:1, 3:2, 7:3,\n" );
-    fprintf ( stderr, "                      8:3, 9:7, 25:14 (default: 1:1)\n" );
+    fprintf ( stderr, "                      8:3, 9:7, 25:14 (default: 1:1); with --profile TC-1.21\n" );
+    fprintf ( stderr, "                      any TurboCopy ratio a:b (digits 1-9, 1:2 to 3:1)\n" );
     fprintf ( stderr, "                      Not valid for FSK/SLOW formats (use --fsk-speed/--slow-speed)\n" );
     fprintf ( stderr, "  --fsk-speed <level> FSK speed level: 0-6 (0=slowest, 6=fastest, default: 0)\n" );
     fprintf ( stderr, "                      Only valid with --format fsk\n" );
     fprintf ( stderr, "  --slow-speed <level> SLOW speed level: 0-4 (0=slowest, 4=fastest, default: 0)\n" );
     fprintf ( stderr, "                      Only valid with --format slow\n" );
     fprintf ( stderr, "  --pause <ms>        Pause after block in ms (default: 1000)\n" );
+    fprintf ( stderr, "  --profile <ID>      Create a TMZ v1.1 MZ File block (0x46) by a registry profile:\n" );
+    fprintf ( stderr, "                      ROM-800-NOMINAL, ROM-800-EXACT, TC-1.21, UNICMT,\n" );
+    fprintf ( stderr, "                      IC-10.2-NORMAL, IC-10.2-TURBO, IC-10.2-FASTIPL,\n" );
+    fprintf ( stderr, "                      IC-10.2-CPM, PEZIK-2.0A\n" );
+    fprintf ( stderr, "                      ('--profile list' prints them; MZT input defaults to UNICMT)\n" );
+    fprintf ( stderr, "                      --machine is stored in the block; --speed: ROM 1:1, TC-1.21\n" );
+    fprintf ( stderr, "  --loader y|n        TC-1.21: with preloader (y, default) or without (n)\n" );
+    fprintf ( stderr, "  --gap rom|short     ROM-800-*, UNICMT (also MZT input without --profile\n" );
+    fprintf ( stderr, "                      and without format options, including --machine):\n" );
+    fprintf ( stderr, "                      ROM tones 22000/11000 or half 11000/5500\n" );
+    fprintf ( stderr, "  --bd <speed>        IC-10.2-* profiles: 600, 1200 (default), 2400, 2800, 3200;\n" );
+    fprintf ( stderr, "                      IC-10.2-CPM: 1500, 2400 (default), 2800, 3200, 3600;\n" );
+    fprintf ( stderr, "                      PEZIK-2.0A (and --format cpm-tape): 2400, 3200\n" );
     fprintf ( stderr, "  --charset <mode>        Character set: eu (default), jp, utf8-eu, utf8-jp\n" );
     fprintf ( stderr, "  --version             Show program version\n" );
     fprintf ( stderr, "  --lib-versions        Show library versions\n" );
@@ -371,6 +509,9 @@ static void print_usage ( const char *prog_name ) {
  * @param[out] mzfs Pole ukazatelu na nactene MZF soubory.
  * @param max_mzfs Maximalni pocet MZF v poli.
  * @param[out] mzf_count Pocet nactenych MZF souboru.
+ * @note Bajt 11h hlavičky (fname.terminator) zůstává podle souboru: knihovna mzf
+ *       ho při čtení nastaví na 0Dh, proto se u MZF přečte znovu ze souboru.
+ *       MZT se čte po bajtech, 11h tam zůstává také.
  * @return EXIT_SUCCESS pri uspechu, EXIT_FAILURE pri chybe.
  *
  * @post Pri uspechu volajici vlastni mzfs[0..mzf_count-1] a musi
@@ -401,6 +542,14 @@ static int load_mzf_files ( const char *input_file, int is_mzt,
         if ( !mzf ) {
             fprintf ( stderr, "Error: failed to load MZF file: %d\n", mzf_err );
             return EXIT_FAILURE;
+        }
+
+        {
+            /* 11h podle souboru (mzf_load ho nastavil na 0Dh) */
+            FILE *fp = fopen ( input_file, "rb" );
+            int c = ( fp && fseek ( fp, 0x11, SEEK_SET ) == 0 ) ? fgetc ( fp ) : EOF;
+            if ( fp ) fclose ( fp );
+            if ( c != EOF ) mzf->header.fname.terminator = ( uint8_t ) c;
         }
 
         mzfs[0] = mzf;
@@ -522,9 +671,17 @@ int main ( int argc, char *argv[] ) {
     en_TMZ_FORMAT format = TMZ_FORMAT_NORMAL;
     en_CMTSPEED speed = CMTSPEED_1_1;
     int speed_set = 0;      /* priznak, ze uzivatel explicitne zadal --speed */
+    const char *speed_tc = NULL;   /* --speed mimo en_CMTSPEED: poměr TurboCopy, platí jen s --profile TC-1.21 */
     int fsk_speed = -1;     /* -1 = nezadano; platne hodnoty 0-6 */
     int slow_speed = -1;    /* -1 = nezadano; platne hodnoty 0-4 */
     uint16_t pause_ms = 1000;
+    const char *profile_id = NULL;   /* --profile: blok 0x46 podle registru */
+    int loader_opt = -1;             /* --loader: -1 nezadáno, 1 y, 0 n */
+    int gap_opt = -1;                /* --gap: -1 nezadáno, 1 rom, 0 short */
+    int bd_opt = -1;                 /* --bd: -1 nezadáno, jinak rychlost Intercopy (profily IC-10.2-*) */
+    int format_set = 0;              /* --format zadán (nelze s --profile) */
+    int pulseset_set = 0;            /* --pulseset zadán (nelze s --profile) */
+    int machine_set = 0;             /* --machine zadán (u MZT volí dosavadní cestu bloků v1.0) */
     en_MZF_NAME_ENCODING name_encoding = MZF_NAME_ASCII_EU;
 
     /* parsovani argumentu */
@@ -545,6 +702,7 @@ int main ( int argc, char *argv[] ) {
                 fprintf ( stderr, "Error: unknown machine type '%s'\n", argv[i] );
                 return EXIT_FAILURE;
             }
+            machine_set = 1;
         } else if ( strcmp ( argv[i], "--pulseset" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --pulseset requires a value\n" );
@@ -554,23 +712,61 @@ int main ( int argc, char *argv[] ) {
                 fprintf ( stderr, "Error: unknown pulseset '%s'\n", argv[i] );
                 return EXIT_FAILURE;
             }
+            pulseset_set = 1;
         } else if ( strcmp ( argv[i], "--format" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --format requires a value\n" );
+                return EXIT_FAILURE;
+            }
+            if ( strcasecmp ( argv[i], "sinclair" ) == 0 ) {
+                fprintf ( stderr, "Error: format sinclair is not supported in MZ blocks; ZX Spectrum recordings"
+                                  " use TZX blocks 0x10/0x11 (tap2tmz)\n" );
                 return EXIT_FAILURE;
             }
             if ( parse_format ( argv[i], &format ) != 0 ) {
                 fprintf ( stderr, "Error: unknown format '%s'\n", argv[i] );
                 return EXIT_FAILURE;
             }
+            format_set = 1;
+        } else if ( strcmp ( argv[i], "--profile" ) == 0 ) {
+            if ( ++i >= argc ) {
+                fprintf ( stderr, "Error: --profile requires a value\n" );
+                return EXIT_FAILURE;
+            }
+            profile_id = argv[i];
+        } else if ( strcmp ( argv[i], "--loader" ) == 0 ) {
+            if ( ++i >= argc || ( strcmp ( argv[i], "y" ) != 0 && strcmp ( argv[i], "n" ) != 0 ) ) {
+                fprintf ( stderr, "Error: --loader requires y or n\n" );
+                return EXIT_FAILURE;
+            }
+            loader_opt = ( argv[i][0] == 'y' );
+        } else if ( strcmp ( argv[i], "--bd" ) == 0 ) {
+            if ( ++i >= argc ) {
+                fprintf ( stderr, "Error: --bd requires a value\n" );
+                return EXIT_FAILURE;
+            }
+            char *endp;
+            long v = strtol ( argv[i], &endp, 10 );
+            /* sjednocení rychlostí všech profilů; rychlost pro zvolený profil ověří jeho sestavení */
+            if ( *endp != '\0' || ( v != 600 && v != 1200 && v != 1500 && v != 2400 && v != 2800 && v != 3200
+                                     && v != 3600 ) ) {
+                fprintf ( stderr, "Error: --bd must be 600, 1200, 1500, 2400, 2800, 3200 or 3600\n" );
+                return EXIT_FAILURE;
+            }
+            bd_opt = ( int ) v;
+        } else if ( strcmp ( argv[i], "--gap" ) == 0 ) {
+            if ( ++i >= argc || ( strcmp ( argv[i], "rom" ) != 0 && strcmp ( argv[i], "short" ) != 0 ) ) {
+                fprintf ( stderr, "Error: --gap requires rom or short\n" );
+                return EXIT_FAILURE;
+            }
+            gap_opt = ( strcmp ( argv[i], "rom" ) == 0 );
         } else if ( strcmp ( argv[i], "--speed" ) == 0 ) {
             if ( ++i >= argc ) {
                 fprintf ( stderr, "Error: --speed requires a value\n" );
                 return EXIT_FAILURE;
             }
             if ( parse_speed ( argv[i], &speed ) != 0 ) {
-                fprintf ( stderr, "Error: unknown speed '%s'\n", argv[i] );
-                return EXIT_FAILURE;
+                speed_tc = argv[i];     /* ověří se až s --profile TC-1.21 */
             }
             speed_set = 1;
         } else if ( strcmp ( argv[i], "--fsk-speed" ) == 0 ) {
@@ -639,14 +835,122 @@ int main ( int argc, char *argv[] ) {
         }
     }
 
+    /* --profile list: výpis registru profilů */
+    if ( profile_id && strcmp ( profile_id, "list" ) == 0 ) {
+        printf ( "Profiles (TMZ v1.1 MZ File block 0x46):\n" );
+        for ( size_t k = 0; k < tmz_profile_count (); k++ ) {
+            const st_TMZ_PROFILE *pr = tmz_profile_get ( k );
+            printf ( "  %-16s %-18s %s\n", pr->id, pr->confidence, pr->description );
+        }
+        return EXIT_SUCCESS;
+    }
+
     if ( !input_file || !output_file ) {
         print_usage ( argv[0] );
         return EXIT_FAILURE;
     }
 
+    /* rychlost mimo en_CMTSPEED zná jen profil TC-1.21 (poměr TurboCopy) */
+    if ( speed_tc && ( !profile_id || strcmp ( profile_id, "TC-1.21" ) != 0 ) ) {
+        fprintf ( stderr, "Error: unknown speed '%s'\n", speed_tc );
+        return EXIT_FAILURE;
+    }
+
+    /*
+     * --format cpm-tape = blok 0x46 profilem PEZIK-2.0A (TAPE.COM);
+     * rychlost jen --bd 2400 nebo 3200
+     */
+    if ( format_set && format == TMZ_FORMAT_CPM_TAPE ) {
+        if ( speed_set ) {
+            fprintf ( stderr, "Error: --speed is not used with --format cpm-tape (use --bd 2400 or 3200)\n" );
+            return EXIT_FAILURE;
+        }
+        if ( profile_id ) {
+            fprintf ( stderr, "Error: --format cpm-tape is the profile PEZIK-2.0A; do not combine it with --profile\n" );
+            return EXIT_FAILURE;
+        }
+        profile_id = "PEZIK-2.0A";
+        format_set = 0;
+    }
+
+    /* --profile: kontrola kombinace voleb */
+    st_TMZ_PROFILE_ARGS profile_args;
+    tmz_profile_args_init ( &profile_args );
+    if ( profile_id ) {
+        if ( !tmz_profile_find ( profile_id ) ) {
+            fprintf ( stderr, "Error: unknown profile '%s' (use --profile list)\n", profile_id );
+            return EXIT_FAILURE;
+        }
+        if ( format_set || pulseset_set || fsk_speed >= 0 || slow_speed >= 0 ) {
+            fprintf ( stderr, "Error: --format, --pulseset, --fsk-speed and --slow-speed are not used with --profile\n" );
+            return EXIT_FAILURE;
+        }
+        const char *opt_err = profile_option_error ( profile_id, speed_set, loader_opt >= 0, gap_opt >= 0 );
+        if ( opt_err ) {
+            fprintf ( stderr, "Error: %s\n", opt_err );
+            return EXIT_FAILURE;
+        }
+        if ( machine_set ) profile_args.machine = ( int ) machine;
+        if ( speed_tc ) {
+            /* poměr TurboCopy a:b mimo en_CMTSPEED (tmz_profile_args_parse ho uloží do tc_a, tc_b) */
+            char txt[32];
+            st_TMZ_PROFILE_ARGS tc;
+            snprintf ( txt, sizeof ( txt ), "speed=%s", speed_tc );
+            if ( strcmp ( profile_id, "TC-1.21" ) != 0 || strlen ( speed_tc ) > 8
+                 || tmz_profile_args_parse ( txt, strlen ( txt ), &tc ) != EXIT_SUCCESS || !tc.tc_a ) {
+                fprintf ( stderr, "Error: unknown speed '%s' (TC-1.21 also takes a TurboCopy ratio a:b, "
+                                  "digits 1-9, 1/2 to 3/1)\n", speed_tc );
+                return EXIT_FAILURE;
+            }
+            profile_args.tc_a = tc.tc_a;
+            profile_args.tc_b = tc.tc_b;
+        } else if ( speed_set ) {
+            profile_args.speed = speed;
+        }
+        if ( loader_opt >= 0 ) profile_args.loader = loader_opt;
+        if ( gap_opt >= 0 ) profile_args.gap_rom = gap_opt;
+        if ( bd_opt >= 0 ) {
+            if ( strncmp ( profile_id, "IC-10.2-", 8 ) != 0 && strcmp ( profile_id, "PEZIK-2.0A" ) != 0 ) {
+                fprintf ( stderr, "Error: --bd is only valid with the IC-10.2-* and PEZIK-2.0A profiles\n" );
+                return EXIT_FAILURE;
+            }
+            profile_args.bd = ( uint16_t ) bd_opt;
+        }
+        profile_args.pause_ms = pause_ms;
+    } else {
+        /* MZT bez voleb formátu = bloky UNICMT (níž), ty --gap používají */
+        int mzt_default = has_mzt_extension ( input_file ) && !( format_set || pulseset_set || speed_set || machine_set
+                                                                 || fsk_speed >= 0 || slow_speed >= 0 );
+        /*
+         * MZT s volbou formátu jde cestou bloků v1.0, které --gap nepoužívají;
+         * hláška jmenuje volby formátu (i --machine) a radí --profile UNICMT
+         */
+        if ( gap_opt >= 0 && has_mzt_extension ( input_file ) && !mzt_default
+             && loader_opt < 0 && bd_opt < 0 ) {
+            fprintf ( stderr, "Error: --gap with an MZT input applies to UNICMT blocks; --format, --pulseset,\n"
+                              "       --speed, --machine, --fsk-speed and --slow-speed select v1.0 blocks,\n"
+                              "       which do not use --gap (use --profile UNICMT to combine --gap with --machine)\n" );
+            return EXIT_FAILURE;
+        }
+        if ( loader_opt >= 0 || bd_opt >= 0 || ( gap_opt >= 0 && !mzt_default ) ) {
+            fprintf ( stderr, "Error: --loader and --bd require --profile; --gap requires --profile or an MZT input\n"
+                              "       without format options\n" );
+            return EXIT_FAILURE;
+        }
+        if ( gap_opt >= 0 ) profile_args.gap_rom = gap_opt;
+    }
+
     /* autodetekce pulzni sady z machine */
     if ( pulseset == TMZ_PULSESET_COUNT ) {
         pulseset = pulseset_from_machine ( machine );
+    }
+
+    /*
+     * FSK/SLOW/DIRECT fungují na MZ-700, MZ-800 i MZ-1500, na MZ-80B to není ověřené
+     */
+    if ( ( format == TMZ_FORMAT_FSK || format == TMZ_FORMAT_SLOW || format == TMZ_FORMAT_DIRECT )
+         && ( machine == TMZ_MACHINE_MZ80B || pulseset == TMZ_PULSESET_80B ) ) {
+        fprintf ( stderr, "Warning: formats fsk, slow and direct are not verified on the MZ-80B\n" );
     }
 
     /* cross-validace parametru rychlosti vs. format */
@@ -679,6 +983,14 @@ int main ( int argc, char *argv[] ) {
         }
     }
 
+    /* TURBO (profil TurboCopy) umí jen poměry s číslicemi 1-9 - odmítnout hned, ne až při přehrávání */
+    if ( format == TMZ_FORMAT_TURBO &&
+         !mzcmt_turbo_speed_is_supported ( MZCMT_TURBO_PROFILE_TURBOCOPY_V12X, speed ) ) {
+        fprintf ( stderr, "Error: speed %s is not supported by TURBO format (TurboCopy ratios: 1:1, 2:1, 3:2, 7:3, 8:3, 9:7, 3:1)\n",
+                  cmtspeed_get_ratiotxt ( speed ) );
+        return EXIT_FAILURE;
+    }
+
     /* resolve surove hodnoty speed_byte pro blok 0x41 */
     uint8_t speed_byte;
     if ( format == TMZ_FORMAT_FSK ) {
@@ -694,7 +1006,102 @@ int main ( int argc, char *argv[] ) {
     st_MZF *mzfs[4096];
     uint32_t mzf_count = 0;
 
-    if ( load_mzf_files ( input_file, is_mzt, mzfs, 4096, &mzf_count ) != EXIT_SUCCESS ) {
+    /*
+     * MZT bez voleb formátu (nebo s --profile UNICMT): bloky 0x46 UNICMT s pulzy
+     * z hlaviček CMTSPEED (spec 10.2). S jinými
+     * volbami platí dosavadní cesta, CMTSPEED by se ale ztratily: chyba.
+     */
+    st_TZX_BLOCK **unicmt_blocks = NULL;
+    int mzt_unicmt = 0;   /* MZT na bloky UNICMT (spec 10.2) */
+    uint16_t ( *unicmt_speed )[4] = NULL;
+    uint32_t unicmt_count = 0;   /* počet bloků v unicmt_blocks */
+    if ( is_mzt ) {
+        /* --machine určuje pulzní sadu bloků v1.0: s ním platí dosavadní cesta */
+        int explicit_fmt = format_set || pulseset_set || speed_set || machine_set || fsk_speed >= 0 || slow_speed >= 0
+                           || profile_id;
+        mzt_unicmt = !explicit_fmt || ( profile_id && strcmp ( profile_id, "UNICMT" ) == 0 );
+        if ( !mzt_unicmt ) {
+            /* dosavadní cesta (load_mzf_files) toleruje i useknutý konec; CMTSPEED jen odmítnout */
+            uint32_t sz = 0;
+            uint8_t *raw = read_whole_file ( input_file, &sz );
+            uint32_t ncs = raw ? mzt_count_cmtspeed ( raw, sz ) : 0;
+            free ( raw );
+            if ( ncs > 0 ) {
+                fprintf ( stderr, "Error: MZT contains CMTSPEED headers; use --profile UNICMT or no format options\n" );
+                return EXIT_FAILURE;
+            }
+        }
+    }
+    if ( mzt_unicmt ) {
+        uint32_t mzt_size = 0;
+        uint8_t *mzt_data = read_whole_file ( input_file, &mzt_size );
+        st_TMZ_MZT mzt;
+        uint32_t tail = 0;
+        if ( !mzt_data ) {
+            fprintf ( stderr, "Error: cannot open input file '%s' (or it is empty or larger than 16 MB)\n", input_file );
+            return EXIT_FAILURE;
+        }
+        if ( tmz_mzt_parse_tail ( mzt_data, mzt_size, &mzt, &tail ) != EXIT_SUCCESS ) {
+            fprintf ( stderr, "Error: '%s' is not a valid MZT file (unreadable, empty, or a body runs past the end)\n",
+                      input_file );
+            free ( mzt_data );
+            return EXIT_FAILURE;
+        }
+        if ( tail ) fprintf ( stderr, "Warning: %u trailing byte(s) after the last file ignored (padding?)\n", tail );
+        if ( mzt.count == mzt.cmtspeed_count ) {
+            fprintf ( stderr, "Error: '%s' contains no MZF file (only CMTSPEED headers)\n", input_file );
+            tmz_mzt_free ( &mzt );
+            free ( mzt_data );
+            return EXIT_FAILURE;
+        }
+        {
+            int leading = 0, trailing = 0;
+            uint32_t nb = 0;
+            if ( !profile_id ) profile_args.pause_ms = pause_ms;
+            if ( tmz_mzt_build_unicmt_blocks ( &mzt, &profile_args, &unicmt_blocks, &nb, &leading, &trailing ) != EXIT_SUCCESS
+                 || nb == 0 || nb > 4096 ) {
+                fprintf ( stderr, "Error: cannot build UNICMT blocks from '%s'\n", input_file );
+                free_inputs ( mzfs, 0, unicmt_blocks, nb, NULL );
+                tmz_mzt_free ( &mzt );
+                free ( mzt_data );
+                return EXIT_FAILURE;
+            }
+            unicmt_count = nb;
+            if ( leading ) fprintf ( stderr, "Warning: CMTSPEED at the start of the MZT is ignored (UniCMT does not apply it)\n" );
+            if ( trailing ) fprintf ( stderr, "Warning: CMTSPEED at the end of the MZT has no file to apply to\n" );
+            unicmt_speed = calloc ( nb, sizeof ( *unicmt_speed ) );
+            /* hlavičky pro souhrn (bez těl) a rychlost každého souboru (jako tmz_mzt_build_unicmt_blocks) */
+            uint16_t cur[4] = TMZ_MZT_CMTSPEED_PULSES_1X;
+            for ( uint32_t k = 0, f = 0; k < mzt.count && unicmt_speed; k++ ) {
+                const st_TMZ_MZT_ITEM *it = &mzt.items[k];
+                if ( it->is_cmtspeed ) {
+                    if ( k > 0 ) memcpy ( cur, it->pulses_us, sizeof ( cur ) );
+                    continue;
+                }
+                st_MZF *m = calloc ( 1, sizeof ( st_MZF ) );
+                if ( !m ) break;
+                memcpy ( &m->header, it->header, sizeof ( m->header ) );
+                m->header.fsize = endianity_bswap16_LE ( m->header.fsize );
+                m->header.fstrt = endianity_bswap16_LE ( m->header.fstrt );
+                m->header.fexec = endianity_bswap16_LE ( m->header.fexec );
+                memcpy ( unicmt_speed[f], cur, sizeof ( unicmt_speed[f] ) );
+                mzfs[f++] = m;
+                mzf_count = f;
+            }
+            if ( !unicmt_speed || mzf_count != nb ) {
+                fprintf ( stderr, "Error: memory allocation failed\n" );
+                free_inputs ( mzfs, mzf_count, unicmt_blocks, unicmt_count, unicmt_speed );
+                tmz_mzt_free ( &mzt );
+                free ( mzt_data );
+                return EXIT_FAILURE;
+            }
+            if ( !profile_id ) profile_id = "UNICMT";
+        }
+        tmz_mzt_free ( &mzt );
+        free ( mzt_data );
+    }
+
+    if ( !unicmt_blocks && load_mzf_files ( input_file, is_mzt, mzfs, 4096, &mzf_count ) != EXIT_SUCCESS ) {
         return EXIT_FAILURE;
     }
 
@@ -716,7 +1123,7 @@ int main ( int argc, char *argv[] ) {
             if ( !tmz_file ) {
                 fprintf ( stderr, "Error: failed to load existing file '%s': %s\n",
                           output_file, tzx_error_string ( load_err ) );
-                for ( uint32_t j = 0; j < mzf_count; j++ ) mzf_free ( mzfs[j] );
+                free_inputs ( mzfs, mzf_count, unicmt_blocks, unicmt_count, unicmt_speed );
                 return EXIT_FAILURE;
             }
             old_block_count = tmz_file->block_count;
@@ -727,7 +1134,7 @@ int main ( int argc, char *argv[] ) {
         tmz_file = calloc ( 1, sizeof ( st_TZX_FILE ) );
         if ( !tmz_file ) {
             fprintf ( stderr, "Error: memory allocation failed\n" );
-            for ( uint32_t j = 0; j < mzf_count; j++ ) mzf_free ( mzfs[j] );
+            free_inputs ( mzfs, mzf_count, unicmt_blocks, unicmt_count, unicmt_speed );
             return EXIT_FAILURE;
         }
         tmz_header_init ( &tmz_file->header );
@@ -738,11 +1145,23 @@ int main ( int argc, char *argv[] ) {
     int use_turbo = ( format != TMZ_FORMAT_NORMAL || speed_byte != ( uint8_t ) CMTSPEED_1_1 );
 
     for ( uint32_t idx = 0; idx < mzf_count; idx++ ) {
-        st_TZX_BLOCK *block = create_block_for_mzf ( mzfs[idx], machine, pulseset,
-                                                       format, speed_byte, pause_ms );
+        st_TZX_BLOCK *block = NULL;
+        if ( unicmt_blocks ) {
+            block = unicmt_blocks[idx];   /* vlastnictví přechází na tmz_file */
+            unicmt_blocks[idx] = NULL;
+        } else if ( profile_id ) {
+            en_TMZ_PROFILE_ERROR perr = TMZ_PROFILE_OK;
+            block = tmz_profile_build_block ( profile_id, &profile_args, &mzfs[idx]->header,
+                                              mzfs[idx]->body, mzfs[idx]->body_size, &perr );
+            if ( !block ) {
+                fprintf ( stderr, "Error: profile %s: %s\n", profile_id, tmz_profile_error_string ( perr ) );
+            }
+        } else {
+            block = create_block_for_mzf ( mzfs[idx], machine, pulseset, format, speed_byte, pause_ms );
+        }
         if ( !block ) {
             fprintf ( stderr, "Error: failed to create TMZ block from MZF #%u\n", idx + 1 );
-            for ( uint32_t j = 0; j < mzf_count; j++ ) mzf_free ( mzfs[j] );
+            free_inputs ( mzfs, mzf_count, unicmt_blocks, unicmt_count, unicmt_speed );
             tzx_free ( tmz_file );
             return EXIT_FAILURE;
         }
@@ -751,11 +1170,16 @@ int main ( int argc, char *argv[] ) {
         if ( tmz_err != TZX_OK ) {
             fprintf ( stderr, "Error: failed to append block: %s\n", tzx_error_string ( tmz_err ) );
             tmz_block_free ( block );
-            for ( uint32_t j = 0; j < mzf_count; j++ ) mzf_free ( mzfs[j] );
+            free_inputs ( mzfs, mzf_count, unicmt_blocks, unicmt_count, unicmt_speed );
             tzx_free ( tmz_file );
             return EXIT_FAILURE;
         }
         free ( block ); /* wrapper uvolnit, data vlastni tmz_file */
+    }
+
+    /* blok 0x46 vyžaduje verzi formátu 1.1 (spec kap. 2), i u existujícího souboru 1.0 */
+    if ( profile_id && tmz_file->header.ver_major == 1 && tmz_file->header.ver_minor < 1 ) {
+        tmz_file->header.ver_minor = 1;
     }
 
     /* zapis vystupniho souboru */
@@ -767,7 +1191,7 @@ int main ( int argc, char *argv[] ) {
                                                     (char*) output_file, FILE_DRIVER_OPMODE_W );
     if ( !h_out ) {
         fprintf ( stderr, "Error: cannot create output file '%s'\n", output_file );
-        for ( uint32_t j = 0; j < mzf_count; j++ ) mzf_free ( mzfs[j] );
+        free_inputs ( mzfs, mzf_count, unicmt_blocks, unicmt_count, unicmt_speed );
         tzx_free ( tmz_file );
         return EXIT_FAILURE;
     }
@@ -777,7 +1201,7 @@ int main ( int argc, char *argv[] ) {
 
     if ( save_err != TZX_OK ) {
         fprintf ( stderr, "Error: failed to write TMZ file: %s\n", tzx_error_string ( save_err ) );
-        for ( uint32_t j = 0; j < mzf_count; j++ ) mzf_free ( mzfs[j] );
+        free_inputs ( mzfs, mzf_count, unicmt_blocks, unicmt_count, unicmt_speed );
         tzx_free ( tmz_file );
         return EXIT_FAILURE;
     }
@@ -800,7 +1224,11 @@ int main ( int argc, char *argv[] ) {
                  mzfs[idx]->header.fsize,
                  mzfs[idx]->header.fstrt, mzfs[idx]->header.fexec );
 
-        if ( use_turbo ) {
+        if ( unicmt_blocks ) {
+            printf ( "  -> 0x46 UNICMT %s\n", unicmt_speed_name ( unicmt_speed[idx] ) );
+        } else if ( profile_id ) {
+            printf ( "  -> 0x46 %s\n", profile_id );
+        } else if ( use_turbo ) {
             if ( format == TMZ_FORMAT_FSK ) {
                 printf ( "  -> 0x41 %s level %d\n", format_name ( format ), speed_byte );
             } else if ( format == TMZ_FORMAT_SLOW ) {
@@ -816,6 +1244,14 @@ int main ( int argc, char *argv[] ) {
         }
     }
 
+    if ( profile_id ) {
+        printf ( "\n  Profile  : %s\n", profile_id );
+        if ( machine_set ) printf ( "  Machine  : %s\n", machine_name ( machine ) );
+        printf ( "  Pause    : %u ms\n", pause_ms );
+        free_inputs ( mzfs, mzf_count, unicmt_blocks, unicmt_count, unicmt_speed );
+        tzx_free ( tmz_file );
+        return EXIT_SUCCESS;
+    }
     printf ( "\n  Machine  : %s\n", machine_name ( machine ) );
     printf ( "  Pulseset : %s\n", pulseset_name ( pulseset ) );
     printf ( "  Format   : %s\n", format_name ( format ) );

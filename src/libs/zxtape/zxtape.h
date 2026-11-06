@@ -1,14 +1,14 @@
 /**
  * @file   zxtape.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.0
+ * @version 2.0.1
  * @brief  Veřejné API knihovny zxtape pro konverzi ZX Spectrum TAP bloků na CMT streamy.
  *
  * Poskytuje typy, enumy, alokátor, error callback a funkce pro generování
  * CMT audio streamů (bitstream/vstream) z TAP bloků ZX Spectra.
  *
  * @par Changelog:
- * - 2026-03-14: Proběhla kompletní revize a refaktorizace. Vytvořeny unit testy.
+ * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -178,7 +178,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny zxtape. */
-#define ZXTAPE_VERSION "2.0.0"
+#define ZXTAPE_VERSION "2.0.1"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny zxtape.

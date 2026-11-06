@@ -1,7 +1,7 @@
 /**
  * @file   tmz_player.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.4.0
  * @brief  Verejne API TMZ playeru - generovani CMT audio streamu z TMZ/TZX bloku.
  *
  * Player iteruje bloky TMZ/TZX souboru a generuje CMT audio stream
@@ -61,6 +61,7 @@ extern "C" {
         TMZ_PLAYER_ERROR_UNSUPPORTED,    /**< nepodporovany typ bloku */
         TMZ_PLAYER_ERROR_STREAM_CREATE,  /**< chyba pri vytvareni CMT streamu */
         TMZ_PLAYER_ERROR_ALLOC,          /**< selhani alokace pameti */
+        TMZ_PLAYER_ERROR_UNREADABLE,     /**< signál by po převodu na vzorky čtecí rutina nepřečetla */
     } en_TMZ_PLAYER_ERROR;
 
 
@@ -71,6 +72,8 @@ extern "C" {
         en_MZTAPE_PULSESET default_pulseset; /**< vychozi pulsni sada (pokud neni v bloku) */
         en_CMTSPEED default_speed;       /**< vychozi rychlost (pokud neni v bloku) */
         en_MZTAPE_FORMATSET default_formatset; /**< vychozi format zaznamu */
+        uint32_t mz_cpu_clock;           /**< takt CPU z posledního bloku 0x43 (Hz) = výchozí časová základna částí bloku 0x46 bez TIMEBASE (spec 5.3); 0 = 3 546 895 */
+        int v1_convert;                  /**< 1 = bloky 0x40, 0x41, 0x45 převést v paměti na 0x46 (spec 9.1, tmz_v1conv), nepřevoditelné hrát cestou v1.0; 0 = cesta v1.0 (0x41 CPM_TAPE a 0x45 se převádějí vždy) */
     } st_TMZ_PLAYER_CONFIG;
 
 
@@ -79,7 +82,8 @@ extern "C" {
      *
      * Nastavi: sample_rate = 44100, stream_type = vstream,
      * default_pulseset = MZ-800, default_speed = 1:1,
-     * default_formatset = MZ800_SANE.
+     * default_formatset = MZ800_SANE, mz_cpu_clock = 0 (3 546 895 Hz),
+     * v1_convert = 1 (bloky v1.0 přes převod na 0x46).
      *
      * @param config Ukazatel na konfiguraci k inicializaci.
      *
@@ -93,7 +97,8 @@ extern "C" {
      * @brief Prehaje jeden MZ Standard Data blok (0x40) na CMT stream.
      *
      * Vytvori st_MZTAPE_MZF z dat bloku a pouzije mztape knihovnu
-     * pro generovani CMT streamu ve standardni rychlosti 1:1.
+     * pro generovani CMT streamu ve standardni rychlosti 1:1. Za signál
+     * připojí pause_ms bloku jako ticho na nízké úrovni (jen vstream).
      *
      * @param block TMZ blok s ID 0x40.
      * @param config Konfigurace playeru.
@@ -111,50 +116,94 @@ extern "C" {
      *
      * Dispatcher - podle pole format v bloku zvoli prislusny koder:
      * NORMAL (mztape), TURBO (mzcmt_turbo), FASTIPL (mzcmt_fastipl),
-     * FSK (mzcmt_fsk), SLOW (mzcmt_slow), DIRECT (mzcmt_direct),
-     * CPM-TAPE (mzcmt_cpmtape).
+     * FSK (mzcmt_fsk), SLOW (mzcmt_slow), DIRECT (mzcmt_direct). CPM-TAPE
+     * se vždy převede na 0x46 PEZIK-2.0A (tmz_v1conv) a přehraje jako 0x46
+     * (kodér v1.0 odstraněn). Za signál připojí pause_ms bloku jako
+     * ticho na nízké úrovni (jen vstream).
+     *
+     * FSK, SLOW a DIRECT při vzorkovací frekvenci, kterou emulátor změřil
+     * jako nečitelnou, vrátí NULL
+     * a TMZ_PLAYER_ERROR_UNREADABLE; při nezměřené frekvenci se přehrají
+     * s varováním přes error callback.
      *
      * @param block TMZ blok s ID 0x41.
      * @param config Konfigurace playeru.
      * @param err Vystupni chybovy kod (muze byt NULL).
      * @return Novy CMT stream, nebo NULL pri chybe.
      *
-     * @pre block nesmi byt NULL a musi mit id == TMZ_BLOCK_ID_MZ_TURBO_DATA.
-     * @post Volajici je vlastnikem vraceneho streamu a musi ho uvolnit pres cmt_stream_destroy().
+     * @pre block nesmí být NULL a musí mít id == TMZ_BLOCK_ID_MZ_TURBO_DATA.
+     * @post Volající je vlastníkem vráceného streamu a musí ho uvolnit přes cmt_stream_destroy().
      */
     extern st_CMT_STREAM* tmz_player_play_mz_turbo ( const st_TZX_BLOCK *block, const st_TMZ_PLAYER_CONFIG *config, en_TMZ_PLAYER_ERROR *err );
 
 
     /**
-     * @brief Prehaje jeden MZ BASIC Data blok (0x45) na CMT stream.
+     * @brief Přehraje jeden MZ BASIC Data blok (0x45) na CMT stream.
      *
-     * BSD/BRD chunkovany format - pouzije mzcmt_bsd koder.
-     * Generuje kompletni signal vcetne hlavicky, tapemarkeru
-     * a jednotlivych chunku jako body bloku.
+     * Blok se vždy převede na 0x46 s profilem BASIC-1Z016 (tmz_v1conv_block,
+     * spec 9.2) a přehraje jako 0x46, i při v1_convert = 0.
+     * Generátor v1.0 (mzcmt_bsd) se nepoužívá: BASIC jeho výstup za prvním
+     * kusem nepřečetl. Pauza bloku je pauzou poslední části.
      *
      * @param block TMZ blok s ID 0x45.
      * @param config Konfigurace playeru.
-     * @param err Vystupni chybovy kod (muze byt NULL).
-     * @return Novy CMT stream, nebo NULL pri chybe.
+     * @param err Výstupní chybový kód (může být NULL): TMZ_PLAYER_ERROR_UNSUPPORTED,
+     *        když blok nejde převést (poškozený, žádný kus nebo víc než 254 kusů),
+     *        jinak jako tmz_player_play_mz_file().
+     * @return Nový CMT stream, nebo NULL při chybě.
      *
-     * @pre block nesmi byt NULL a musi mit id == TMZ_BLOCK_ID_MZ_BASIC_DATA.
-     * @post Volajici je vlastnikem vraceneho streamu a musi ho uvolnit pres cmt_stream_destroy().
+     * @pre block nesmí být NULL a musí mít id == TMZ_BLOCK_ID_MZ_BASIC_DATA.
+     * @post Volající je vlastníkem vráceného streamu a musí ho uvolnit přes cmt_stream_destroy().
      */
     extern st_CMT_STREAM* tmz_player_play_mz_basic ( const st_TZX_BLOCK *block, const st_TMZ_PLAYER_CONFIG *config, en_TMZ_PLAYER_ERROR *err );
 
 
     /**
+     * @brief Přehraje blok 0x46 MZ File (TMZ v1.1).
+     *
+     * Části se přehrají v pořadí do jednoho vstreamu (rodina FM přes
+     * mzcmt_fm_append_vstream, rodina MANCHESTER přes
+     * mzcmt_manch_append_vstream, akumulace času v každé části). Počáteční
+     * úroveň vstreamu je úroveň první půlvlny první přehrané části. Část bez
+     * TIMEBASE dostane časovou základnu config->mz_cpu_clock (0 = 3 546 895).
+     * Část neznámé rodiny nebo s chybou TLV se nepřehraje, chyba se ohlásí
+     * přes error callback a pokračuje se další částí (spec 4.4). STOP se
+     * zatím nepoužívá (signál zastavení pro emulátor, krok 9 roadmapy).
+     *
+     * Části FM s READER se před generováním zkontrolují při výstupní
+     * vzorkovací frekvenci (tmz_part_fm_check_reader, spec 5.6): rezerva
+     * pod 0 = celý blok se odmítne (TMZ_PLAYER_ERROR_UNREADABLE), rezerva pod
+     * TMZ_READER_MIN_MARGIN_US = varování přes error callback, část se
+     * přehraje.
+     *
+     * @param block Blok s ID 0x46.
+     * @param config Konfigurace (vzorkovací frekvence, typ streamu, mz_cpu_clock).
+     * @param[out] err TMZ_PLAYER_OK; TMZ_PLAYER_ERROR_UNSUPPORTED (neplatný blok
+     *        nebo žádná přehratelná část); TMZ_PLAYER_ERROR_UNREADABLE (část
+     *        nečitelná při dané vzorkovací frekvenci); TMZ_PLAYER_ERROR_STREAM_CREATE;
+     *        TMZ_PLAYER_ERROR_ALLOC; TMZ_PLAYER_ERROR_NULL_INPUT.
+     * @return Nový stream (uvolnit cmt_stream_destroy()), nebo NULL.
+     */
+    extern st_CMT_STREAM* tmz_player_play_mz_file ( const st_TZX_BLOCK *block, const st_TMZ_PLAYER_CONFIG *config,
+                                                    en_TMZ_PLAYER_ERROR *err );
+
+
+    /**
      * @brief Prehaje libovolny TZX audio blok na CMT stream.
      *
-     * Deleguje parsovani a generovani na TZX knihovnu (tzx.h).
+     * Deleguje parsovani a generovani na TZX knihovnu (tzx_generate_block).
      * Podporuje bloky: 0x10 (Standard Speed), 0x11 (Turbo Speed),
      * 0x12 (Pure Tone), 0x13 (Pulse Sequence), 0x14 (Pure Data),
-     * 0x15 (Direct Recording), 0x20 (Pause).
+     * 0x15 (Direct Recording), 0x20 (Pause). Signál začíná nízko a první
+     * pulz je vysoko, tedy s hranou (TZX_LEVEL_AFTER_PAUSE, jako ZX); úroveň
+     * mezi bloky drží jen tmz_player_play_next().
      *
      * @param block TMZ blok s TZX audio ID.
      * @param config Konfigurace playeru.
-     * @param err Vystupni chybovy kod (muze byt NULL).
-     * @return Novy CMT stream, nebo NULL pri chybe / ridici blok.
+     * @param err Vystupni chybovy kod (muze byt NULL): TMZ_PLAYER_OK (i u Pause 0);
+     *        TMZ_PLAYER_ERROR_NULL_INPUT; TMZ_PLAYER_ERROR_UNSUPPORTED (jiné ID);
+     *        TMZ_PLAYER_ERROR_STREAM_CREATE; TMZ_PLAYER_ERROR_ALLOC.
+     * @return Novy CMT stream, nebo NULL pri chybe / Pause 0.
      *
      * @pre block nesmi byt NULL.
      * @post Volajici je vlastnikem vraceneho streamu a musi ho uvolnit pres cmt_stream_destroy().
@@ -167,6 +216,12 @@ extern "C" {
      *
      * Dispatcher - podle ID bloku zavola prislusnou specializovanou funkci.
      * Ridici bloky (pause, group, loop) jsou zpracovany, ale nevytvareji stream.
+     * Bloky v1.0 se při config->v1_convert převedou v paměti na 0x46. Bloky
+     * 0x42, 0x44 a rezervované 0x47-0x4F se přeskočí s varováním přes
+     * error callback (NULL a TMZ_PLAYER_OK). Pause 0 vrátí NULL a TMZ_PLAYER_OK;
+     * signál zastavení pásky dává jen tmz_player_play_next(). Blok TZX začíná
+     * úrovní TZX_LEVEL_AFTER_PAUSE (signál nízko, první pulz s hranou; úroveň
+     * mezi bloky drží tmz_player_play_next()).
      *
      * @param block TMZ blok k prehrani.
      * @param config Konfigurace playeru.
@@ -261,7 +316,17 @@ extern "C" {
         st_TMZ_PLAYER_CALL_ENTRY call_stack[TMZ_PLAYER_MAX_CALL_DEPTH];
         int call_depth;                  /**< aktualni hloubka vnoreni volani */
 
-        uint8_t signal_level;            /**< aktualni uroven signalu (0=LOW, 1=HIGH) */
+        bool stopped;                    /**< true = poslední tmz_player_play_next() skončilo příkazem
+                                              zastavení pásky (Pause 0 nebo 0x2A) a vrátilo NULL
+                                              s TMZ_PLAYER_OK; další volání pokračuje za ním a vynuluje
+                                              ho. Invariant: stopped => !finished */
+        uint8_t signal_level;            /**< úroveň dalšího pulzu bloku TZX (0=LOW, 1=HIGH,
+                                              TZX_LEVEL_AFTER_PAUSE = signál nízko, další pulz s hranou):
+                                              start TZX_LEVEL_AFTER_PAUSE, mění ji bloky TZX (po pauze
+                                              TZX_LEVEL_AFTER_PAUSE) a 0x2B; po bloku MZ s výstupem
+                                              vstream opak poslední hodnoty vstreamu, končí-li blok
+                                              tichem na nízké úrovni (pause_ms, pauza poslední části
+                                              0x46) TZX_LEVEL_AFTER_PAUSE */
         bool finished;                   /**< prehravani dokonceno */
     } st_TMZ_PLAYER_STATE;
 
@@ -270,7 +335,8 @@ extern "C" {
      * @brief Inicializuje stav playeru pro prehrani daneho souboru.
      *
      * Nastavi pocatecni pozici na blok 0, prazdne zasobniky,
-     * signal_level = 0 (LOW), finished = false.
+     * signal_level = TZX_LEVEL_AFTER_PAUSE (signál nízko, první pulz s hranou),
+     * finished = false.
      *
      * @param state   Stav k inicializaci.
      * @param file    TMZ/TZX soubor (musi zustat platny po celou dobu prehravani).
@@ -291,8 +357,18 @@ extern "C" {
      * Call Sequence/Return, Set Signal Level, Group Start/End)
      * a vraci CMT stream az pri narazeni na audio blok.
      *
+     * Úroveň signálu drží mezi bloky ve state->signal_level: blok TZX
+     * začíná aktuální úrovní a po něm platí úroveň podle TZX 1.20, kromě
+     * pauzy: po ní první pulz vytvoří hranu (TZX_LEVEL_AFTER_PAUSE, jako ZX),
+     * takže se hrany na přechodu bloků neztrácejí.
+     *
      * Pokud je prehravani dokonceno (vsechny bloky zpracovany),
      * vraci NULL s TMZ_PLAYER_OK a nastavi state->finished = true.
+     *
+     * Pause 0 a 0x2A zastaví pásku: NULL s TMZ_PLAYER_OK,
+     * state->stopped = true (tmz_player_state_stopped()), finished zůstane
+     * false; další volání pokračuje za blokem zastavení. Rezervované bloky
+     * 0x47-0x4F se přeskočí s varováním.
      *
      * Index prave prehravaneho bloku je dostupny pres
      * state->last_played_block po navratu.
@@ -316,6 +392,19 @@ extern "C" {
      * @return true pokud vsechny bloky byly zpracovany, false jinak.
      */
     extern bool tmz_player_state_finished ( const st_TMZ_PLAYER_STATE *state );
+
+
+    /**
+     * @brief Zjistí, zda poslední tmz_player_play_next() zastavilo pásku.
+     *
+     * Pause 0 a blok 0x2A jsou příkaz zastavení pásky (pro emulátor). Index
+     * bloku zastavení je v state->last_played_block. Převod do WAV zastavení
+     * ignoruje a pokračuje dalším voláním.
+     *
+     * @param state Stav playeru (NULL = false).
+     * @return true pokud poslední volání skončilo zastavením pásky.
+     */
+    extern bool tmz_player_state_stopped ( const st_TMZ_PLAYER_STATE *state );
 
 /** @} */
 

@@ -6,7 +6,7 @@
  * 1. Vytvori testovaci MZF v pameti (telo 256B: 0x00-0xFF)
  * 2. Zakoduje jako kompletni tape signal (preloader + loader + DIRECT data)
  *    pres mzcmt_direct_create_tape_stream
- * 3. Ulozi do WAV souboru (tstdata/mzftools-direct.wav)
+ * 3. Ulozi do WAV souboru (temp/mzftools-direct.wav; generuje mzcmt_direct, ne mzftools)
  * 4. Nacte WAV zpet a dekoduje pres wav_analyzer
  * 5. Porovna originalni a dekodovana data
  *

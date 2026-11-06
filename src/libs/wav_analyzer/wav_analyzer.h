@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.6.0
+ * @version 1.12.0
  * @brief  Hlavní API knihovny wav_analyzer - orchestrace všech vrstev.
  *
  * Poskytuje vysokoúrovňové API pro analýzu WAV nahrávek magnetofonových
@@ -59,11 +59,24 @@ extern "C" {
 #include "wav_decode_fastipl.h"
 #include "wav_decode_bsd.h"
 #include "wav_decode_cpmtape.h"
+#include "wav_decode_cpmtape.h"
 #include "wav_decode_fsk.h"
 #include "wav_decode_slow.h"
 #include "wav_decode_direct.h"
 #include "wav_decode_zx.h"
 
+
+    /**
+     * @brief Program, který záznam zapsal (rozpoznaný z délky tónu a parametrů na pásce).
+     *
+     * Slouží k volbě profilu bloku 0x46 (TC-1.21, IC-10.2-*). UNKNOWN = zapisovač
+     * nejde určit nebo na volbě bloku nezáleží (ROM, BASIC, mzftools, ...).
+     */
+    typedef enum en_WAV_WRITER {
+        WAV_WRITER_UNKNOWN = 0,   /**< neurčen; blok podle formátu jako dřív */
+        WAV_WRITER_TURBOCOPY,     /**< TurboCopy V1.2x: tón počet x S = 3 495 500, poměr v tc_a/tc_b */
+        WAV_WRITER_INTERCOPY,     /**< Intercopy V10.2: tón 11000 (hlavička) / 5500 (tělo), rychlost v ic_bd */
+    } en_WAV_WRITER;
 
     /**
      * @brief Výsledek analýzy jednoho MZF souboru z WAV.
@@ -94,6 +107,19 @@ extern "C" {
         double long_pulse_us;              /**< naměřená délka dlouhého pulzu (us), 0 = neznámo */
         double start_time_sec;             /**< absolutní čas začátku bloku ve WAV (sekundy od začátku souboru) */
         double duration_sec;               /**< délka bloku v sekundách (od header leaderu po consumed_until) */
+        uint8_t cpmtape_variant;           /**< CPM-TAPE: en_WAV_CPMTAPE_VARIANT (jinak WAV_CPMTAPE_NONE) */
+        uint16_t cpmtape_bd;               /**< CPM-TAPE: rychlost 2400/3200 Bd (jinak 0) */
+        uint32_t bsd_chunks;               /**< BSD: počet přečtených kusů (jinak 0) */
+        uint32_t bsd_crc_errors;           /**< BSD: kusy bez platné kopie (chyba CRC v obou kopiích nebo kopie chybí) */
+        uint32_t bsd_from_copy;            /**< BSD: kusy, jejichž data jsou z kopie (1. kopie s chybou CRC) */
+        int fsl_speed;                     /**< FSK/SLOW: úroveň rychlosti (FSK 0-6, SLOW 0-4) podle bajtu
+                                                zpoždění v těle zavaděče a vzorkovací frekvence WAV;
+                                                -1 = bajt neodpovídá žádné úrovni. Pro jiné formáty
+                                                nemá význam (0). */
+        en_WAV_WRITER writer;              /**< rozpoznaný zapisovač (NORMAL, TURBO, FASTIPL), jinak UNKNOWN */
+        uint8_t tc_a;                      /**< TURBOCOPY: čitatel poměru a/b v základním tvaru (1-9) */
+        uint8_t tc_b;                      /**< TURBOCOPY: jmenovatel poměru a/b (1-9) */
+        uint16_t ic_bd;                    /**< INTERCOPY: rychlost 600, 1200, 2400, 2800, 3200 (popisek v Bd) */
     } st_WAV_ANALYZER_FILE_RESULT;
 
 
@@ -177,7 +203,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny wav_analyzer. */
-#define WAV_ANALYZER_VERSION "1.6.0"
+#define WAV_ANALYZER_VERSION "1.12.0"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny wav_analyzer.
