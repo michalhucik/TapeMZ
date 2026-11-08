@@ -1,7 +1,7 @@
 /**
  * @file   tmz.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.11.0
+ * @version 1.12.0
  * @brief  Implementace TMZ knihovny - MZ-specificka nadstavba nad TZX.
  *
  * Obsahuje funkce specificke pro TMZ format:

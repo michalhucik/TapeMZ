@@ -5,7 +5,10 @@ adresáře. BUILD_DIR je adresář s binárkami (výchozí <repozitář>/build),
 make test ho předává. Dočasné soubory jsou v BUILD_DIR/temp/cli, testovací
 data v <repozitář>/tstdata. Výpis je anglicky.
 """
+import math
 import os
+import random
+import re
 import shutil
 import struct
 import subprocess
@@ -706,6 +709,243 @@ rc3, o3 = run_tool("wav2tmz", wav, "--output-format", "tmz", "-o", out)
 info = run_tool("tmzinfo", out)[1] if os.path.exists(out) else ""
 check(rc2 == 0 and rc3 == 0 and "ID 0x11" in info, "wav2tmz decodes ZX with a 930 us pilot (SINCLAIR 900 Bd)",
       o2 + o3 + info)
+
+# --- wav2tmz: obnova poškozené nahrávky (poškození simulované ve WAV)
+REC_S_US, REC_L_US = 518.0, 964.0   # délka pulzu S a L profilu ROM-800-NOMINAL
+REC_RATE = 44100
+
+
+def rec_section(data):
+    """Délka sekce ROM (data + checksum + 1 L) ve vzorcích."""
+    ones = sum(bin(b).count("1") for b in data)
+    whole = data + bytes(((ones >> 8) & 255, ones & 255))
+    ones = sum(bin(b).count("1") for b in whole)
+    longs = len(whole) + ones + 1
+    shorts = 8 * len(whole) - ones
+    return (longs * REC_L_US + shorts * REC_S_US) * REC_RATE / 1e6
+
+
+def rec_tape(name, mzf_bytes):
+    """Nahrávka ROM: vrátí (adresář, hlavička WAV, vzorky, vzorek začátku 1. kopie těla, délka sekce)."""
+    d = os.path.join(TMP, "rec-" + name)
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    src, tmz, wav = (os.path.join(d, n) for n in ("in.mzf", "x.tmz", "x.wav"))
+    open(src, "wb").write(mzf_bytes)
+    run_tool("mzf2tmz", src, tmz, "--profile", "ROM-800-NOMINAL")
+    run_tool("tmz2wav", tmz, wav)
+    head, samples = wav_pcm8(wav)
+    end = len(samples) - 1
+    while end > 0 and samples[end] == samples[end - 1]:
+        end -= 1
+    sec = rec_section(mzf_bytes[128:])
+    body1 = end - sec - 256 * REC_S_US * REC_RATE / 1e6 - sec
+    return d, head, samples, int(body1), sec
+
+
+def rec_run(d, head, samples, *args):
+    """Uloží poškozené vzorky a spustí wav2tmz: vrátí (výstup, počet souborů, obsah MZF souborů)."""
+    wav = os.path.join(d, "cut.wav")
+    for f in os.listdir(d):
+        if f.startswith("out"):
+            os.remove(os.path.join(d, f))
+    save_pcm8(wav, head, samples)
+    rc, o = run_tool("wav2tmz", wav, "-o", os.path.join(d, "out.mzf"), *args)
+    n = 0
+    for line in o.splitlines():
+        if line.startswith("Files decoded:"):
+            n = int(line.split(":")[1])
+    files = [read(os.path.join(d, f)) for f in sorted(os.listdir(d)) if f.startswith("out") and f.endswith(".mzf")]
+    return o, n, files
+
+
+cut_mzf = mzf_big(b"CUT", fsize=1024)
+d, head, samples, body1, sec = rec_tape("cut", cut_mzf)
+cut = samples[:int(body1 + sec * 0.6)]
+o, n, files = rec_run(d, head, cut)
+check(n == 0 and 'Header "CUT" found' in o and "use --recover-body" in o,
+      "wav2tmz reports a header whose body was cut off, without --verbose", o)
+got = re.search(r"\((\d+) bytes read\)", o)
+read_n = int(got.group(1)) if got else 0
+o, n, files = rec_run(d, head, cut, "--recover-body")
+ok = n == 1 and len(files) == 1 and len(files[0]) == 128 + 1024 and 400 < read_n < 800
+ok = ok and files[0][128:128 + read_n - 1] == cut_mzf[128:128 + read_n - 1] and files[0][128 + read_n:] == bytes(1024 - read_n)
+check(ok and "[RECOVERED" in o, "wav2tmz --recover-body keeps a cut body and fills the rest with 00h", o)
+
+# tělo přemazané dalším záznamem: další soubor se nesmí ztratit
+big_a = mzf_big(b"AAA", fsize=4096)
+d, head, samples, body1, sec = rec_tape("over", big_a)
+d2, head2, samples2, _, _ = rec_tape("over2", mzf_big(b"BBB", fsize=256))
+spliced = samples[:int(body1 + sec * 0.25)] + samples2
+o, n, files = rec_run(d, head, spliced, "--recover-body")
+first_part = o[o.find("--- File #1"):o.find("--- File #2")]
+second_part = o[o.find("--- File #2"):]
+check(n == 2 and "RECOVERED: partial body" in first_part and '"BBB' in second_part and "Body CRC: OK" in second_part
+      and "RECOVERED: partial" not in second_part,
+      "wav2tmz --recover-body stops at the tone of the next recording", o)
+
+# popis obnovy ve výpisu a v bloku 0x30
+d, head, samples, body1, sec = rec_tape("desc", cut_mzf)
+wav = os.path.join(d, "cut.wav")
+save_pcm8(wav, head, samples[:int(body1 + sec * 0.6)])
+out = os.path.join(d, "r.tmz")
+rc, o = run_tool("wav2tmz", wav, "--output-format", "tmz", "-o", out, "--recover")
+info = run_tool("tmzinfo", out)[1] if os.path.exists(out) else ""
+m = re.search(r"\[RECOVERED: partial body (\d+)/1024\]", o)
+check(m is not None and ("partial body (%s of 1024 bytes read, rest filled with 00h)" % (m.group(1) if m else "?")) in info,
+      "wav2tmz describes a partial body in the summary and in block 0x30", o + info)
+
+
+# --- matice simulovaných poškození: co nahrávka ROM (kopie hlavičky i těla) ustojí
+def rec_noise(samples, at, n, seed=1):
+    """Šumový impulz: n náhodných vzorků od pozice at."""
+    rnd = random.Random(seed)
+    at = int(at)
+    return samples[:at] + bytes(rnd.randrange(256) for _ in range(n)) + samples[at + n:]
+
+
+def rec_dropout(samples, at, n):
+    """Výpadek signálu: n vzorků ticha (úroveň 128) od pozice at."""
+    at = int(at)
+    return samples[:at] + bytes([128]) * n + samples[at + n:]
+
+
+def rec_fade(samples, frm, to, gain):
+    """Slabý signál: amplituda úseku vynásobená gain."""
+    frm, to = int(frm), int(to)
+    part = bytes(max(0, min(255, int(128 + (b - 128) * gain))) for b in samples[frm:to])
+    return samples[:frm] + part + samples[to:]
+
+
+def rec_speed(samples, drift):
+    """Kolísání rychlosti pásky: drift(i) je okamžitý násobek rychlosti vzorku i."""
+    res = bytearray()
+    pos = 0.0
+    while int(pos) < len(samples):
+        res.append(samples[int(pos)])
+        pos += drift(len(res))
+    return bytes(res)
+
+
+rec_mzf = mzf_big(b"SIM", fsize=1024)
+d, head, samples, body1, sec = rec_tape("sim", rec_mzf)
+first = next(i for i in range(1, len(samples)) if samples[i] != samples[i - 1])
+us = REC_RATE / 1e6
+hdr_sec = rec_section(rec_mzf[:128])
+hdr1 = first + (11000 * REC_S_US + 40 * REC_L_US + 40 * REC_S_US + 2 * REC_L_US) * us
+hdr_end = hdr1 + hdr_sec + 256 * REC_S_US * us + hdr_sec
+body2 = body1 + sec + 256 * REC_S_US * us
+amp = lambda s: rec_fade(s, body1, body1 + sec, 0.15)
+SIM = [
+    # (název, poškozené vzorky, volby, očekávaný počet souborů, text ve výstupu, text, který ve výstupu být nesmí)
+    ("cut in the 1st header copy", samples[:int(hdr1 + hdr_sec * 0.5)], ["--recover"], 0, "Header incomplete", None),
+    ("cut between header and body, no options", samples[:int(hdr_end + 300)], [], 0, "use --recover-header", None),
+    ("cut between header and body, --recover", samples[:int(hdr_end + 300)], ["--recover"], 1, "RECOVERED: header only", None),
+    ("cut after a header damaged in both copies, --recover",
+     rec_noise(rec_noise(samples, hdr1 + hdr_sec * 0.3, 200), hdr1 + hdr_sec + 256 * REC_S_US * us + hdr_sec * 0.6, 200, 3)[:int(hdr_end + 300)],
+     ["--recover"], 0, "cannot be kept", "use --recover-header"),
+    ("cut in the 2nd body copy", samples[:int(body2 + sec * 0.5)], [], 1, "Body CRC: OK", "RECOVERED"),
+    ("noise burst in the 1st body copy", rec_noise(samples, body1 + sec * 0.3, 400), [], 1, "Copy2: yes", None),
+    ("dropout in the 1st body copy", rec_dropout(samples, body1 + sec * 0.3, 400), [], 1, "Copy2: yes", None),
+    ("noise burst in the 1st header copy", rec_noise(samples, hdr1 + hdr_sec * 0.3, 200), [], 1, "Header CRC: OK", None),
+    ("noise burst in both body copies", rec_noise(rec_noise(samples, body1 + sec * 0.3, 400), body2 + sec * 0.6, 400, 2), [],
+     1, "Body CRC: ERROR", "RECOVERED"),
+    ("noise burst in the tone", rec_noise(samples, first + 40000, 2000), [], 1, "Body CRC: OK", None),
+    ("weak signal over the 1st body copy", amp(samples), [], 1, "Body CRC: OK", None),
+    ("tape 6 % fast", rec_speed(samples, lambda i: 1.06), [], 1, "Body CRC: OK", None),
+    ("wow and flutter +-2 %", rec_speed(samples, lambda i: 1 + 0.02 * math.sin(i / 3000.0)), [], 1, "Body CRC: OK", None),
+]
+for name, damaged, opts, want_n, want, deny in SIM:
+    o, n, files = rec_run(d, head, damaged, *opts)
+    check(n == want_n and want in o and (deny is None or deny not in o), "damage simulation: " + name, o)
+
+
+two = rec_dropout(rec_dropout(samples, body2 + sec * 0.7, 300), body1 + sec * 0.2, 300)
+o, n, files = rec_run(d, head, two)
+check(n == 1 and "Body CRC: ERROR" in o and "copies merged" not in o, "dropout in both body copies without --recover-body stays damaged", o)
+o, n, files = rec_run(d, head, two, "--recover-body")
+check(n == 1 and "Body CRC: OK" in o and "copies merged" in o and len(files) == 1 and files[0][128:] == rec_mzf[128:],
+      "--recover-body merges two damaged body copies", o)
+out = os.path.join(d, "m.tmz")
+run_tool("wav2tmz", os.path.join(d, "cut.wav"), "--output-format", "tmz", "-o", out, "--recover-body")
+info = run_tool("tmzinfo", out)[1] if os.path.exists(out) else ""
+check("merged from two damaged copies" in info and "ID 0x40" in info, "merged body is described in block 0x30 and stays block 0x40", info)
+
+
+# --- useknuté tělo ostatních formátů
+def rec_cut_format(name, mzf_args):
+    """Tělo useknuté 1,2 s před koncem signálu: bez volby nic, s --recover-body data + nuly."""
+    d, head, samples = None, None, None
+    src_mzf = mzf_big(b"FMT", fsize=1024)
+    d = os.path.join(TMP, "rec-" + name)
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    src, tmz, wav = (os.path.join(d, n) for n in ("in.mzf", "x.tmz", "x.wav"))
+    open(src, "wb").write(src_mzf)
+    run_tool("mzf2tmz", src, tmz, *mzf_args)
+    run_tool("tmz2wav", tmz, wav)
+    head, samples = wav_pcm8(wav)
+    end = len(samples) - 1
+    while end > 0 and samples[end] == samples[end - 1]:
+        end -= 1
+    cut = samples[:end - int(1.2 * REC_RATE)]
+    o, n, files = rec_run(d, head, cut)
+    check("partial body" not in o, "cut %s without --recover-body is not kept" % name, o)
+    o, n, files = rec_run(d, head, cut, "--recover-body")
+    m = re.search(r"RECOVERED: partial body \((\d+) bytes", o)
+    k = int(m.group(1)) if m else 0
+    ok = len(files) >= 1 and len(files[-1]) == 128 + 1024 and 100 < k < 1024
+    ok = ok and files[-1][128:128 + k - 1] == src_mzf[128:128 + k - 1] and files[-1][128 + k:] == bytes(1024 - k)
+    check(ok, "cut %s keeps the partial body with --recover-body" % name, o)
+
+
+rec_cut_format("tc", ("--profile", "TC-1.21"))
+rec_cut_format("fastipl", ("--profile", "IC-10.2-FASTIPL"))
+rec_cut_format("cpm", ("--profile", "IC-10.2-CPM", "--bd", "2400"))
+
+# ZX: useknutý datový blok se ponechá i bez volby, s chybou součtu
+zd = os.path.join(TMP, "rec-zx")
+shutil.rmtree(zd, ignore_errors=True)
+os.makedirs(zd)
+tzx, wav = (os.path.join(zd, n) for n in ("x.tzx", "x.wav"))
+zx = b"\xff" + bytes(range(200))
+x = 0
+for v in zx:
+    x ^= v
+open(tzx, "wb").write(b"ZXTape!\x1a\x01\x14" + tzx_turbo_block(zx + bytes([x]), 1.0))
+run_tool("tmz2wav", tzx, wav)
+zh, zs = wav_pcm8(wav)
+end = len(zs) - 1
+while end > 0 and zs[end] == zs[end - 1]:
+    end -= 1
+o, n, files = rec_run(zd, zh, zs[:int(end * 0.9)])
+check(n == 1 and "ERROR" in o, "cut ZX data block is kept with a checksum error", o)
+
+
+# --- poškozený soubor v TMZ: přehrání zachová chybu checksumu i data
+def rec_replay(name, damaged, opts):
+    """WAV -> TMZ -> WAV -> wav2tmz; vrátí (výstup 1. běhu, MZF 1. běhu, výstup 2. běhu, MZF 2. běhu, tmzinfo)."""
+    o1, _, f1 = rec_run(d, head, damaged, *opts)
+    wav, tmz, wav2 = (os.path.join(d, n) for n in ("cut.wav", name + ".tmz", name + ".wav"))
+    run_tool("wav2tmz", wav, "--output-format", "tmz", "-o", tmz, *opts)
+    run_tool("tmz2wav", tmz, wav2)
+    h2, s2 = wav_pcm8(wav2)
+    o2, _, f2 = rec_run(d, h2, s2)
+    return o1, f1, o2, f2, run_tool("tmzinfo", tmz)[1]
+
+
+both = rec_noise(rec_noise(samples, body1 + sec * 0.3, 400), body2 + sec * 0.6, 400, 2)
+o1, f1, o2, f2, info = rec_replay("both", both, [])
+s1 = re.search(r"body CRC mismatch \(stored=(0x[0-9A-F]+)", o1)
+s2 = re.search(r"body CRC mismatch \(stored=(0x[0-9A-F]+)", o2)
+check("ID 0x46" in info and "Body CRC: ERROR" in o2 and s1 and s2 and s1.group(1) == s2.group(1) and f1 and f2 and f1[0] == f2[0],
+      "damaged body keeps its checksum from the tape through TMZ", o2 + info)
+o1, f1, o2, f2, info = rec_replay("partial", samples[:int(body1 + sec * 0.6)], ["--recover-body"])
+check("Body CRC: ERROR" in o2 and f1 and f2 and f1[0] == f2[0], "partial body replays with a checksum error", o2 + info)
+o1, f1, o2, f2, info = rec_replay("honly", samples[:int(hdr_end + 300)], ["--recover-header"])
+check("Body CRC: ERROR" in o2 and f1 and f2 and f1[0] == f2[0], "header-only file replays with a checksum error", o2 + info)
+o1, f1, o2, f2, info = rec_replay("clean", samples, [])
+check("ID 0x40" in info and "Body CRC: OK" in o2, "undamaged recording stays block 0x40", o2 + info)
 
 print("\n=== CLI Test: %s ===" % ("FAIL" if fails else "PASS"))
 sys.exit(1 if fails else 0)

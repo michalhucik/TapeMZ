@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer_types.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.1
+ * @version 1.4.0
  * @brief  Společné datové typy, struktury a chybové kódy knihovny wav_analyzer.
  *
  * Definuje základní typy používané všemi vrstvami analyzéru:
@@ -251,9 +251,25 @@ extern "C" {
     typedef enum en_WAV_RECOVERY_STATUS {
         WAV_RECOVERY_NONE           = 0x00, /**< kompletní soubor, žádná obnova */
         WAV_RECOVERY_BSD_INCOMPLETE = 0x01, /**< BSD soubor bez ukončovacího chunku (ID=0xFFFF) */
-        WAV_RECOVERY_PARTIAL_BODY   = 0x02, /**< neúplné tělo souboru (připraveno pro fázi 2) */
-        WAV_RECOVERY_HEADER_ONLY    = 0x04, /**< osiřelá hlavička bez těla (připraveno pro fázi 2) */
+        WAV_RECOVERY_PARTIAL_BODY   = 0x02, /**< tělo přečtené jen zčásti (konec signálu nebo konec dat před fsize), zbytek 00h */
+        WAV_RECOVERY_HEADER_ONLY    = 0x04, /**< hlavička bez těla (tapemark těla nenalezen nebo tělo bez dat), tělo 00h */
+        WAV_RECOVERY_FSIZE_REPAIRED = 0x08, /**< fsize hlavičky s chybou CRC opraveno podle délky těla na pásce */
+        WAV_RECOVERY_COPY_MERGED    = 0x10, /**< tělo složené ze dvou poškozených kopií (součet souhlasí) */
+        WAV_RECOVERY_BSD_GAPS       = 0x20, /**< BSD: chybějící kusy uprostřed souboru, doplněné nulami */
     } en_WAV_RECOVERY_STATUS;
+
+
+    /**
+     * @brief Volba a výsledek obnovy částečného těla pro dekodéry bez kopií.
+     *
+     * Volající nastaví enable, ostatní pole vyplní dekodér. Předání NULL znamená bez obnovy.
+     */
+    typedef struct st_WAV_BODY_RECOVERY {
+        int enable;              /**< 1 = ponechat neúplné tělo, zbytek do velikosti doplnit 00h */
+        uint32_t status;         /**< bitové OR en_WAV_RECOVERY_STATUS */
+        uint32_t read_bytes;     /**< bajtů těla skutečně přečtených z pásky */
+        uint32_t expected_bytes; /**< očekávaná velikost těla */
+    } st_WAV_BODY_RECOVERY;
 
 
     /**
@@ -368,8 +384,8 @@ extern "C" {
         int pass_count;                         /**< počet průchodů (výchozí 1, zatím není použit) */
         en_WAV_RAW_FORMAT raw_format;           /**< formát pro neidentifikované bloky */
         int recover_bsd;                        /**< 1 = uložit částečná BSD data (chybějící terminátor) */
-        int recover_body;                       /**< 1 = uložit částečné tělo (fáze 2, zatím bez efektu) */
-        int recover_header;                     /**< 1 = uložit osiřelou hlavičku (fáze 2, zatím bez efektu) */
+        int recover_body;                       /**< 1 = ponechat neúplné tělo záznamu FM (zbytek 00h) */
+        int recover_header;                     /**< 1 = ponechat hlavičku záznamu FM s platným CRC, jejíž tělo chybí (tělo 00h) */
     } st_WAV_ANALYZER_CONFIG;
 
 

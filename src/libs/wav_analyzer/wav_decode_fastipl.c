@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_fastipl.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.4.0
+ * @version 1.5.0
  * @brief  Implementace vrstvy 4c - FASTIPL dekoder.
  *
  * FASTIPL signal je standardni dvou-blokovy MZF zaznam:
@@ -72,7 +72,8 @@ en_WAV_ANALYZER_ERROR wav_decode_fastipl_decode_mzf (
     st_MZF **out_mzf,
     st_WAV_DECODE_RESULT *out_body_result,
     uint32_t *out_consumed_until,
-    st_WAV_LEADER_INFO *out_data_leader
+    st_WAV_LEADER_INFO *out_data_leader,
+    st_WAV_BODY_RECOVERY *rec
 ) {
     if ( !seq || !bb_header_raw || !out_mzf ) {
         return WAV_ANALYZER_ERROR_INVALID_PARAM;
@@ -137,6 +138,7 @@ en_WAV_ANALYZER_ERROR wav_decode_fastipl_decode_mzf (
     uint32_t body_pulse_start = 0;
     uint32_t end_pos = 0;
     int have_result = 0;
+    st_WAV_BODY_RECOVERY best_rec = { 0, 0, 0, 0 };
     err = WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
 
     for ( uint32_t phase = 0; phase < 2; phase++ ) {
@@ -151,19 +153,19 @@ en_WAV_ANALYZER_ERROR wav_decode_fastipl_decode_mzf (
         uint8_t *phase_data = NULL;
         en_WAV_CRC_STATUS st = WAV_CRC_NOT_AVAILABLE;
         uint16_t cs = 0, cc = 0;
+        uint32_t phase_end = dec.pos;
+        st_WAV_BODY_RECOVERY prec = { rec ? rec->enable : 0, 0, 0, 0 };
         if ( real_fsize > 0 ) {
             phase_data = ( uint8_t* ) malloc ( real_fsize );
             if ( !phase_data ) {
                 free ( body_data );
                 return WAV_ANALYZER_ERROR_ALLOC;
             }
-            dec.crc_accumulator = 0;
-            if ( wav_decode_fm_read_block ( &dec, phase_data, real_fsize ) != WAV_ANALYZER_OK ) {
+            if ( wav_decode_fm_read_body ( &dec, phase_data, real_fsize, &prec, &st, &cs, &cc, &phase_end ) != WAV_ANALYZER_OK ) {
                 free ( phase_data );
                 err = WAV_ANALYZER_ERROR_DECODE_DATA;
                 continue;
             }
-            wav_decode_fm_verify_checksum ( &dec, &st, &cs, &cc );
         }
         if ( !have_result || st == WAV_CRC_OK ) {
             /* první výsledek (fáze 0, nebo 1 když 0 selhala), nebo platný checksum */
@@ -173,7 +175,8 @@ en_WAV_ANALYZER_ERROR wav_decode_fastipl_decode_mzf (
             body_crc_stored = cs;
             body_crc_computed = cc;
             body_pulse_start = phase_body_start;
-            end_pos = dec.pos;
+            end_pos = phase_end;
+            best_rec = prec;
             have_result = 1;
         } else {
             free ( phase_data );
@@ -183,6 +186,12 @@ en_WAV_ANALYZER_ERROR wav_decode_fastipl_decode_mzf (
 
     if ( !have_result ) {
         return err;
+    }
+
+    if ( rec ) {
+        rec->status = best_rec.status;
+        rec->read_bytes = best_rec.read_bytes;
+        rec->expected_bytes = best_rec.expected_bytes;
     }
 
     if ( real_fsize > 0 && out_body_result ) {

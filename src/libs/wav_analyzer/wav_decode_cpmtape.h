@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_cpmtape.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.1.2
+ * @version 2.2.0
  * @brief  Vrstva 4e2 - dekodér CPM-TAPE (Manchester: Pezik/MarVan TAPE.COM, Intercopy "CPM").
  *
  * Dekóduje záznam CPM-TAPE podle disassembly TAPE.COM a měření Intercopy
@@ -123,6 +123,8 @@ extern "C" {
      *             těla (pilot nenalezen, porušený Manchester, chybný flag) pozice místa
      *             chyby, odkud může volající hledat další záznam. Může být NULL.
      * @param[out] out_info Varianta, rychlost, počty vzorů. Může být NULL.
+     * @param[in,out] rec Obnova neúplného těla: s enable se ponechá tělo, ze kterého se
+     *             přečetl aspoň 1 bajt, zbytek je 00h a CRC těla WAV_CRC_ERROR. Může být NULL.
      * @return WAV_ANALYZER_OK (i při chybě CRC, ta je v crc_status);
      *         WAV_ANALYZER_ERROR_NO_LEADER (pilot hlavičky nenalezen);
      *         WAV_ANALYZER_ERROR_DECODE_TAPEMARK (pilot těla nenalezen);
@@ -139,7 +141,8 @@ extern "C" {
         st_WAV_DECODE_RESULT *out_header_result,
         st_WAV_DECODE_RESULT *out_body_result,
         uint32_t *out_consumed_until,
-        st_WAV_CPMTAPE_INFO *out_info
+        st_WAV_CPMTAPE_INFO *out_info,
+        st_WAV_BODY_RECOVERY *rec
     );
 
 

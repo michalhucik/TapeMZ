@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-11-08
+
+### Obnova poškozených nahrávek
+
+Verze: tmz v1.12.0, wav_analyzer v1.14.0, wav2tmz v2.13.0.
+
+- `wav2tmz --recover-body`: useknuté nebo přemazané tělo záznamu FM se ponechá,
+  zbytek se doplní 00h. Tón dalšího záznamu se nespotřebuje.
+- `--recover-body` také u TURBO, FASTIPL a CP/M TAPE; tělo FM s chybou v obou kopiích
+  se složí z jejich platných úseků, pokud to součet z pásky jednoznačně potvrdí.
+- `--recover-bsd`: chybějící kusy BSD se doplní nulami na své místo.
+- Varování, když se kopie liší, ačkoli obě mají platný součet.
+- `wav2tmz --recover-header`: hlavička s platným součtem bez těla se ponechá.
+- Hlavička s chybou součtu a zničenou velikostí: velikost se opraví podle délky
+  těla na pásce, pokud s ní souhlasí součet těla.
+- Záznam, jehož tělo se nepodařilo přečíst, se hlásí i bez `--verbose`.
+- Poškozený záznam NORMAL 1:1 se v TMZ uloží blokem 0x46 i s bajty součtu z pásky,
+  přehrání dopadne jako na poškozené pásce.
+
 ## 2026-11-06
 
 ### TMZ v1.1

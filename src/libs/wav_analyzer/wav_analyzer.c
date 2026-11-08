@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.10.0
+ * @version 1.14.0
  * @brief  Implementace hlavního API knihovny wav_analyzer.
  *
  * Orchestruje všechny vrstvy analyzéru:
@@ -675,6 +675,59 @@ static en_WAV_ANALYZER_ERROR decode_nonstandard_tape_mzf (
 
 
 /**
+ * @brief Oznámí uživateli záznam FM, jehož hlavičku nebo tělo se nepodařilo přečíst.
+ *
+ * Hlásí se vždy (i bez --verbose): soubor se zahodil, ale hlavička nebo její část
+ * na pásce je. Bez nalezeného tapemarku hlavičky se nehlásí nic, leader bez
+ * tapemarku nemusí být záznam FM.
+ *
+ * @param seq Sekvence pulzů.
+ * @param leader Leader tón záznamu.
+ * @param config Konfigurace (podle zapnutých voleb se vynechá nápověda).
+ * @param info Průběh dekódování z wav_decode_fm_decode_mzf_ex().
+ *
+ * @note Vedlejší efekt: zápis na stderr.
+ */
+static void report_fm_failure (
+    const st_WAV_PULSE_SEQUENCE *seq,
+    const st_WAV_LEADER_INFO *leader,
+    const st_WAV_ANALYZER_CONFIG *config,
+    const st_WAV_FM_DECODE_INFO *info
+) {
+    double at = pulse_index_to_sec ( seq, leader->start_index );
+
+    if ( !info->header_decoded ) {
+        if ( info->body_error != WAV_ANALYZER_OK ) {
+            fprintf ( stderr, "  Header incomplete at %.3f s (%s), nothing saved\n", at,
+                      wav_analyzer_error_string ( info->body_error ) );
+        }
+        return;
+    }
+
+    char fname[MZF_FILE_NAME_LENGTH + 1];
+    int n = 0;
+    /* jméno končí 0Dh; znaky mimo ASCII se ve výpisu nahradí tečkou */
+    while ( n < MZF_FILE_NAME_LENGTH && info->header_raw[1 + n] != 0x0D && info->header_raw[1 + n] != 0x00 ) {
+        uint8_t c = info->header_raw[1 + n];
+        fname[n++] = ( c < 0x20 || c > 0x7E ) ? '.' : ( char ) c;
+    }
+    fname[n] = '\0';
+
+    fprintf ( stderr, "  Header \"%s\" found at %.3f s (fsize %u) but body not decoded: %s\n",
+              fname, at, info->expected_bytes, wav_analyzer_error_string ( info->body_error ) );
+
+    if ( info->recovered_bytes > 0 && !config->recover_body ) {
+        fprintf ( stderr, "  Hint: use --recover-body to keep the partial body (%u bytes read)\n",
+                  info->recovered_bytes );
+    } else if ( info->recovered_bytes == 0 && !info->header_crc_ok ) {
+        fprintf ( stderr, "  The header has a checksum error and no valid copy, it cannot be kept\n" );
+    } else if ( info->recovered_bytes == 0 && !config->recover_header ) {
+        fprintf ( stderr, "  Hint: use --recover-header to keep the header\n" );
+    }
+}
+
+
+/**
  * @brief Zpracuje jeden leader tón - klasifikuje formát a dekóduje data.
  *
  * @param seq Sekvence pulzů.
@@ -748,7 +801,13 @@ static en_WAV_ANALYZER_ERROR process_leader (
             memset ( &hdr_res, 0, sizeof ( hdr_res ) );
             memset ( &body_res, 0, sizeof ( body_res ) );
 
-            err = wav_decode_fm_decode_mzf ( seq, leader, &mzf, &hdr_res, &body_res );
+            st_WAV_FM_DECODE_OPTIONS fm_opts = { config->recover_body, config->recover_header };
+            st_WAV_FM_DECODE_INFO fm_info;
+            uint32_t fm_recovery = WAV_RECOVERY_NONE;   /* platí, jen když zůstane záznam z dekodéru FM */
+            int fm_kept = 0;                            /* výsledkem je záznam z dekodéru FM (bez přesměrování) */
+            st_WAV_BODY_RECOVERY body_rec = { config->recover_body, 0, 0, 0 };   /* TURBO, FASTIPL */
+
+            err = wav_decode_fm_decode_mzf_ex ( seq, leader, &fm_opts, &mzf, &hdr_res, &body_res, &fm_info );
 
             if ( err == WAV_ANALYZER_OK && mzf ) {
                 /* stupeň B: zpřesnění formátu z hlavičky */
@@ -766,7 +825,7 @@ static en_WAV_ANALYZER_ERROR process_leader (
                 en_WAV_WRITER writer = WAV_WRITER_UNKNOWN;   /* rozpoznaný zapisovač */
                 uint8_t tc_a = 0, tc_b = 0;                  /* TurboCopy: poměr a/b */
                 uint16_t ic_bd = 0;                          /* Intercopy: rychlost v Bd */
-                st_WAV_BSD_INFO bsd_info = { 0, 0, 0 };   /* kusy, chyby CRC, kopie */
+                st_WAV_BSD_INFO bsd_info = { 0, 0, 0, 0 };   /* kusy, chyby CRC, kopie */
                 st_WAV_LEADER_INFO turbo_data_leader;
                 memset ( &turbo_data_leader, 0, sizeof ( turbo_data_leader ) );
 
@@ -817,7 +876,7 @@ static en_WAV_ANALYZER_ERROR process_leader (
                                   seq, turbo_search,
                                   &saved_header, saved_body, saved_body_size,
                                   &mzf, &body_res, &consumed_until,
-                                  &turbo_data_leader
+                                  &turbo_data_leader, &body_rec
                               );
 
                         /* aktualizujeme speed na TURBO hodnoty */
@@ -882,7 +941,7 @@ static en_WAV_ANALYZER_ERROR process_leader (
 
                         err = wav_decode_turbo_mzftools_mzf (
                                   seq, turbo_search, &saved_mzf_header,
-                                  &mzf, &body_res, &consumed_until, &turbo_data_leader
+                                  &mzf, &body_res, &consumed_until, &turbo_data_leader, &body_rec
                               );
                     }
                 } else if ( refined == WAV_TAPE_FORMAT_FASTIPL ) {
@@ -900,7 +959,7 @@ static en_WAV_ANALYZER_ERROR process_leader (
                     err = wav_decode_fastipl_decode_mzf (
                               seq, bb_raw, pulse_end, &mzf,
                               &body_res, &consumed_until,
-                              &fastipl_data_leader
+                              &fastipl_data_leader, &body_rec
                           );
 
                     /* aktualizace speed z body LGAP leaderu */
@@ -1008,6 +1067,8 @@ static en_WAV_ANALYZER_ERROR process_leader (
                                       wav_tape_format_name ( refined ), wav_analyzer_error_string ( ns_err ) );
                         }
                         refined = format;
+                        fm_kept = 1;
+                        fm_recovery = fm_info.recovery_status;
                         consumed_until = body_res.pulse_end > 0
                                          ? body_res.pulse_end
                                          : hdr_res.pulse_end;
@@ -1018,6 +1079,8 @@ static en_WAV_ANALYZER_ERROR process_leader (
                      * consumed_until nastavime z FM dekoderu (pulse_end
                      * hlavicky nebo tela, podle toho co je dale).
                      */
+                    fm_kept = 1;
+                    fm_recovery = fm_info.recovery_status;
                     consumed_until = body_res.pulse_end > 0
                                      ? body_res.pulse_end
                                      : hdr_res.pulse_end;
@@ -1046,10 +1109,11 @@ static en_WAV_ANALYZER_ERROR process_leader (
                     file_result.copy2_used = hdr_res.copy2_used || body_res.copy2_used;
                     file_result.header_leader_pulse = leader->start_index;
                     file_result.consumed_until_pulse = consumed_until;
-                    file_result.recovery_status = bsd_recovery;
+                    file_result.recovery_status = bsd_recovery | fm_recovery | body_rec.status;
                     file_result.bsd_chunks = bsd_info.chunks;
                     file_result.bsd_crc_errors = bsd_info.crc_errors;
                     file_result.bsd_from_copy = bsd_info.from_copy;
+                    file_result.bsd_gap_chunks = bsd_info.gap_chunks;
                     if ( refined == WAV_TAPE_FORMAT_FSK || refined == WAV_TAPE_FORMAT_SLOW ) {
                         file_result.fsl_speed = fsl_speed;
                     }
@@ -1069,6 +1133,24 @@ static en_WAV_ANALYZER_ERROR process_leader (
                     if ( bsd_recovery != WAV_RECOVERY_NONE && mzf ) {
                         file_result.recovered_bytes = mzf->body_size;
                         file_result.expected_bytes = 0; /* u BSD neznáme */
+                    }
+                    if ( fm_recovery != WAV_RECOVERY_NONE ) {
+                        file_result.recovered_bytes = fm_info.recovered_bytes;
+                        file_result.expected_bytes = fm_info.expected_bytes;
+                    }
+                    if ( body_rec.status != WAV_RECOVERY_NONE ) {
+                        file_result.recovered_bytes = body_rec.read_bytes;
+                        file_result.expected_bytes = body_rec.expected_bytes;
+                    }
+                    if ( fm_kept ) {
+                        /* u neúplného těla se checksum nepřečetl, z pásky není */
+                        file_result.header_crc_stored = hdr_res.crc_stored;
+                        file_result.header_crc_stored_valid = hdr_res.crc_status == WAV_CRC_ERROR;
+                        file_result.body_crc_stored = body_res.crc_stored;
+                        file_result.copy_diff_bytes = fm_info.header_copy_diff + fm_info.body_copy_diff;
+                        file_result.merged_bytes = fm_info.merged_bytes;
+                        file_result.body_crc_stored_valid = body_res.crc_status == WAV_CRC_ERROR
+                                                            && !( fm_recovery & ( WAV_RECOVERY_PARTIAL_BODY | WAV_RECOVERY_HEADER_ONLY ) );
                     }
 
                     err = result_add_file ( result, &file_result );
@@ -1100,6 +1182,7 @@ static en_WAV_ANALYZER_ERROR process_leader (
                 if ( config->verbose ) {
                     fprintf ( stderr, "  Decode failed: %s\n", wav_analyzer_error_string ( err ) );
                 }
+                report_fm_failure ( seq, leader, config, &fm_info );
                 err = WAV_ANALYZER_OK;
 
                 /*
@@ -1600,9 +1683,10 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
             uint32_t consumed_until = 0;
             st_WAV_CPMTAPE_INFO cinfo;
 
+            st_WAV_BODY_RECOVERY cpm_rec = { config->recover_body, 0, 0, 0 };
             err = wav_decode_cpmtape_decode_mzf (
                       &pulse_seq, cpmtape_search,
-                      &mzf, &hdr_res, &body_res, &consumed_until, &cinfo
+                      &mzf, &hdr_res, &body_res, &consumed_until, &cinfo, &cpm_rec
                   );
 
             if ( err == WAV_ANALYZER_ERROR_NO_LEADER ) {
@@ -1642,6 +1726,9 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
             file_result.body_crc = body_res.crc_status;
             file_result.speed_class = WAV_SPEED_CLASS_FAST;
             file_result.consumed_until_pulse = consumed_until;
+            file_result.recovery_status = cpm_rec.status;
+            file_result.recovered_bytes = cpm_rec.read_bytes;
+            file_result.expected_bytes = cpm_rec.expected_bytes;
             file_result.header_leader_pulse = cinfo.header_start_pulse;   /* začátek záznamu */
             file_result.cpmtape_variant = ( uint8_t ) cinfo.variant;
             file_result.cpmtape_bd = cinfo.bd;
@@ -1995,6 +2082,9 @@ void wav_analyzer_print_summary (
             fprintf ( stream, "MZF name: \"%s\"\n", fname );
         }
 
+        if ( f->copy_diff_bytes ) {
+            fprintf ( stream, "WARNING: copies differ in %u bytes although the checksum is valid\n", f->copy_diff_bytes );
+        }
         if ( f->recovery_status != WAV_RECOVERY_NONE ) {
             fprintf ( stream, "*** RECOVERED: %s", wav_recovery_status_string ( f->recovery_status ) );
             if ( f->recovered_bytes > 0 ) {

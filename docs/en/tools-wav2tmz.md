@@ -38,9 +38,9 @@ wav2tmz input.wav [-o output] [options]
 | `--pulse-mode` | approximate, exact | approximate | Pulse width storage mode for TMZ output |
 | `--charset` | eu, jp, utf8-eu, utf8-jp | eu | Sharp MZ character set for filename display (see below) |
 | `--recover` | - | off | Enable all recovery modes |
-| `--recover-bsd` | - | off | Recover incomplete BSD files (missing terminator) |
-| `--recover-body` | - | off | Recover partial body data (not yet implemented) |
-| `--recover-header` | - | off | Save header-only files (not yet implemented) |
+| `--recover-bsd` | - | off | Recover incomplete BSD files (missing terminator or chunks) |
+| `--recover-body` | - | off | Keep an incomplete body (rest filled with 00h), merge an FM body from two damaged copies |
+| `--recover-header` | - | off | Keep the header of an FM record whose body is missing (body 00h) |
 | `--version` | - | - | Show program version |
 | `--lib-versions` | - | - | Show library versions |
 | `--help`, `-h` | - | - | Show help |
@@ -105,8 +105,48 @@ chunks are salvaged. Without this option, incomplete BSD data is discarded
 (with a diagnostic message and hint). In TMZ output, a Text Description
 block (0x30) with a warning is inserted before the recovered block.
 
-**--recover** - enables all recovery modes at once (--recover-bsd
-and future --recover-body, --recover-header).
+**--recover-body** - an FM record (NORMAL, MZ-80B, CP/M CMT) whose body is cut
+off or overwritten by the next record is not lost. The bytes read are kept, the
+rest up to the size in the header is filled with 00h and the body has
+`Body CRC: ERROR`. The tone of the next record is not consumed, so the next file
+decodes normally. At least 1 body byte must have been read. The same applies to
+TURBO, FASTIPL and CP/M TAPE.
+
+When an FM body has a checksum error in both copies, wav2tmz tries to assemble it
+from the valid parts of both copies. Only a result that matches the checksum on the
+tape unambiguously is accepted; the body then has `Body CRC: OK` and the report says
+`copies merged`. The checksum is only a count of one bits, so this is a best estimate,
+not a proof.
+
+Missing BSD chunks (`--recover-bsd`) are filled with zeros in their place, a chunk with a
+checksum error and a damaged number is placed by its order.
+
+When the copies differ although both have a valid checksum, wav2tmz always prints the
+warning `copies differ although the checksum is valid`. The data is not changed: the ROM
+checksum does not detect a 0-to-1 and a 1-to-0 flip in the same copy.
+
+**--recover-header** - the header of an FM record with a valid checksum whose
+body is not on the tape is saved with a body of 00h.
+
+Without these options such a file is discarded and wav2tmz reports (even without
+`--verbose`) what was found, how many body bytes were read and which option to
+use. In TMZ output, a Text Description block (0x30) is inserted before the
+recovered block, for example
+`WARNING: Recovered - partial body (700 of 1024 bytes read, rest filled with 00h)`.
+
+**--recover** - enables all recovery modes at once (--recover-bsd,
+--recover-body, --recover-header).
+
+**Damaged files in TMZ:** a NORMAL 1:1 record with a checksum error is written as
+block 0x46 (profile ROM-800-NOMINAL) with the checksum bytes from the tape.
+A recovered body has no checksum, so a deliberately invalid one is written.
+Playback then behaves like the damaged tape: the ROM reports a checksum error.
+Blocks 0x41 do not carry a checksum.
+
+**Size repair from the tape:** when a header has a checksum error without a valid
+copy and its size does not satisfy the body checksum, the size measured from the
+signal is used if the body checksum agrees with it. This always runs, no option
+is needed; the report says `fsize repaired from body length`.
 
 **--pulse-mode** - controls how pulse widths are stored in TMZ blocks:
 - `approximate` (default) - quantizes speed to the nearest CMTSPEED ratio
@@ -245,6 +285,12 @@ Recovering all partial data into a TMZ archive:
 
 ```
 wav2tmz damaged_tape.wav --recover --output-format tmz -o rescued.tmz
+```
+
+Keeping a cut-off body as MZF:
+
+```
+wav2tmz cut_tape.wav --recover-body -o rescued.mzf
 ```
 
 Decoding with exact pulse widths into TMZ:

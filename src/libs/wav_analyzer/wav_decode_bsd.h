@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_bsd.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
+ * @version 1.3.0
  * @brief  Vrstva 4d analyzeru - BSD dekoder (chunkovany BASIC datovy format).
  *
  * Dekoduje BSD/BRD format z WAV signalu. BSD signal se sklada z:
@@ -71,6 +71,16 @@ extern "C" {
     /** @brief Maximalni pocet chunku (ochrana proti nekonecne smycce). */
 #define WAV_BSD_MAX_CHUNKS          256
 
+/**
+ * @brief Největší skok ID kusu, který se s allow_partial považuje za chybějící kusy.
+ *
+ * Větší skok znamená cizí data za koncem souboru.
+ */
+#define WAV_BSD_MAX_GAP             32
+
+/** @brief Kolik bitů se smí lišit ID kusu s chybou CRC, aby se zařadil na očekávané místo. */
+#define WAV_BSD_ID_MAX_FLIPS        1
+
 
     /**
      * @brief Údaje o dekódovaném souboru BSD.
@@ -81,6 +91,7 @@ extern "C" {
         uint32_t chunks;      /**< počet přečtených kusů */
         uint32_t crc_errors;  /**< kusy bez platné kopie (chyba CRC v 1. kopii i v kopii, nebo kopie chybí) */
         uint32_t from_copy;   /**< kusy, jejichž data jsou z kopie (1. kopie s chybou CRC, kopie OK) */
+        uint32_t gap_chunks;  /**< chybějící kusy doplněné nulami (jen s allow_partial) */
     } st_WAV_BSD_INFO;
 
 
@@ -102,7 +113,10 @@ extern "C" {
      * @param search_from_pulse Pozice od ktere hledat chunky
      *        (typicky hdr_res.pulse_end z FM dekoderu).
      * @param allow_partial 1 = pri chybe cteni chunku zachovat dosavadni data
-     *        (recovery mod), 0 = pri chybe vratit chybu a zahodit vse.
+     *        (recovery mod), 0 = pri chybe vratit chybu a zahodit vse. S 1 se navíc
+     *        kus s platným CRC a ID o nejvýš WAV_BSD_MAX_GAP vyšším bere jako chybějící
+     *        kusy (nuly na jejich místě, WAV_RECOVERY_BSD_GAPS) a kus s chybou CRC, jehož
+     *        ID se liší nejvýš o WAV_BSD_ID_MAX_FLIPS bitů, se zařadí na očekávané místo.
      * @param[out] out_mzf Vystupni MZF struktura (volajici uvolni pres mzf_free).
      *             Nesmi byt NULL.
      * @param[out] out_body_result Výsledek dekódování těla: crc_status WAV_CRC_ERROR,

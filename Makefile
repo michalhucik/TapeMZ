@@ -20,6 +20,7 @@ TESTS := \
     test_cpm_roundtrip \
     test_fm_header_only \
     test_fm_copy2 \
+    test_fm_recovery \
     test_wav_formats \
     test_tmz_blocks_parse \
     test_tmz_tlv \

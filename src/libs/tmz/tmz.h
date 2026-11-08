@@ -1,7 +1,7 @@
 /**
  * @file   tmz.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.11.0
+ * @version 1.12.0
  * @brief  Verejne API knihovny pro format TMZ - MZ-specificka nadstavba nad TZX.
  *
  * TMZ (TapeMZ) je rozsireni TZX formatu o bloky specificke
@@ -237,7 +237,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny tmz. */
-#define TMZ_VERSION "1.11.0"
+#define TMZ_VERSION "1.12.0"
 
     /** @brief Verze formátu TMZ jako řetězec ("1.1"). */
 #define TMZ_FORMAT_VERSION "1.1"

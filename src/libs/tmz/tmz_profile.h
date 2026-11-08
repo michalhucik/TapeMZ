@@ -1,7 +1,7 @@
 /**
  * @file   tmz_profile.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.6.0
+ * @version 1.7.0
  * @brief  Registr profilů zapisovače pro blok 0x46 (TMZ v1.1).
  *
  * Profil popisuje, jak konkrétní program nebo ROM zapisuje soubor na
@@ -98,6 +98,8 @@ extern "C" {
         uint8_t tc_a;        /**< TC-1.21: čitatel poměru a/b TurboCopy (1-9), 0 = rychlost podle speed */
         uint8_t tc_b;        /**< TC-1.21: jmenovatel poměru a/b (1-9); platí jen s tc_a != 0,
                                   1/2 <= a/b <= 3 (rozsah TurboCopy V1.21); má přednost před speed */
+        const uint8_t *ck_header;  /**< 2 B checksumu hlavičky v pořadí zápisu (rodina FM), NULL = vypočítat; volající drží paměť po dobu volání */
+        const uint8_t *ck_body;    /**< totéž pro tělo; do PROFILE_ARGS se nezapisuje, nese ho část bloku */
     } st_TMZ_PROFILE_ARGS;
 
 

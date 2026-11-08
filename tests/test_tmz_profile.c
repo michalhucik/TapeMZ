@@ -466,6 +466,21 @@ int main ( void ) {
     CHECK ( tmz_profile_build_block ( "NOPE", &a, &g_hdr, g_body, 1024, &pe ) == NULL && pe == TMZ_PROFILE_ERROR_UNKNOWN,
             "unknown profile" );
 
+    /* bajty checksumu z pásky: jen v části těla, TLV CHECKSUM délky 3 */
+    {
+        static const uint8_t tlv[7] = { 0x05, 0x81, 0x03, 0x00, 0x01, 0x12, 0x34 };
+        static const uint8_t ck[2] = { 0x12, 0x34 };
+        tmz_profile_args_init ( &a );
+        a.ck_body = ck;
+        st_TZX_BLOCK *b = tmz_profile_build_block ( "ROM-800-NOMINAL", &a, &g_hdr, g_body, 1024, &pe );
+        int found = 0;
+        for ( uint32_t i = 0; b && i + sizeof ( tlv ) <= b->length; i++ ) {
+            if ( memcmp ( &b->data[i], tlv, sizeof ( tlv ) ) == 0 ) found++;
+        }
+        CHECK ( b != NULL && found == 1, "explicit body checksum is written once" );
+        tmz_block_free ( b );
+    }
+
     /* ROM-800-NOMINAL výchozí: tóny 11000/5500, čas v µs */
     tmz_profile_args_init ( &a );
     st_TZX_BLOCK *b = tmz_profile_build_block ( "ROM-800-NOMINAL", &a, &g_hdr, g_body, 1024, &pe );

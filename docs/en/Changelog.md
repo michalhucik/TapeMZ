@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-11-08
+
+### Recovery of damaged recordings
+
+Versions: tmz v1.12.0, wav_analyzer v1.14.0, wav2tmz v2.13.0.
+
+- `wav2tmz --recover-body`: a cut-off or overwritten body of an FM record is kept,
+  the rest is filled with 00h. The tone of the next record is not consumed.
+- `--recover-body` also for TURBO, FASTIPL and CP/M TAPE; an FM body with errors in both
+  copies is assembled from their valid parts when the checksum on the tape confirms it unambiguously.
+- `--recover-bsd`: missing BSD chunks are filled with zeros in their place.
+- A warning when the copies differ although both have a valid checksum.
+- `wav2tmz --recover-header`: a header with a valid checksum and no body is kept.
+- A header with a checksum error and a destroyed size: the size is repaired from
+  the body length on the tape if the body checksum agrees with it.
+- A record whose body could not be read is reported even without `--verbose`.
+- A damaged NORMAL 1:1 record is written to TMZ as block 0x46 with the checksum bytes
+  from the tape, so playback behaves like the damaged tape.
+
 ## 2026-11-06
 
 ### TMZ v1.1

@@ -1,7 +1,7 @@
 /**
  * @file   tmz_profile.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.6.0
+ * @version 1.7.0
  * @brief  Implementace registru profilů zapisovače (viz tmz_profile.h).
  *
  * Hodnoty profilů a jejich zdroje:
@@ -206,6 +206,8 @@ typedef struct st_BUILD {
     st_TMZ_TLVBUF *tlv;    /**< TLV částí (cap položek) */
     uint16_t cap;          /**< kapacita */
     uint16_t n;            /**< počet částí */
+    const uint8_t *ck_header;  /**< bajty checksumu hlavičky místo vypočtených, NULL = vypočítat */
+    const uint8_t *ck_body;    /**< totéž pro tělo */
 } st_BUILD;
 
 
@@ -257,7 +259,7 @@ static void build_free ( st_BUILD *b ) {
  * @return EXIT_SUCCESS, nebo EXIT_FAILURE (plný seznam, chyba kódování).
  */
 static int add_part ( st_BUILD *b, uint8_t role, uint8_t source, const uint8_t *inl, uint32_t inl_len,
-                      uint32_t slice_off, uint32_t slice_len, const st_MZCMT_FM_PARAMS *p, const st_TMZ_PART_COMMON *c ) {
+                      uint32_t slice_off, uint32_t slice_len, st_MZCMT_FM_PARAMS *p, const st_TMZ_PART_COMMON *c ) {
     if ( b->n >= b->cap ) return EXIT_FAILURE;
     st_TMZ_TLVBUF *t = &b->tlv[b->n];
     tmz_tlvbuf_init ( t );
@@ -266,7 +268,15 @@ static int add_part ( st_BUILD *b, uint8_t role, uint8_t source, const uint8_t *
      * Výchozí základna 0 = TIMEBASE se zapíše vždy: blok pak nezávisí
      * na taktu z bloku 0x43 v souboru, do kterého ho nástroj připojí.
      */
-    if ( tmz_part_fm_encode ( p, c, 0, t ) != EXIT_SUCCESS ) return EXIT_FAILURE;
+    const uint8_t *ck = ( role == TMZ_PART_ROLE_HEADER ) ? b->ck_header : ( role == TMZ_PART_ROLE_BODY ) ? b->ck_body : NULL;
+    int explicit_ck = ck && p->checksum == MZCMT_FM_CHECKSUM_MZ_POPCOUNT16_BE;
+    if ( explicit_ck ) {
+        p->checksum_explicit = 1;
+        memcpy ( p->checksum_bytes, ck, 2 );
+    }
+    int enc = tmz_part_fm_encode ( p, c, 0, t );
+    if ( explicit_ck ) p->checksum_explicit = 0;   /* parametry sdílí další části */
+    if ( enc != EXIT_SUCCESS ) return EXIT_FAILURE;
     st_TMZ_PART *pt = &b->parts[b->n - 1];
     memset ( pt, 0, sizeof ( *pt ) );
     pt->role = role;
@@ -374,6 +384,8 @@ void tmz_profile_args_init ( st_TMZ_PROFILE_ARGS *args ) {
     args->sgap = 0;
     memset ( args->pulses, 0, sizeof ( args->pulses ) );
     memset ( args->cmtspeed, 0, sizeof ( args->cmtspeed ) );
+    args->ck_header = NULL;
+    args->ck_body = NULL;
     args->bd = 0;
     args->tc_a = 0;
     args->tc_b = 0;
@@ -1253,6 +1265,8 @@ st_TZX_BLOCK* tmz_profile_build_block ( const char *id, const st_TMZ_PROFILE_ARG
         *err = TMZ_PROFILE_ERROR_BUILD;
         return NULL;
     }
+    b.ck_header = a.ck_header;
+    b.ck_body = a.ck_body;
     char args_text[192];
     uint8_t pre_hdr[128];
     uint8_t legacy_hdr[128];   /* LEGACY fastipl: hlavička $BB (inline data musí žít do vytvoření bloku) */

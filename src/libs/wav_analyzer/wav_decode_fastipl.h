@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_fastipl.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.4.0
+ * @version 1.5.0
  * @brief  Vrstva 4c analyzeru - FASTIPL dekoder ($BB prefix, Intercopy).
  *
  * Dekoduje FASTIPL format z WAV signalu. FASTIPL signal se sklada ze dvou casti:
@@ -88,6 +88,7 @@ extern "C" {
      *             Muze byt NULL.
      * @param[out] out_data_leader Informace o body LGAP leaderu (rychlost, pozice).
      *             Muze byt NULL.
+     * @param[in,out] rec Obnova neúplného těla (wav_decode_fm_read_body()). Může být NULL.
      * @return WAV_ANALYZER_OK pri uspechu, jinak chybovy kod.
      *
      * @pre FM dekoder jiz dekodoval $BB hlavicku a klasifikator urcil
@@ -102,7 +103,8 @@ extern "C" {
         st_MZF **out_mzf,
         st_WAV_DECODE_RESULT *out_body_result,
         uint32_t *out_consumed_until,
-        st_WAV_LEADER_INFO *out_data_leader
+        st_WAV_LEADER_INFO *out_data_leader,
+        st_WAV_BODY_RECOVERY *rec
     );
 
 

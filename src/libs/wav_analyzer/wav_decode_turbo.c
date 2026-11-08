@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_turbo.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.3.1
+ * @version 1.4.0
  * @brief  Implementace vrstvy 4b - TURBO dekoder.
  *
  * TURBO signal ma dve casti:
@@ -151,6 +151,7 @@
  *             uvolní volající). Může být NULL.
  * @param[out] out_consumed_until Pozice za posledním pulzem. Může být NULL.
  * @param[out] out_turbo_leader Detekovaný TURBO leader. Může být NULL.
+ * @param[in,out] rec Obnova neúplného těla (wav_decode_fm_read_body()). Může být NULL.
  * @return WAV_ANALYZER_OK při úspěchu (i při chybě CRC těla, ta je
  *         v out_body_result); WAV_ANALYZER_ERROR_NO_LEADER, když vhodný
  *         leader s tapemarkem v mezích není; WAV_ANALYZER_ERROR_DECODE_DATA
@@ -166,7 +167,8 @@ static en_WAV_ANALYZER_ERROR turbo_decode_body_only (
     st_MZF **out_mzf,
     st_WAV_DECODE_RESULT *out_body_result,
     uint32_t *out_consumed_until,
-    st_WAV_LEADER_INFO *out_turbo_leader
+    st_WAV_LEADER_INFO *out_turbo_leader,
+    st_WAV_BODY_RECOVERY *rec
 ) {
     *out_mzf = NULL;
     if ( out_consumed_until ) *out_consumed_until = 0;
@@ -222,25 +224,22 @@ static en_WAV_ANALYZER_ERROR turbo_decode_body_only (
     uint8_t *body_data = ( uint8_t* ) malloc ( user_body_size ? user_body_size : 1 );
     if ( !body_data ) return WAV_ANALYZER_ERROR_ALLOC;
 
-    dec.crc_accumulator = 0;
-    en_WAV_ANALYZER_ERROR err = wav_decode_fm_read_block ( &dec, body_data, user_body_size );
+    /* === 4. Tělo a CRC === */
+
+    en_WAV_CRC_STATUS body_crc;
+    uint16_t body_crc_stored = 0, body_crc_computed = 0;
+    uint32_t body_end_pos = 0;
+    en_WAV_ANALYZER_ERROR err = wav_decode_fm_read_body ( &dec, body_data, user_body_size, rec, &body_crc,
+                                                          &body_crc_stored, &body_crc_computed, &body_end_pos );
     if ( err != WAV_ANALYZER_OK ) {
         free ( body_data );
         return WAV_ANALYZER_ERROR_DECODE_DATA;
     }
 
-    /* === 4. CRC === */
-
-    en_WAV_CRC_STATUS body_crc;
-    uint16_t body_crc_stored = 0, body_crc_computed = 0;
-    wav_decode_fm_verify_checksum ( &dec, &body_crc, &body_crc_stored, &body_crc_computed );
-
-    if ( body_crc == WAV_CRC_ERROR ) {
+    if ( body_crc == WAV_CRC_ERROR && !( rec && rec->status ) ) {
         fprintf ( stderr, "WARNING: body CRC mismatch (stored=0x%04X, computed=0x%04X)\n",
                   body_crc_stored, body_crc_computed );
     }
-
-    uint32_t body_end_pos = dec.pos;
 
     if ( out_body_result ) {
         out_body_result->format = WAV_TAPE_FORMAT_TURBO;
@@ -296,7 +295,8 @@ en_WAV_ANALYZER_ERROR wav_decode_turbo_turbocopy_mzf (
     st_MZF **out_mzf,
     st_WAV_DECODE_RESULT *out_body_result,
     uint32_t *out_consumed_until,
-    st_WAV_LEADER_INFO *out_turbo_leader
+    st_WAV_LEADER_INFO *out_turbo_leader,
+    st_WAV_BODY_RECOVERY *rec
 ) {
     if ( !seq || !out_mzf || !preloader_header || !preloader_body ) {
         return WAV_ANALYZER_ERROR_INVALID_PARAM;
@@ -325,7 +325,7 @@ en_WAV_ANALYZER_ERROR wav_decode_turbo_turbocopy_mzf (
     return turbo_decode_body_only (
         seq, search_from_pulse, &hdr,
         body_size, fstrt, fexec,
-        out_mzf, out_body_result, out_consumed_until, out_turbo_leader
+        out_mzf, out_body_result, out_consumed_until, out_turbo_leader, rec
     );
 }
 
@@ -341,7 +341,8 @@ en_WAV_ANALYZER_ERROR wav_decode_turbo_mzftools_mzf (
     st_MZF **out_mzf,
     st_WAV_DECODE_RESULT *out_body_result,
     uint32_t *out_consumed_until,
-    st_WAV_LEADER_INFO *out_turbo_leader
+    st_WAV_LEADER_INFO *out_turbo_leader,
+    st_WAV_BODY_RECOVERY *rec
 ) {
     if ( !seq || !out_mzf || !preloader_header ) {
         return WAV_ANALYZER_ERROR_INVALID_PARAM;
@@ -361,6 +362,6 @@ en_WAV_ANALYZER_ERROR wav_decode_turbo_mzftools_mzf (
     return turbo_decode_body_only (
         seq, search_from_pulse, preloader_header,
         body_size, fstrt, fexec,
-        out_mzf, out_body_result, out_consumed_until, out_turbo_leader
+        out_mzf, out_body_result, out_consumed_until, out_turbo_leader, rec
     );
 }

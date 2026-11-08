@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_turbo.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.3.1
+ * @version 1.4.0
  * @brief  Vrstva 4b analyzéru - TURBO dekodér (tělo za předzavaděčem).
  *
  * TURBO záznam má dvě části:
@@ -87,7 +87,8 @@ extern "C" {
         st_MZF **out_mzf,
         st_WAV_DECODE_RESULT *out_body_result,
         uint32_t *out_consumed_until,
-        st_WAV_LEADER_INFO *out_turbo_leader
+        st_WAV_LEADER_INFO *out_turbo_leader,
+        st_WAV_BODY_RECOVERY *rec
     );
 
 
@@ -114,7 +115,8 @@ extern "C" {
         st_MZF **out_mzf,
         st_WAV_DECODE_RESULT *out_body_result,
         uint32_t *out_consumed_until,
-        st_WAV_LEADER_INFO *out_turbo_leader
+        st_WAV_LEADER_INFO *out_turbo_leader,
+        st_WAV_BODY_RECOVERY *rec
     );
 
 

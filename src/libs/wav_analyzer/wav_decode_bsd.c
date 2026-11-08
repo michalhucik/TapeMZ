@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_bsd.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
+ * @version 1.3.0
  * @brief  Implementace vrstvy 4d - BSD dekoder.
  *
  * BSD signal: hlavicka (fsize=0) nasledovana sekvenci chunku.
@@ -63,7 +63,7 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
     }
 
     *out_mzf = NULL;
-    st_WAV_BSD_INFO info = { 0, 0, 0 };
+    st_WAV_BSD_INFO info = { 0, 0, 0, 0 };
     if ( out_info ) *out_info = info;
     if ( out_consumed_until ) *out_consumed_until = 0;
     if ( out_recovery_status ) *out_recovery_status = WAV_RECOVERY_NONE;
@@ -204,12 +204,52 @@ en_WAV_ANALYZER_ERROR wav_decode_bsd_decode_mzf (
          * z jineho souboru na pasce (falsny tapemark).
          */
         uint16_t expected_id = ( uint16_t ) chunk_count;
+
+        /*
+         * Obnova: kus s chybou CRC a ID, které se od očekávaného liší nejvýš o
+         * WAV_BSD_ID_MAX_FLIPS bitů, patří na očekávané místo (poškozené je i ID; jiné ID
+         * znamená cizí data); kus s platným CRC a ID o málo vyšším znamená chybějící kusy.
+         */
+        uint32_t gap = 0;
+        if ( allow_partial && chunk_id != expected_id && chunk_id != WAV_BSD_LAST_CHUNK_ID ) {
+            int flips = 0;
+            for ( uint16_t x = ( uint16_t ) ( chunk_id ^ expected_id ); x; x &= ( uint16_t ) ( x - 1 ) ) flips++;
+            if ( chunk_crc_error ) {
+                if ( flips <= WAV_BSD_ID_MAX_FLIPS ) chunk_id = expected_id;
+            } else if ( chunk_id > expected_id && ( uint32_t ) ( chunk_id - expected_id ) <= WAV_BSD_MAX_GAP
+                        && chunk_count + ( uint32_t ) ( chunk_id - expected_id ) < WAV_BSD_MAX_CHUNKS ) {
+                gap = ( uint32_t ) ( chunk_id - expected_id );
+                expected_id = chunk_id;
+            }
+        }
+
         if ( chunk_id != expected_id && chunk_id != WAV_BSD_LAST_CHUNK_ID ) {
             /* chunk ID mimo sekvenci - konec BSD dat */
             dec.pos = last_good_pos;
             if ( out_recovery_status )
                 *out_recovery_status |= WAV_RECOVERY_BSD_INCOMPLETE;
             break;
+        }
+
+        /* chybějící kusy: nuly na jejich místě */
+        if ( gap ) {
+            uint32_t need = body_size + ( gap + 1 ) * WAV_BSD_CHUNK_DATA_SIZE;
+            if ( need > body_capacity ) {
+                uint32_t new_cap = body_capacity;
+                while ( new_cap < need ) new_cap *= 2;
+                uint8_t *new_data = ( uint8_t* ) realloc ( body_data, new_cap );
+                if ( !new_data ) {
+                    free ( body_data );
+                    return WAV_ANALYZER_ERROR_ALLOC;
+                }
+                body_data = new_data;
+                body_capacity = new_cap;
+            }
+            memset ( &body_data[body_size], 0, gap * WAV_BSD_CHUNK_DATA_SIZE );
+            body_size += gap * WAV_BSD_CHUNK_DATA_SIZE;
+            chunk_count += gap;
+            info.gap_chunks += gap;
+            if ( out_recovery_status ) *out_recovery_status |= WAV_RECOVERY_BSD_GAPS;
         }
 
         /* zvetsime buffer pokud je potreba */

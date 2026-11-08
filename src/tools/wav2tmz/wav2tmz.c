@@ -1,7 +1,7 @@
 /**
  * @file   wav2tmz.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.11.1
+ * @version 2.13.0
  * @brief  Konverzni utilita WAV -> MZF/TMZ - dekodovani Sharp MZ kazetovych nahravek.
  *
  * Analyzuje WAV soubor obsahujici nahravku magnetofonove kazety
@@ -35,9 +35,10 @@
  * - --pulse-mode <mode>        : rezim ukladani delek pulzu: approximate, exact (vychozi: approximate)
  * - --charset <mode>           : znakova sada: eu (vychozi), jp, utf8-eu, utf8-jp
  * - --recover                  : zapnout vsechny recovery mody
- * - --recover-bsd              : obnovit nekompletni BSD soubory (chybejici terminator)
- * - --recover-body             : obnovit castecne telo (neni implementovano)
- * - --recover-header           : ulozit osirele hlavicky (neni implementovano)
+ * - --recover-bsd              : obnovit nekompletni BSD soubory (chybejici terminator, chybejici kusy)
+ * - --recover-body             : ponechat neuplne telo (FM, TURBO, FASTIPL, CPM-TAPE, zbytek 00h)
+ *                                a slozit telo FM ze dvou poskozenych kopii
+ * - --recover-header           : ponechat hlavicku zaznamu FM bez tela (telo 00h)
  * - --version                  : zobrazit verzi programu
  * - --lib-versions             : zobrazit verze knihoven
  * - --help (-h)                : zobrazit napovedu
@@ -80,7 +81,7 @@
 
 
 /** @brief Verze programu wav2tmz. */
-#define WAV2TMZ_VERSION "2.11.1"
+#define WAV2TMZ_VERSION "2.13.0"
 
 
 /** @brief Znakova sada pro zobrazeni nazvu souboru (nastaveno z --charset). */
@@ -164,9 +165,10 @@ static void print_usage ( const char *prog_name ) {
               "\n"
               "Recovery options:\n"
               "  --recover                 Enable all partial data recovery\n"
-              "  --recover-bsd             Recover incomplete BSD files (missing terminator)\n"
-              "  --recover-body            Recover partial body data (not yet implemented)\n"
-              "  --recover-header          Save header-only files (not yet implemented)\n"
+              "  --recover-bsd             Recover incomplete BSD files (missing terminator or chunks)\n"
+              "  --recover-body            Keep a body cut short on the tape (rest filled with 00h),\n"
+              "                            merge an FM body from two damaged copies\n"
+              "  --recover-header          Keep a valid header whose body is missing (body filled with 00h)\n"
               "\n"
               "  --version                 Show program version\n"
               "  --lib-versions            Show library versions\n"
@@ -229,6 +231,122 @@ static void generate_tmz_output_name ( const char *input_path,
     }
 
     snprintf ( output, output_size, "%.*s.tmz", ( int ) base_len, input_path );
+}
+
+
+/**
+ * @brief Zjistí, zda se má do bloku zapsat checksum jiný než vypočtený.
+ *
+ * Platí pro záznam s chybou CRC a pro obnovený soubor, jehož tělo je doplněné nulami:
+ * přehrání TMZ se pak chová jako poškozená páska a ROM ohlásí chybu.
+ *
+ * @param fr Výsledek souboru. Nesmí být NULL.
+ * @return 1 = aspoň jedna část má poškozený checksum, 0 = ne.
+ */
+static int has_damaged_checksum ( const st_WAV_ANALYZER_FILE_RESULT *fr ) {
+    return fr->header_crc_stored_valid || fr->body_crc_stored_valid
+           || ( fr->recovery_status & ( WAV_RECOVERY_PARTIAL_BODY | WAV_RECOVERY_HEADER_ONLY ) );
+}
+
+
+/**
+ * @brief Nastaví v argumentech profilu bajty checksumu poškozených částí.
+ *
+ * Checksum přečtený z pásky se zapíše beze změny. U neúplného těla checksum na
+ * pásce není: zapíše se počet jedniček v těle zvýšený o 1, tedy záměrně neplatná hodnota.
+ *
+ * @param fr Výsledek souboru. Nesmí být NULL.
+ * @param[in,out] a Argumenty profilu; ukazatele míří do ck_h a ck_b.
+ * @param[out] ck_h Buffer 2 B pro hlavičku, musí žít do volání tmz_profile_build_block().
+ * @param[out] ck_b Buffer 2 B pro tělo, totéž.
+ */
+static void set_tape_checksums ( const st_WAV_ANALYZER_FILE_RESULT *fr, st_TMZ_PROFILE_ARGS *a, uint8_t *ck_h, uint8_t *ck_b ) {
+    if ( fr->header_crc_stored_valid ) {
+        ck_h[0] = ( uint8_t ) ( fr->header_crc_stored >> 8 );
+        ck_h[1] = ( uint8_t ) fr->header_crc_stored;
+        a->ck_header = ck_h;
+    }
+    uint16_t body_ck = fr->body_crc_stored;
+    if ( !fr->body_crc_stored_valid ) {
+        if ( !( fr->recovery_status & ( WAV_RECOVERY_PARTIAL_BODY | WAV_RECOVERY_HEADER_ONLY ) ) || !fr->mzf ) return;
+        body_ck = 1;
+        for ( uint32_t i = 0; i < fr->mzf->body_size; i++ ) {
+            for ( uint8_t v = fr->mzf->body[i]; v; v &= ( uint8_t ) ( v - 1 ) ) body_ck++;
+        }
+    }
+    ck_b[0] = ( uint8_t ) ( body_ck >> 8 );
+    ck_b[1] = ( uint8_t ) body_ck;
+    a->ck_body = ck_b;
+}
+
+
+/**
+ * @brief Blok 0x46 ROM-800-NOMINAL pro poškozený záznam NORMAL 1:1.
+ *
+ * @param fr Výsledek souboru s MZF. Nesmí být NULL.
+ * @return Nový blok, nebo NULL při chybě (vypíše ji na stderr).
+ */
+static st_TZX_BLOCK* create_block_damaged ( const st_WAV_ANALYZER_FILE_RESULT *fr ) {
+    st_TMZ_PROFILE_ARGS a;
+    uint8_t ck_h[2], ck_b[2];
+    en_TMZ_PROFILE_ERROR pe;
+    tmz_profile_args_init ( &a );
+    a.pause_ms = DEFAULT_PAUSE_MS;
+    set_tape_checksums ( fr, &a, ck_h, ck_b );
+    st_TZX_BLOCK *b = tmz_profile_build_block ( "ROM-800-NOMINAL", &a, &fr->mzf->header, fr->mzf->body, fr->mzf->body_size, &pe );
+    if ( !b ) fprintf ( stderr, "Error: profile ROM-800-NOMINAL: %s\n", tmz_profile_error_string ( pe ) );
+    return b;
+}
+
+
+/**
+ * @brief Popíše obnovu souboru jednou větou (pro blok 0x30).
+ *
+ * @param fr Výsledek souboru. Nesmí být NULL.
+ * @param[out] buf Buffer pro text.
+ * @param n Velikost bufferu.
+ * @return buf.
+ */
+static const char* recovery_describe ( const st_WAV_ANALYZER_FILE_RESULT *fr, char *buf, size_t n ) {
+    if ( fr->recovery_status & WAV_RECOVERY_PARTIAL_BODY ) {
+        snprintf ( buf, n, "partial body (%u of %u bytes read, rest filled with 00h)",
+                   fr->recovered_bytes, fr->expected_bytes );
+    } else if ( fr->recovery_status & WAV_RECOVERY_HEADER_ONLY ) {
+        snprintf ( buf, n, "header only (body %u bytes filled with 00h)", fr->expected_bytes );
+    } else if ( fr->recovery_status & WAV_RECOVERY_FSIZE_REPAIRED ) {
+        snprintf ( buf, n, "fsize repaired from body length (%u bytes on tape)", fr->expected_bytes );
+    } else if ( fr->recovery_status & WAV_RECOVERY_COPY_MERGED ) {
+        snprintf ( buf, n, "body merged from two damaged copies (%u bytes from the second copy)", fr->merged_bytes );
+    } else if ( fr->recovery_status & WAV_RECOVERY_BSD_GAPS ) {
+        snprintf ( buf, n, "%u BSD chunks missing, filled with 00h", fr->bsd_gap_chunks );
+    } else {
+        snprintf ( buf, n, "%s", wav_recovery_status_string ( fr->recovery_status ) );
+    }
+    return buf;
+}
+
+
+/**
+ * @brief Sestaví krátkou značku obnovy do souhrnu (" [RECOVERED: ...]").
+ *
+ * @param fr Výsledek souboru s recovery_status != 0. Nesmí být NULL.
+ * @param[out] buf Buffer pro text.
+ * @param n Velikost bufferu.
+ */
+static void recovery_tag ( const st_WAV_ANALYZER_FILE_RESULT *fr, char *buf, size_t n ) {
+    if ( fr->recovery_status & WAV_RECOVERY_PARTIAL_BODY ) {
+        snprintf ( buf, n, " [RECOVERED: partial body %u/%u]", fr->recovered_bytes, fr->expected_bytes );
+    } else if ( fr->recovery_status & WAV_RECOVERY_HEADER_ONLY ) {
+        snprintf ( buf, n, " [RECOVERED: header only]" );
+    } else if ( fr->recovery_status & WAV_RECOVERY_FSIZE_REPAIRED ) {
+        snprintf ( buf, n, " [RECOVERED: fsize repaired]" );
+    } else if ( fr->recovery_status & WAV_RECOVERY_COPY_MERGED ) {
+        snprintf ( buf, n, " [RECOVERED: copies merged]" );
+    } else if ( fr->recovery_status & WAV_RECOVERY_BSD_GAPS ) {
+        snprintf ( buf, n, " [RECOVERED: %u BSD chunks missing]", fr->bsd_gap_chunks );
+    } else {
+        snprintf ( buf, n, " [RECOVERED]" );
+    }
 }
 
 
@@ -755,8 +873,10 @@ static st_TZX_BLOCK* create_block_cpmtape ( const st_WAV_ANALYZER_FILE_RESULT *f
 static int create_block_writer ( const st_WAV_ANALYZER_FILE_RESULT *file_result, st_TZX_BLOCK **out_block ) {
     const char *id = NULL;
     st_TMZ_PROFILE_ARGS a;
+    uint8_t ck_h[2], ck_b[2];
     tmz_profile_args_init ( &a );
     a.pause_ms = DEFAULT_PAUSE_MS;
+    set_tape_checksums ( file_result, &a, ck_h, ck_b );
     en_WAV_TAPE_FORMAT f = file_result->format;
     if ( file_result->writer == WAV_WRITER_TURBOCOPY && ( f == WAV_TAPE_FORMAT_NORMAL || f == WAV_TAPE_FORMAT_TURBO ) ) {
         id = "TC-1.21";
@@ -782,7 +902,8 @@ static int create_block_writer ( const st_WAV_ANALYZER_FILE_RESULT *file_result,
  * @brief Vytvori TMZ blok z dekodovaneho souboru podle jeho formatu.
  *
  * Mapovani formatu na TMZ bloky:
- *   - NORMAL, MZ-80B        -> blok 0x40 (MZ Standard Data)
+ *   - NORMAL, MZ-80B        -> blok 0x40 (MZ Standard Data); NORMAL 1:1 s poškozeným
+ *                              checksumem -> blok 0x46 ROM-800-NOMINAL s bajty checksumu
  *   - TURBO, FASTIPL, CPM-CMT, FSK, SLOW, DIRECT
  *                            -> blok 0x41 (MZ Turbo Data)
  *   - CPM-TAPE               -> blok 0x46 (IC-10.2-CPM / PEZIK-2.0A)
@@ -842,6 +963,10 @@ static st_TZX_BLOCK* create_tmz_block_from_result ( const st_WAV_ANALYZER_FILE_R
                 }
             }
             if ( speed == CMTSPEED_1_1 ) {
+                /* poškozený záznam: blok 0x40 checksum nenese, 0x46 ho uloží věrně */
+                if ( file_result->format == WAV_TAPE_FORMAT_NORMAL && has_damaged_checksum ( file_result ) ) {
+                    return create_block_damaged ( file_result );
+                }
                 /* kategorie 1: standardni 1200 Bd -> blok 0x40 */
                 return create_block_standard ( file_result );
             } else {
@@ -1048,9 +1173,10 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
             /* recovery metadata jako Text Description (blok 0x30) */
             if ( file_result->recovery_status != WAV_RECOVERY_NONE ) {
                 char recovery_desc[256];
+                char recovery_text[128];
                 snprintf ( recovery_desc, sizeof ( recovery_desc ),
                            "WARNING: Recovered - %s",
-                           wav_recovery_status_string ( file_result->recovery_status ) );
+                           recovery_describe ( file_result, recovery_text, sizeof ( recovery_text ) ) );
 
                 st_TZX_BLOCK rec_desc_block;
                 en_TZX_ERROR rec_err = tzx_block_create_text_description (
@@ -1144,6 +1270,11 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
             char fname[MZF_FNAME_UTF8_BUF_SIZE];
             mzf_tools_get_fname_ex ( &fr->mzf->header, fname, sizeof ( fname ), name_encoding );
 
+            char recovered_tag[64] = "";
+            if ( fr->recovery_status != WAV_RECOVERY_NONE ) {
+                recovery_tag ( fr, recovered_tag, sizeof ( recovered_tag ) );
+            }
+
             fprintf ( stdout, "  [%u] \"%s\" - %s, %u bytes, CRC: header=%s body=%s%s%s\n",
                       i + 1, fname,
                       wav_tape_format_name ( fr->format ),
@@ -1151,7 +1282,7 @@ static int save_tmz ( const st_WAV_ANALYZER_RESULT *result,
                       fr->header_crc == WAV_CRC_OK ? "OK" : ( fr->header_crc == WAV_CRC_ERROR ? "ERROR" : "N/A" ),
                       fr->body_crc == WAV_CRC_OK ? "OK" : ( fr->body_crc == WAV_CRC_ERROR ? "ERROR" : "N/A" ),
                       fr->copy2_used ? " (Copy2)" : "",
-                      fr->recovery_status != WAV_RECOVERY_NONE ? " [RECOVERED]" : "" );
+                      recovered_tag );
         }
     }
 

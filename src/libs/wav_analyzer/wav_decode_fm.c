@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_fm.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.3.0
+ * @version 1.5.0
  * @brief  Implementace vrstvy 4a - FM dekodér.
  *
  * Dekóduje FM modulovaný signál (NORMAL/SINCLAIR/CPM/MZ-80B).
@@ -32,6 +32,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 #include "libs/mzf/mzf.h"
@@ -90,9 +91,34 @@ static inline int is_long_pulse ( const st_WAV_FM_DECODER *dec, uint32_t pos ) {
 }
 
 
+/**
+ * @brief Najde tapemark s volitelnou horní mezí délky běhu LONG.
+ *
+ * @param dec Dekodér; při nalezení je dec->pos za tapemarkem, jinak beze změny.
+ * @param type Druh tapemarku (dolní meze).
+ * @param max_long_hp Nejvíc půlvln LONG (0 = bez meze). Delší tapemark znamená LTM
+ *        dalšího záznamu a hledání končí chybou (tělo aktuálního záznamu chybí).
+ * @return WAV_ANALYZER_OK, WAV_ANALYZER_ERROR_DECODE_TAPEMARK, WAV_ANALYZER_ERROR_INVALID_PARAM.
+ */
+static en_WAV_ANALYZER_ERROR find_tapemark_bounded (
+    st_WAV_FM_DECODER *dec,
+    en_WAV_TAPEMARK_TYPE type,
+    uint32_t max_long_hp
+);
+
+
 en_WAV_ANALYZER_ERROR wav_decode_fm_find_tapemark (
     st_WAV_FM_DECODER *dec,
     en_WAV_TAPEMARK_TYPE type
+) {
+    return find_tapemark_bounded ( dec, type, 0 );
+}
+
+
+static en_WAV_ANALYZER_ERROR find_tapemark_bounded (
+    st_WAV_FM_DECODER *dec,
+    en_WAV_TAPEMARK_TYPE type,
+    uint32_t max_long_hp
 ) {
     if ( !dec || !dec->seq ) {
         return WAV_ANALYZER_ERROR_INVALID_PARAM;
@@ -145,6 +171,10 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_find_tapemark (
         }
 
         if ( short_hp_count >= min_short_hp ) {
+            /* příliš dlouhý tapemark patří dalšímu záznamu: hledání končí */
+            if ( max_long_hp && long_hp_count > max_long_hp ) {
+                return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
+            }
             /* tapemark nalezen - pozice je za ním */
             dec->pos = pos;
             return WAV_ANALYZER_OK;
@@ -274,11 +304,13 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_read_byte (
 }
 
 
-en_WAV_ANALYZER_ERROR wav_decode_fm_read_block (
+en_WAV_ANALYZER_ERROR wav_decode_fm_read_block_n (
     st_WAV_FM_DECODER *dec,
     uint8_t *data,
-    uint32_t size
+    uint32_t size,
+    uint32_t *out_read
 ) {
+    if ( out_read ) *out_read = 0;
     if ( !dec || !data ) {
         return WAV_ANALYZER_ERROR_INVALID_PARAM;
     }
@@ -286,9 +318,19 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_read_block (
     for ( uint32_t i = 0; i < size; i++ ) {
         en_WAV_ANALYZER_ERROR err = wav_decode_fm_read_byte ( dec, &data[i] );
         if ( err != WAV_ANALYZER_OK ) return err;
+        if ( out_read ) *out_read = i + 1;
     }
 
     return WAV_ANALYZER_OK;
+}
+
+
+en_WAV_ANALYZER_ERROR wav_decode_fm_read_block (
+    st_WAV_FM_DECODER *dec,
+    uint8_t *data,
+    uint32_t size
+) {
+    return wav_decode_fm_read_block_n ( dec, data, size, NULL );
 }
 
 
@@ -530,6 +572,510 @@ static en_WAV_ANALYZER_ERROR find_tapemark_period_phase ( const st_WAV_FM_DECODE
 }
 
 
+int wav_decode_fm_find_copy_start (
+    const st_WAV_PULSE_SEQUENCE *seq,
+    uint32_t section_start,
+    double threshold_us,
+    uint32_t expected_size,
+    uint32_t *out_start
+) {
+    if ( !seq || !out_start ) return 0;
+
+    uint64_t sec_halves = ( ( uint64_t ) expected_size + 2 ) * 18 + 2;
+    uint64_t lim64 = ( uint64_t ) section_start + 2 * sec_halves + COPY2_SEARCH_MARGIN;
+    uint32_t limit = ( lim64 > seq->count ) ? seq->count : ( uint32_t ) lim64;
+
+    uint32_t pos = section_start;
+    while ( pos < limit ) {
+        if ( seq->pulses[pos].duration_us >= threshold_us ) {
+            pos++;
+            continue;
+        }
+        uint32_t run_start = pos;
+        while ( pos < seq->count && seq->pulses[pos].duration_us < threshold_us ) pos++;
+        uint32_t run = pos - run_start;
+        if ( run < COPY2_MIN_SEP_HALVES ) continue;
+        if ( run > COPY2_MAX_SEP_HALVES || pos + 2 >= seq->count ) return 0;
+        *out_start = pos + 2;   /* za start bitem prvního bajtu kopie */
+        return 1;
+    }
+    return 0;
+}
+
+
+/**
+ * @brief Spočítá bajty, ve kterých se data 1. kopie liší od 2. kopie.
+ *
+ * @param dec Dekodér (práh, sekvence; nemění se).
+ * @param section_start První datová půlvlna 1. kopie.
+ * @param data Data 1. kopie.
+ * @param size Velikost dat.
+ * @return Počet rozdílných bajtů; 0, když kopie není, nedá se přečíst, nemá vlastní
+ *         platný součet (poškozená kopie, nebo vůbec o kopii nejde), nebo se liší ve více
+ *         než polovině bajtů.
+ */
+static uint32_t count_copy_diff ( const st_WAV_FM_DECODER *dec, uint32_t section_start, const uint8_t *data, uint32_t size ) {
+    uint32_t start = 0;
+    if ( size == 0 || !wav_decode_fm_find_copy_start ( dec->seq, section_start, dec->threshold_us, size, &start ) ) return 0;
+    uint8_t *copy = ( uint8_t* ) malloc ( size );
+    if ( !copy ) return 0;
+    st_WAV_FM_DECODER c = *dec;
+    c.pos = start;
+    c.crc_accumulator = 0;
+    uint32_t diff = 0;
+    if ( wav_decode_fm_read_block ( &c, copy, size ) == WAV_ANALYZER_OK ) {
+        en_WAV_CRC_STATUS st = WAV_CRC_ERROR;
+        wav_decode_fm_verify_checksum ( &c, &st, NULL, NULL );
+        if ( st == WAV_CRC_OK ) {
+            for ( uint32_t i = 0; i < size; i++ ) diff += ( copy[i] != data[i] );
+        }
+    }
+    free ( copy );
+    return ( diff > size / 2 ) ? 0 : diff;
+}
+
+
+/**
+ * @brief Nejkratší běh SHORT půlvln, který uvnitř dat nemůže vzniknout.
+ *
+ * Bajt má vždy start bit LONG (kód ROM @WBYTE), nejdelší běh SHORT v datech je
+ * proto 16 půlvln (bajt 00h). Oddělovač kopie (256 S), tón ani konec dat kratší
+ * běh neprodukují; hodnota 32 nechává rezervu na poškozený start bit.
+ */
+#define FM_DATA_END_SHORT_RUN 32
+
+/** @brief Půlvln na bajt: start bit a 8 datových bitů po dvou půlvlnách. */
+#define FM_BYTE_HALVES 18U
+
+
+/**
+ * @brief Najde v úseku první běh SHORT půlvln delší, než jaký může být v datech.
+ *
+ * @param dec Dekodér (práh, sekvence).
+ * @param from První prohledávaná půlvlna.
+ * @param to Konec úseku (výlučně); běh může za něj pokračovat.
+ * @param[out] out_pos Index první půlvlny běhu.
+ * @return 1 = běh nalezen, 0 = nenalezen.
+ */
+static int find_short_run ( const st_WAV_FM_DECODER *dec, uint32_t from, uint32_t to, uint32_t *out_pos ) {
+    uint32_t run = 0;
+    for ( uint32_t i = from; i < dec->seq->count && ( i < to || run > 0 ); i++ ) {
+        if ( is_long_pulse ( dec, i ) ) {
+            run = 0;
+        } else if ( ++run >= FM_DATA_END_SHORT_RUN ) {
+            *out_pos = i + 1 - run;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+
+/**
+ * @brief Násobek prahu, od kterého je půlvlna mezera v signálu (ne LONG).
+ *
+ * LONG je zhruba 1,2násobek prahu; poslední půlvlna záznamu před tichem splyne s pauzou.
+ */
+#define FM_DATA_END_GAP_FACTOR 4.0
+
+
+/**
+ * @brief Najde konec datové sekce od dané půlvlny.
+ *
+ * @param dec Dekodér.
+ * @param from První datová půlvlna.
+ * @param stop_at_gap 1 = mezera v signálu také končí sekci (nepoškozený záznam), 0 = ne
+ *        (výpadek uvnitř poškozené kopie sekci nekončí).
+ * @return Index za koncem sekce: začátek běhu SHORT, který v datech být nemůže, půlvlna
+ *         za mezerou (koncová půlvlna splynulá s tichem patří k sekci), nebo konec sekvence.
+ *         Se stop_at_gap = 0 končí sekci mezera jen tehdy, když za ní do běhu SHORT
+ *         nebo konce sekvence není ani jeden bajt (ticho za záznamem, ne výpadek v datech).
+ */
+static uint32_t data_section_end ( const st_WAV_FM_DECODER *dec, uint32_t from, int stop_at_gap ) {
+    uint32_t run = 0;
+    uint32_t end = dec->seq->count;
+    uint32_t gap_end = 0;
+    for ( uint32_t i = from; i < dec->seq->count; i++ ) {
+        if ( dec->seq->pulses[i].duration_us >= dec->threshold_us * FM_DATA_END_GAP_FACTOR ) {
+            if ( stop_at_gap ) return i + 1;
+            gap_end = i + 1;
+        }
+        if ( is_long_pulse ( dec, i ) ) {
+            run = 0;
+        } else if ( ++run >= FM_DATA_END_SHORT_RUN ) {
+            end = i + 1 - run;
+            break;
+        }
+    }
+    return ( gap_end && end - gap_end < FM_BYTE_HALVES ) ? gap_end : end;
+}
+
+
+en_WAV_ANALYZER_ERROR wav_decode_fm_estimate_body_bytes (
+    const st_WAV_FM_DECODER *dec,
+    uint32_t from,
+    uint32_t *out_bytes,
+    int *out_frame_ok
+) {
+    if ( !dec || !out_bytes || !out_frame_ok ) {
+        return WAV_ANALYZER_ERROR_INVALID_PARAM;
+    }
+
+    uint32_t end = data_section_end ( dec, from, 1 );
+
+    /* od první datové půlvlny: (n + 2) bajtů po 18 půlvlnách včetně koncového L */
+    uint32_t halves = ( end > from ) ? end - from : 0;
+    if ( halves + 1 < FM_BYTE_HALVES * 3 ) {
+        return WAV_ANALYZER_ERROR_DECODE_DATA;
+    }
+    *out_bytes = ( halves + 1 ) / FM_BYTE_HALVES - 2;
+    *out_frame_ok = ( ( halves + 1 ) % FM_BYTE_HALVES ) <= 2;
+    return WAV_ANALYZER_OK;
+}
+
+
+/** @brief Kolik bajtů před místem ztráty rámce se považuje za nespolehlivých. */
+#define FM_MERGE_BACKOFF 8U
+
+/** @brief Nejvíc rozdílných bajtů, jejichž kombinace se zkoušejí. */
+#define FM_MERGE_MAX_DIFF 16U
+
+/** @brief Rezerva bitu pod tímto podílem prahu je pochybná (změřeno na simulaci poškození). */
+#define FM_MERGE_DOUBT 0.05
+
+/** @brief Kolik z následujících start bitů musí sedět, aby šlo o chybu jednoho bitu, ne ztrátu rámce. */
+#define FM_MERGE_LOOKAHEAD_HITS 7
+
+/** @brief Počet následujících start bitů kontrolovaných při pochybnosti o rámci. */
+#define FM_MERGE_LOOKAHEAD 8U
+
+
+/** @brief Počet jedničkových bitů v bajtu. @param v Bajt. @return Počet. */
+static int bits_set ( uint8_t v ) {
+    int n = 0;
+    for ( ; v; v &= ( uint8_t ) ( v - 1 ) ) n++;
+    return n;
+}
+
+
+/** @brief Průměr dvojice půlvln. @param dec Dekodér. @param p Index první půlvlny (p + 1 < count). @return Průměr v us. */
+static inline double pair_avg ( const st_WAV_FM_DECODER *dec, uint32_t p ) {
+    return ( dec->seq->pulses[p].duration_us + dec->seq->pulses[p + 1].duration_us ) / 2.0;
+}
+
+
+/**
+ * @brief Přečte bajt na pevné pozici.
+ * @param dec Dekodér. @param p První půlvlna bajtu (p + 16 <= count).
+ * @param[out] v Bajt. @param[out] margin Nejmenší vzdálenost bitu od prahu v us.
+ */
+static void framed_byte ( const st_WAV_FM_DECODER *dec, uint32_t p, uint8_t *v, double *margin ) {
+    uint8_t x = 0;
+    double m = 1e18;
+    for ( uint32_t b = 0; b < 8; b++ ) {
+        double a = pair_avg ( dec, p + 2 * b );
+        x = ( uint8_t ) ( ( x << 1 ) | ( a >= dec->threshold_us ) );
+        double d = fabs ( a - dec->threshold_us );
+        if ( d < m ) m = d;
+    }
+    *v = x;
+    *margin = m;
+}
+
+
+/**
+ * @brief Zjistí, zda je v úseku půlvln mezera (výpadek signálu).
+ * @param dec Dekodér. @param from Začátek úseku. @param len Délka úseku.
+ * @return 1 = mezera v úseku je, 0 = není.
+ */
+static int section_has_gap ( const st_WAV_FM_DECODER *dec, uint32_t from, uint32_t len ) {
+    for ( uint32_t i = from; i < from + len && i < dec->seq->count; i++ ) {
+        if ( dec->seq->pulses[i].duration_us >= dec->threshold_us * FM_DATA_END_GAP_FACTOR ) return 1;
+    }
+    return 0;
+}
+
+
+/**
+ * @brief Přečte kopii z obou konců podle rámce start bitů.
+ *
+ * Zepředu se čte, dokud sedí start bity; ojedinělý špatný start bit je chyba bitu, víc
+ * jich znamená ztrátu rámce. Zezadu totéž od konce sekce. Bajty těsně před místem ztráty
+ * se nepoužijí (FM_MERGE_BACKOFF). Mezera v bajtu znamená ztrátu rámce, i když start bity
+ * dál sedí (výpadek o celé bajty). Sekce s jinou délkou, než odpovídá n, se čte jen zezadu:
+ * posun o celé bajty bez mezery by jinak vydával špatné bajty za platné (sloučení je
+ * pak odmítne přes počet rozdílů). Čtení zezadu proběhne, jen když se rámec zepředu ztratil.
+ *
+ * @param dec Dekodér.
+ * @param from První datová půlvlna kopie.
+ * @param n Bajtů v sekci (data + součet).
+ * @param[out] v Bajty (n). @param[out] ok 1 = bajt je platný (n). @param[out] mg Rezerva bajtu v us (n).
+ */
+static void read_framed ( const st_WAV_FM_DECODER *dec, uint32_t from, uint32_t n, uint8_t *v, uint8_t *ok, double *mg ) {
+    const uint32_t count = dec->seq->count;
+    memset ( ok, 0, n );
+    if ( from >= count ) return;
+
+    /* zepředu: start bit bajtu k leží na from + 18k - 2 */
+    uint32_t lost = n;
+    for ( uint32_t k = 1; k < n; k++ ) {
+        uint32_t p = from + FM_BYTE_HALVES * k - 2;
+        if ( p + 1 >= count || section_has_gap ( dec, p > FM_BYTE_HALVES ? p - FM_BYTE_HALVES : from, FM_BYTE_HALVES ) ) {
+            lost = k;
+            break;
+        }
+        if ( pair_avg ( dec, p ) < dec->threshold_us ) {
+            int hits = 0;
+            for ( uint32_t j = 1; j <= FM_MERGE_LOOKAHEAD && p + FM_BYTE_HALVES * j + 1 < count; j++ ) {
+                hits += ( pair_avg ( dec, p + FM_BYTE_HALVES * j ) >= dec->threshold_us );
+            }
+            if ( hits < FM_MERGE_LOOKAHEAD_HITS ) {
+                lost = k;
+                break;
+            }
+        }
+    }
+    /* rámec zepředu drží, ale sekce má jinou délku: posun o celé bajty beze stopy */
+    uint32_t end_run = data_section_end ( dec, from, 0 );
+    if ( lost == n && end_run != from + FM_BYTE_HALVES * n ) lost = 0;
+    uint32_t good = ( lost == n ) ? n : ( lost > FM_MERGE_BACKOFF ? lost - FM_MERGE_BACKOFF : 0 );
+    for ( uint32_t k = 0; k < good; k++ ) {
+        uint32_t p = from + FM_BYTE_HALVES * k;
+        if ( p + 16 > count ) break;
+        framed_byte ( dec, p, &v[k], &mg[k] );
+        ok[k] = 1;
+    }
+    if ( lost == n ) return;
+
+    /* zezadu: sekce včetně koncového L má (n) x 18 půlvln od první datové */
+    uint32_t e = data_section_end ( dec, from, 0 );
+    /*
+     * Končí-li sekce mezerou, koncová půlvlna buď splynula s tichem (mezera patří k sekci),
+     * nebo je ticho samostatná půlvlna navíc. Rozhodnou start bity posledních bajtů.
+     */
+    if ( e > from + FM_BYTE_HALVES * ( FM_MERGE_LOOKAHEAD + 2 ) && e <= count
+         && dec->seq->pulses[e - 1].duration_us >= dec->threshold_us * FM_DATA_END_GAP_FACTOR ) {
+        int with_gap = 0, without_gap = 0;
+        for ( uint32_t j = 1; j <= FM_MERGE_LOOKAHEAD; j++ ) {
+            with_gap += ( pair_avg ( dec, e - FM_BYTE_HALVES * j - 2 ) >= dec->threshold_us );
+            without_gap += ( pair_avg ( dec, e - 1 - FM_BYTE_HALVES * j - 2 ) >= dec->threshold_us );
+        }
+        if ( without_gap > with_gap ) e--;
+    }
+    if ( e < from + FM_BYTE_HALVES || e < FM_BYTE_HALVES * n || pair_avg ( dec, e - 2 ) < dec->threshold_us ) return;
+    uint32_t first = e - FM_BYTE_HALVES * n;   /* poloha bajtu 0 podle konce */
+    uint32_t back = 0;                         /* index, kde se rámec zezadu ztratil; 0 = neztratil */
+    for ( uint32_t k = n - 1; k >= 1; k-- ) {
+        uint32_t p = first + FM_BYTE_HALVES * k - 2;
+        if ( p < from || section_has_gap ( dec, p, FM_BYTE_HALVES ) ) {
+            back = k;
+            break;
+        }
+        if ( pair_avg ( dec, p ) < dec->threshold_us ) {
+            int hits = 0;
+            for ( uint32_t j = 1; j <= FM_MERGE_LOOKAHEAD && p >= from + FM_BYTE_HALVES * j; j++ ) {
+                hits += ( pair_avg ( dec, p - FM_BYTE_HALVES * j ) >= dec->threshold_us );
+            }
+            if ( hits < FM_MERGE_LOOKAHEAD_HITS ) {
+                back = k;
+                break;
+            }
+        }
+    }
+    uint32_t start = back ? back + FM_MERGE_BACKOFF : 0;
+    for ( uint32_t k = start; k < n; k++ ) {
+        uint32_t p = first + FM_BYTE_HALVES * k;
+        if ( ok[k] || p < from || p + 16 > count ) continue;
+        framed_byte ( dec, p, &v[k], &mg[k] );
+        ok[k] = 1;
+    }
+}
+
+
+int wav_decode_fm_merge_copies (
+    const st_WAV_FM_DECODER *dec,
+    uint32_t from1,
+    uint32_t from2,
+    uint32_t size,
+    uint8_t *out,
+    uint32_t *out_from_copy
+) {
+    if ( !dec || !out || size == 0 ) return 0;
+    uint32_t n = size + 2;
+    uint8_t *mem = ( uint8_t* ) malloc ( 4 * ( size_t ) n + 2 * ( size_t ) n * sizeof ( double ) + 2 * ( size_t ) n );
+    if ( !mem ) return 0;
+    uint8_t *a = mem, *b = a + n, *oa = b + n, *ob = oa + n, *base = ob + n, *alt = base + n;
+    double *ma = ( double* ) calloc ( 2 * ( size_t ) n, sizeof ( double ) );
+    if ( !ma ) {
+        free ( mem );
+        return 0;
+    }
+    double *mb = ma + n;
+    int accepted = 0;
+    uint32_t diff[FM_MERGE_MAX_DIFF];
+    uint32_t k = 0;
+    int doubt_us_ok = 1;
+    double doubt = dec->threshold_us * FM_MERGE_DOUBT;
+
+    read_framed ( dec, from1, n, a, oa, ma );
+    read_framed ( dec, from2, n, b, ob, mb );
+
+    int cks[2], ncks = 0;
+    if ( oa[size] && oa[size + 1] ) cks[ncks++] = ( a[size] << 8 ) | a[size + 1];
+    if ( ob[size] && ob[size + 1] ) {
+        int c = ( b[size] << 8 ) | b[size + 1];
+        if ( !ncks || c != cks[0] ) cks[ncks++] = c;
+    }
+    if ( !ncks ) doubt_us_ok = 0;
+
+    for ( uint32_t i = 0; i < size && doubt_us_ok; i++ ) {
+        if ( !oa[i] && !ob[i] ) {
+            doubt_us_ok = 0;
+            break;
+        }
+        base[i] = oa[i] ? a[i] : b[i];
+        alt[i] = ob[i] ? b[i] : a[i];
+        if ( oa[i] && ob[i] && a[i] != b[i] ) {
+            int da = ma[i] < doubt, db = mb[i] < doubt;
+            if ( da != db ) {
+                base[i] = alt[i] = da ? b[i] : a[i];   /* pochybná kopie ustoupí čisté */
+                continue;
+            }
+            if ( k == FM_MERGE_MAX_DIFF ) {
+                doubt_us_ok = 0;
+                break;
+            }
+            diff[k++] = i;
+        }
+    }
+
+    if ( doubt_us_ok ) {
+        int fixed = 0;
+        for ( uint32_t i = 0; i < size; i++ ) fixed += bits_set ( base[i] );
+        int found = 0;
+        uint32_t best = 0;
+        for ( uint32_t m = 0; m < ( 1U << k ); m++ ) {
+            int s = fixed;
+            for ( uint32_t i = 0; i < k; i++ ) {
+                if ( m & ( 1U << i ) ) s += bits_set ( alt[diff[i]] ) - bits_set ( base[diff[i]] );
+            }
+            for ( int c = 0; c < ncks; c++ ) {
+                if ( s == cks[c] ) {
+                    found++;
+                    best = m;
+                    break;
+                }
+            }
+        }
+        if ( found == 1 ) {
+            for ( uint32_t i = 0; i < k; i++ ) {
+                if ( best & ( 1U << i ) ) base[diff[i]] = alt[diff[i]];
+            }
+            uint32_t from_copy = 0;
+            for ( uint32_t i = 0; i < size; i++ ) from_copy += ( !oa[i] || base[i] != a[i] );
+            memcpy ( out, base, size );
+            if ( out_from_copy ) *out_from_copy = from_copy;
+            accepted = 1;
+        }
+    }
+
+    free ( ma );
+    free ( mem );
+    return accepted;
+}
+
+
+en_WAV_ANALYZER_ERROR wav_decode_fm_read_body (
+    st_WAV_FM_DECODER *dec,
+    uint8_t *data,
+    uint32_t size,
+    st_WAV_BODY_RECOVERY *rec,
+    en_WAV_CRC_STATUS *crc_status,
+    uint16_t *crc_stored,
+    uint16_t *crc_computed,
+    uint32_t *out_end
+) {
+    if ( !dec || !data || !crc_status || !crc_stored || !crc_computed || !out_end ) {
+        return WAV_ANALYZER_ERROR_INVALID_PARAM;
+    }
+
+    int recover = rec && rec->enable;
+    uint32_t start = dec->pos;
+    uint32_t got = 0;
+    int partial = 0;
+    *crc_stored = 0;
+    *crc_computed = 0;
+    *crc_status = WAV_CRC_ERROR;
+
+    dec->crc_accumulator = 0;
+    en_WAV_ANALYZER_ERROR err = wav_decode_fm_read_block_n ( dec, data, size, &got );
+    if ( err != WAV_ANALYZER_OK ) {
+        if ( !recover || got == 0 ) return err;
+        memset ( &data[got], 0, size - got );
+        partial = 1;
+    } else {
+        wav_decode_fm_verify_checksum ( dec, crc_status, crc_stored, crc_computed );
+        if ( *crc_status == WAV_CRC_NOT_AVAILABLE && recover && size > 0 ) {
+            *crc_status = WAV_CRC_ERROR;
+            partial = 1;
+        }
+    }
+    *out_end = dec->pos;
+
+    /* po dvojicích půlvln: nesouměrné pulzy rychlých záznamů */
+    if ( recover && size > 0 && *crc_status == WAV_CRC_ERROR ) {
+        uint32_t limit = start + FM_BYTE_HALVES * size;
+        uint32_t run = 0;
+        for ( uint32_t i = start; i + 1 < dec->seq->count && i < limit + FM_DATA_END_SHORT_RUN; i += 2 ) {
+            if ( pair_avg ( dec, i ) >= dec->threshold_us ) {
+                run = 0;
+            } else if ( ( run += 2 ) >= FM_DATA_END_SHORT_RUN ) {
+                uint32_t pos = i + 2 - run;
+                if ( pos >= limit ) break;
+                got = ( pos - start ) / FM_BYTE_HALVES;
+                if ( got == 0 ) return WAV_ANALYZER_ERROR_DECODE_INCOMPLETE;
+                memset ( &data[got], 0, size - got );
+                *out_end = pos;
+                partial = 1;
+                break;
+            }
+        }
+    }
+
+    if ( partial ) {
+        *crc_stored = 0;
+        *crc_computed = 0;
+        rec->status |= WAV_RECOVERY_PARTIAL_BODY;
+        rec->read_bytes = got;
+        rec->expected_bytes = size;
+    }
+    return WAV_ANALYZER_OK;
+}
+
+
+/**
+ * @brief Zjistí, zda n bajtů od dané pozice má platný checksum.
+ *
+ * @param dec Dekodér (nemění se).
+ * @param from První datová půlvlna.
+ * @param size Počet bajtů.
+ * @return 1 = checksum souhlasí, 0 = nesouhlasí nebo data dojdou.
+ */
+static int probe_block_crc ( const st_WAV_FM_DECODER *dec, uint32_t from, uint32_t size ) {
+    uint8_t *probe = ( uint8_t* ) malloc ( size );
+    if ( !probe ) return 0;
+    st_WAV_FM_DECODER p = *dec;
+    en_WAV_CRC_STATUS st = WAV_CRC_ERROR;
+    p.pos = from;
+    p.crc_accumulator = 0;
+    if ( wav_decode_fm_read_block ( &p, probe, size ) == WAV_ANALYZER_OK ) {
+        wav_decode_fm_verify_checksum ( &p, &st, NULL, NULL );
+    }
+    free ( probe );
+    return st == WAV_CRC_OK;
+}
+
+
 en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
     const st_WAV_PULSE_SEQUENCE *seq,
     const st_WAV_LEADER_INFO *leader,
@@ -537,11 +1083,31 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
     st_WAV_DECODE_RESULT *out_header_result,
     st_WAV_DECODE_RESULT *out_body_result
 ) {
+    return wav_decode_fm_decode_mzf_ex ( seq, leader, NULL, out_mzf, out_header_result, out_body_result, NULL );
+}
+
+
+en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf_ex (
+    const st_WAV_PULSE_SEQUENCE *seq,
+    const st_WAV_LEADER_INFO *leader,
+    const st_WAV_FM_DECODE_OPTIONS *opts,
+    st_MZF **out_mzf,
+    st_WAV_DECODE_RESULT *out_header_result,
+    st_WAV_DECODE_RESULT *out_body_result,
+    st_WAV_FM_DECODE_INFO *out_info
+) {
     if ( !seq || !leader || !out_mzf ) {
         return WAV_ANALYZER_ERROR_INVALID_PARAM;
     }
 
     *out_mzf = NULL;
+
+    /* informace o průběhu se plní vždy, volající ji může vynechat */
+    st_WAV_FM_DECODE_INFO local_info;
+    st_WAV_FM_DECODE_INFO *info = out_info ? out_info : &local_info;
+    memset ( info, 0, sizeof ( *info ) );
+    int recover_body = opts && opts->recover_body;
+    int recover_header = opts && opts->recover_header;
 
     /* inicializujeme dekodér za koncem leader tónu */
     st_WAV_FM_DECODER dec;
@@ -585,6 +1151,7 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
 
     err = wav_decode_fm_read_block ( &dec, header_raw, MZF_HEADER_SIZE );
     if ( err != WAV_ANALYZER_OK ) {
+        info->body_error = err;
         return WAV_ANALYZER_ERROR_DECODE_DATA;
     }
 
@@ -627,6 +1194,14 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
         free ( hdr_copy2_data );
     }
 
+    if ( hdr_crc_status == WAV_CRC_OK && !hdr_copy2_used ) {
+        info->header_copy_diff = count_copy_diff ( &dec, header_pulse_start, header_raw, MZF_HEADER_SIZE );
+        if ( info->header_copy_diff ) {
+            fprintf ( stderr, "WARNING: header copies differ although the checksum is valid (%u bytes)\n",
+                      info->header_copy_diff );
+        }
+    }
+
     if ( out_header_result ) {
         out_header_result->format = WAV_TAPE_FORMAT_NORMAL;
         out_header_result->data = ( uint8_t* ) malloc ( MZF_HEADER_SIZE );
@@ -649,6 +1224,11 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
     mzf_header_swap_endianity ( &mzf_header );   /* 11h (fname.terminator) zůstává podle pásky */
 
     uint16_t body_size = mzf_header.fsize;
+
+    info->header_decoded = 1;
+    info->header_crc_ok = ( hdr_crc_status == WAV_CRC_OK );
+    info->expected_bytes = body_size;
+    memcpy ( info->header_raw, header_raw, MZF_HEADER_SIZE );
 
     /*
      * Deklarace před prvním skokem na create_mzf_no_body - goto nesmí
@@ -679,7 +1259,7 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
 
     /* hledáme krátký tapemark (STM) */
     uint32_t stm_from = dec.pos;
-    err = wav_decode_fm_find_tapemark ( &dec, WAV_TAPEMARK_SHORT );
+    err = find_tapemark_bounded ( &dec, WAV_TAPEMARK_SHORT, 2 * BODY_STM_MAX_LONG );
     sync_done = 0;
     if ( err != WAV_ANALYZER_OK ) {
         /*
@@ -709,7 +1289,7 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
             dec.pos = body_leader.start_index + body_leader.pulse_count;
             /* rekalibrujeme práh z body leaderu */
             dec.threshold_us = body_leader.avg_period_us * WAV_ANALYZER_FM_THRESHOLD_FACTOR;
-            err = wav_decode_fm_find_tapemark ( &dec, WAV_TAPEMARK_SHORT );
+            err = find_tapemark_bounded ( &dec, WAV_TAPEMARK_SHORT, 2 * BODY_STM_MAX_LONG );
         }
 
         if ( err != WAV_ANALYZER_OK ) {
@@ -717,6 +1297,10 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
             if ( body_size == 0 ) {
                 /* MZF bez těla - to je OK */
                 goto create_mzf_no_body;
+            }
+            info->body_error = WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
+            if ( recover_header && hdr_crc_status == WAV_CRC_OK ) {
+                goto keep_header_only;
             }
             return WAV_ANALYZER_ERROR_DECODE_TAPEMARK;
         }
@@ -734,23 +1318,63 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
     /* === 7. Dekódování těla === */
     body_pulse_start = dec.pos;
 
+    /*
+     * Hlavička s chybou CRC (bez platné kopie) může mít zničené fsize. Délku dat
+     * dá signál; přijme se jen ta, se kterou souhlasí checksum těla a kdy
+     * fsize z hlavičky checksum nesplní.
+     */
+    if ( hdr_crc_status == WAV_CRC_ERROR ) {
+        uint32_t est = 0;
+        int frame_ok = 0;
+        if ( wav_decode_fm_estimate_body_bytes ( &dec, body_pulse_start, &est, &frame_ok ) == WAV_ANALYZER_OK
+             && frame_ok && est > 0 && est <= 0xFFFF && est != body_size
+             && !( body_size > 0 && probe_block_crc ( &dec, body_pulse_start, body_size ) )
+             && probe_block_crc ( &dec, body_pulse_start, est ) ) {
+            fprintf ( stderr, "WARNING: header fsize %u does not match body length on tape (%u bytes), using tape length\n",
+                      body_size, est );
+            body_size = ( uint16_t ) est;
+            mzf_header.fsize = body_size;
+            info->expected_bytes = body_size;
+            info->recovery_status |= WAV_RECOVERY_FSIZE_REPAIRED;
+        }
+    }
+
     if ( body_size > 0 ) {
         body_data = ( uint8_t* ) malloc ( body_size );
         if ( !body_data ) return WAV_ANALYZER_ERROR_ALLOC;
 
         dec.crc_accumulator = 0;
-        err = wav_decode_fm_read_block ( &dec, body_data, body_size );
+        uint32_t body_read = 0;
+        err = wav_decode_fm_read_block_n ( &dec, body_data, body_size, &body_read );
+        info->recovered_bytes = body_read;
+        int body_partial = 0;
         if ( err != WAV_ANALYZER_OK ) {
-            free ( body_data );
-            return WAV_ANALYZER_ERROR_DECODE_DATA;
+            info->body_error = err;
+            if ( body_read == 0 && recover_header && hdr_crc_status == WAV_CRC_OK ) {
+                goto keep_header_only;
+            }
+            if ( !recover_body || body_read == 0 ) {
+                free ( body_data );
+                return WAV_ANALYZER_ERROR_DECODE_DATA;
+            }
+            /* konec signálu uvnitř těla: přečtené bajty zůstanou, zbytek 00h */
+            memset ( &body_data[body_read], 0, body_size - body_read );
+            body_partial = 1;
         }
 
         /* === 8. Verifikace CRC těla === */
-        en_WAV_CRC_STATUS body_crc_status;
+        en_WAV_CRC_STATUS body_crc_status = WAV_CRC_ERROR;
         uint16_t body_crc_stored = 0, body_crc_computed = 0;
-        wav_decode_fm_verify_checksum ( &dec, &body_crc_status, &body_crc_stored, &body_crc_computed );
+        if ( !body_partial ) {
+            wav_decode_fm_verify_checksum ( &dec, &body_crc_status, &body_crc_stored, &body_crc_computed );
+            if ( body_crc_status == WAV_CRC_NOT_AVAILABLE && recover_body ) {
+                /* data celá, signál skončil v checksumu: bez ověření nejde o úspěch */
+                body_crc_status = WAV_CRC_ERROR;
+                body_partial = 1;
+            }
+        }
 
-        if ( body_crc_status == WAV_CRC_ERROR ) {
+        if ( body_crc_status == WAV_CRC_ERROR && !body_partial ) {
             fprintf ( stderr, "WARNING: body CRC mismatch (stored=0x%04X, computed=0x%04X)\n",
                       body_crc_stored, body_crc_computed );
         }
@@ -764,7 +1388,7 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
         int body_copy2_used = 0;
         uint32_t body_consumed_end = dec.pos;
 
-        {
+        if ( !body_partial ) {
             uint8_t *copy2_data = NULL;
             en_WAV_CRC_STATUS copy2_crc;
             uint16_t copy2_stored = 0, copy2_computed = 0;
@@ -793,6 +1417,76 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
             free ( copy2_data );
         }
 
+        /*
+         * Obě kopie poškozené: složení z platných úseků obou kopií. Přijme se
+         * jen výsledek, který jednoznačně souhlasí se součtem z pásky.
+         */
+        int body_merged = 0;
+        if ( recover_body && !body_partial && body_crc_status == WAV_CRC_ERROR ) {
+            uint32_t copy_start = 0, from_copy = 0;
+            if ( wav_decode_fm_find_copy_start ( seq, body_pulse_start, dec.threshold_us, body_size, &copy_start )
+                 && wav_decode_fm_merge_copies ( &dec, body_pulse_start, copy_start, body_size, body_data, &from_copy ) ) {
+                uint16_t sum = 0;
+                for ( uint32_t i = 0; i < body_size; i++ ) sum = ( uint16_t ) ( sum + bits_set ( body_data[i] ) );
+                body_crc_status = WAV_CRC_OK;
+                body_crc_stored = sum;
+                body_crc_computed = sum;
+                body_merged = 1;
+                body_consumed_end = data_section_end ( &dec, copy_start, 0 );
+                info->merged_bytes = from_copy;
+                info->recovery_status |= WAV_RECOVERY_COPY_MERGED;
+                info->body_error = WAV_ANALYZER_OK;
+            }
+        }
+
+        /*
+         * Tělo přemazané dalším záznamem: čtení běželo přes jeho tón (do fsize, nebo do
+         * konce signálu). Dlouhý běh SHORT uvnitř dat je konec skutečných dat
+         * a tón zůstane dalšímu záznamu.
+         */
+        if ( recover_body && !body_merged && ( body_crc_status == WAV_CRC_ERROR || !body_copy2_used ) ) {
+            uint32_t run_pos = 0;
+            uint32_t data_end = body_pulse_start + ( uint32_t ) body_size * FM_BYTE_HALVES;
+            /*
+             * Samé SHORT hned od začátku dají nulová data se shodným nulovým součtem,
+             * proto se začátek kontroluje i při CRC OK; jinde je CRC OK důkazem dat.
+             */
+            uint32_t scan_to = ( body_crc_status == WAV_CRC_ERROR ) ? data_end : body_pulse_start + 1;
+            uint32_t sep_copy = 0;
+            /* běh před 2. kopií je její oddělovač, ne tón dalšího záznamu (kopie se jen zkrátila výpadkem) */
+            if ( find_short_run ( &dec, body_pulse_start, scan_to, &run_pos ) && run_pos < data_end
+                 && !( wav_decode_fm_find_copy_start ( seq, body_pulse_start, dec.threshold_us, body_size, &sep_copy )
+                       && run_pos < sep_copy ) ) {
+                body_read = ( run_pos - body_pulse_start ) / FM_BYTE_HALVES;
+                if ( body_read == 0 ) {
+                    /* za tapemarkem žádná data: není to částečné tělo */
+                    info->body_error = WAV_ANALYZER_ERROR_DECODE_INCOMPLETE;
+                    info->recovered_bytes = 0;
+                    if ( recover_header && hdr_crc_status == WAV_CRC_OK ) {
+                        goto keep_header_only;
+                    }
+                    free ( body_data );
+                    return WAV_ANALYZER_ERROR_DECODE_DATA;
+                }
+                memset ( &body_data[body_read], 0, body_size - body_read );
+                info->recovered_bytes = body_read;
+                body_consumed_end = run_pos;
+                body_partial = 1;
+            }
+        }
+
+        if ( body_partial ) {
+            info->recovery_status |= WAV_RECOVERY_PARTIAL_BODY;
+        }
+
+        if ( body_crc_status == WAV_CRC_OK && !body_copy2_used && !body_partial && !body_merged ) {
+            info->body_copy_diff = count_copy_diff ( &dec, body_pulse_start, body_data, body_size );
+            if ( info->body_copy_diff ) {
+                fprintf ( stderr, "WARNING: body copies differ although the checksum is valid (%u bytes)\n",
+                          info->body_copy_diff );
+            }
+        }
+
         if ( out_body_result ) {
             out_body_result->format = WAV_TAPE_FORMAT_NORMAL;
             out_body_result->data = ( uint8_t* ) malloc ( body_size );
@@ -808,6 +1502,25 @@ en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf (
             out_body_result->is_header = 0;
             out_body_result->copy2_used = body_copy2_used;
         }
+    }
+
+    goto create_mzf_no_body;
+
+    /*
+     * Obnova hlavičky bez těla: hlavička má platný CRC, tělo na pásce není.
+     * Tělo má fsize nul, aby soubor šel uložit a načíst.
+     */
+keep_header_only:
+    free ( body_data );
+    body_data = ( uint8_t* ) calloc ( body_size, 1 );
+    if ( !body_data ) return WAV_ANALYZER_ERROR_ALLOC;
+    info->recovery_status |= WAV_RECOVERY_HEADER_ONLY;
+    info->recovered_bytes = 0;
+    if ( out_body_result ) {
+        out_body_result->format = WAV_TAPE_FORMAT_NORMAL;
+        out_body_result->crc_status = WAV_CRC_NOT_AVAILABLE;
+        out_body_result->pulse_end = stm_from;
+        out_body_result->is_header = 0;
     }
 
     /* === 9. Sestavíme MZF strukturu === */

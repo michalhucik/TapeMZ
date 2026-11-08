@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_cpmtape.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.1.2
+ * @version 2.2.0
  * @brief  Implementace vrstvy 4e2 - dekodér CPM-TAPE (Manchester).
  *
  * Postup:
@@ -252,16 +252,19 @@ static int sync_pilot ( st_MRD *r, uint32_t *patterns ) {
  * @brief Přečte blok: flag, data a checksum.
  * @param r Čtečka za sync. @param flag Očekávaný flag. @param data Výstup (size B). @param size Délka.
  * @param[out] stored Checksum z pásky. @param[out] computed Vypočtený checksum.
+ * @param[out] out_read Počet přečtených datových bajtů, i při chybě. Může být NULL.
  * @return WAV_ANALYZER_OK, WAV_ANALYZER_ERROR_DECODE_DATA.
  */
 static en_WAV_ANALYZER_ERROR read_block ( st_MRD *r, uint8_t flag, uint8_t *data, uint32_t size,
-                                          uint16_t *stored, uint16_t *computed ) {
+                                          uint16_t *stored, uint16_t *computed, uint32_t *out_read ) {
     uint8_t f;
+    if ( out_read ) *out_read = 0;
     if ( read_byte ( r, &f ) || f != flag ) return WAV_ANALYZER_ERROR_DECODE_DATA;
     uint16_t sum = 0;
     for ( uint32_t i = 0; i < size; i++ ) {
         if ( read_byte ( r, &data[i] ) ) return WAV_ANALYZER_ERROR_DECODE_DATA;
         sum = ( uint16_t ) ( sum + data[i] );
+        if ( out_read ) *out_read = i + 1;
     }
     uint8_t lo, hi;
     if ( read_byte ( r, &lo ) || read_byte ( r, &hi ) ) return WAV_ANALYZER_ERROR_DECODE_DATA;
@@ -331,7 +334,8 @@ en_WAV_ANALYZER_ERROR wav_decode_cpmtape_decode_mzf (
     st_WAV_DECODE_RESULT *out_header_result,
     st_WAV_DECODE_RESULT *out_body_result,
     uint32_t *out_consumed_until,
-    st_WAV_CPMTAPE_INFO *out_info
+    st_WAV_CPMTAPE_INFO *out_info,
+    st_WAV_BODY_RECOVERY *rec
 ) {
     if ( !seq || !out_mzf ) return WAV_ANALYZER_ERROR_INVALID_PARAM;
     *out_mzf = NULL;
@@ -355,7 +359,7 @@ en_WAV_ANALYZER_ERROR wav_decode_cpmtape_decode_mzf (
         r.pos = start;
         r.h = h;
         uint32_t patterns = 0;
-        if ( sync_pilot ( &r, &patterns ) == 0 && read_block ( &r, WAV_CPMTAPE_FLAG_HEADER, hdr, CPMTAPE_HEADER_SIZE, &h_st, &h_cp )
+        if ( sync_pilot ( &r, &patterns ) == 0 && read_block ( &r, WAV_CPMTAPE_FLAG_HEADER, hdr, CPMTAPE_HEADER_SIZE, &h_st, &h_cp, NULL )
                                                    == WAV_ANALYZER_OK ) {
             info.half_us = h;
             info.pilot_header = patterns;
@@ -410,11 +414,21 @@ en_WAV_ANALYZER_ERROR wav_decode_cpmtape_decode_mzf (
         r.pos = bstart;
         r.h = bh;
         body_start = bstart;
+        uint32_t body_read = 0;
         if ( sync_pilot ( &r, &info.pilot_body ) != 0
-             || read_block ( &r, WAV_CPMTAPE_FLAG_BODY, body, fsize, &b_st, &b_cp ) != WAV_ANALYZER_OK ) {
-            free ( body );
-            if ( out_consumed_until ) *out_consumed_until = r.pos > bstart ? r.pos : bstart + 1;   /* za místem chyby */
-            return WAV_ANALYZER_ERROR_DECODE_DATA;
+             || read_block ( &r, WAV_CPMTAPE_FLAG_BODY, body, fsize, &b_st, &b_cp, &body_read ) != WAV_ANALYZER_OK ) {
+            if ( !rec || !rec->enable || body_read == 0 ) {
+                free ( body );
+                if ( out_consumed_until ) *out_consumed_until = r.pos > bstart ? r.pos : bstart + 1;   /* za místem chyby */
+                return WAV_ANALYZER_ERROR_DECODE_DATA;
+            }
+            /* neúplné tělo: přečtené bajty zůstanou, zbytek 00h; součet nejde ověřit */
+            memset ( &body[body_read], 0, fsize - body_read );
+            b_st = 0;
+            b_cp = 1;
+            rec->status |= WAV_RECOVERY_PARTIAL_BODY;
+            rec->read_bytes = body_read;
+            rec->expected_bytes = fsize;
         }
         body_crc = ( b_st == b_cp ) ? WAV_CRC_OK : WAV_CRC_ERROR;
         end_bit ( &r );   /* Intercopy: koncový bit těla */

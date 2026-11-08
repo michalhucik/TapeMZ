@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer_types.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.1
+ * @version 1.4.0
  * @brief  Implementace společných funkcí knihovny wav_analyzer.
  *
  * Obsahuje implementace destruktorů, textových popisů chybových kódů,
@@ -89,9 +89,12 @@ const char* wav_tape_format_name ( en_WAV_TAPE_FORMAT format ) {
 
 const char* wav_recovery_status_string ( uint32_t status ) {
     if ( status == WAV_RECOVERY_NONE ) return "complete";
+    if ( status & WAV_RECOVERY_BSD_GAPS ) return "BSD chunks missing";
     if ( status & WAV_RECOVERY_BSD_INCOMPLETE ) return "BSD incomplete (missing terminator chunk)";
     if ( status & WAV_RECOVERY_PARTIAL_BODY ) return "partial body";
     if ( status & WAV_RECOVERY_HEADER_ONLY ) return "header only";
+    if ( status & WAV_RECOVERY_FSIZE_REPAIRED ) return "fsize repaired from body length";
+    if ( status & WAV_RECOVERY_COPY_MERGED ) return "copies merged";
     return "unknown recovery status";
 }
 

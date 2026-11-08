@@ -1,7 +1,7 @@
 /**
  * @file   wav_decode_fm.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.3.0
+ * @version 1.5.0
  * @brief  Vrstva 4a analyzéru - FM dekodér pro NORMAL/SINCLAIR/CPM/MZ-80B.
  *
  * Dekóduje data z FM modulovaného signálu (obdélníkové pulzy).
@@ -77,6 +77,38 @@ extern "C" {
         double threshold_us;                /**< práh SHORT/LONG (us) */
         uint16_t crc_accumulator;           /**< akumulátor checksumu (popcount) */
     } st_WAV_FM_DECODER;
+
+
+    /**
+     * @brief Volby obnovy pro wav_decode_fm_decode_mzf_ex().
+     *
+     * Nulová struktura (nebo NULL) znamená chování bez obnovy: soubor, jehož tělo
+     * nejde přečíst, se zahodí.
+     */
+    typedef struct st_WAV_FM_DECODE_OPTIONS {
+        int recover_body;      /**< 1 = ponechat neúplné tělo, zbytek do fsize doplnit 00h */
+        int recover_header;    /**< 1 = ponechat hlavičku s platným CRC, jejíž tělo chybí (tělo 00h) */
+    } st_WAV_FM_DECODE_OPTIONS;
+
+
+    /**
+     * @brief Informace o průběhu dekódování, i když dekódování selhalo.
+     *
+     * Vyplní ji wav_decode_fm_decode_mzf_ex(). Slouží k hlášení uživateli
+     * a k vyplnění údajů o obnově ve výsledku souboru.
+     */
+    typedef struct st_WAV_FM_DECODE_INFO {
+        uint32_t recovery_status;          /**< bitové OR en_WAV_RECOVERY_STATUS */
+        uint32_t recovered_bytes;          /**< bajtů těla skutečně přečtených z pásky */
+        uint32_t expected_bytes;           /**< fsize (po případné opravě); platné při header_decoded */
+        int header_decoded;                /**< 1 = 128 B hlavičky přečteno (i když funkce dál selhala) */
+        int header_crc_ok;                 /**< 1 = hlavička (1. kopie nebo kopie) má platný CRC; platné při header_decoded */
+        en_WAV_ANALYZER_ERROR body_error;  /**< proč selhalo čtení hlavičky nebo těla (WAV_ANALYZER_OK = neselhalo) */
+        uint8_t header_raw[MZF_HEADER_SIZE]; /**< hlavička jak byla na pásce; platné při header_decoded */
+        uint32_t header_copy_diff;         /**< kolik bajtů hlavičky se liší od kopie, ačkoli obě mají platný součet (0 = shoda nebo kopie není) */
+        uint32_t body_copy_diff;           /**< totéž pro tělo */
+        uint32_t merged_bytes;             /**< při sloučení kopií: kolik bajtů těla pochází z 2. kopie */
+    } st_WAV_FM_DECODE_INFO;
 
 
     /**
@@ -219,6 +251,26 @@ extern "C" {
         uint32_t size
     );
 
+    /**
+     * @brief Přečte blok bajtů a vrátí, kolik jich stihl přečíst.
+     *
+     * Čtení selže jen tehdy, když dojdou půlvlny (konec signálu).
+     *
+     * @param dec Kontext dekodéru. Nesmí být NULL.
+     * @param[out] data Výstupní buffer pro data. Nesmí být NULL.
+     * @param size Počet bajtů k přečtení.
+     * @param[out] out_read Počet celých přečtených bajtů, i při chybě. Může být NULL.
+     * @return WAV_ANALYZER_OK při úspěchu, jinak chybový kód.
+     *
+     * @post dec->crc_accumulator obsahuje kumulativní popcount přečtených bitů.
+     */
+    extern en_WAV_ANALYZER_ERROR wav_decode_fm_read_block_n (
+        st_WAV_FM_DECODER *dec,
+        uint8_t *data,
+        uint32_t size,
+        uint32_t *out_read
+    );
+
 
     /**
      * @brief Přečte a ověří 16-bit popcount checksum.
@@ -284,6 +336,87 @@ extern "C" {
     );
 
     /**
+     * @brief Přečte tělo a jeho součet; s obnovou ponechá neúplná data.
+     *
+     * S rec->enable vrátí OK i pro tělo, ze kterého se přečetl aspoň 1 bajt: signál skončil
+     * uvnitř těla nebo součtu, nebo tělo přerušil běh krátkých pulzů, který v datech být
+     * nemůže (přemazáno dalším záznamem). Zbytek do size je pak 00h a crc_status WAV_CRC_ERROR.
+     *
+     * @param dec Dekodér na první datové půlvlně. Nesmí být NULL.
+     * @param[out] data Výstup (size B). Nesmí být NULL.
+     * @param size Velikost těla.
+     * @param[in,out] rec Volba a výsledek obnovy. Může být NULL.
+     * @param[out] crc_status Stav součtu.
+     * @param[out] crc_stored Součet z pásky (0 u neúplného těla).
+     * @param[out] crc_computed Vypočtený součet (0 u neúplného těla).
+     * @param[out] out_end Pozice za koncem přečtených dat (při přerušení začátek běhu).
+     * @return WAV_ANALYZER_OK; chybový kód čtení, když se tělo ponechat nedá.
+     */
+    extern en_WAV_ANALYZER_ERROR wav_decode_fm_read_body (
+        st_WAV_FM_DECODER *dec,
+        uint8_t *data,
+        uint32_t size,
+        st_WAV_BODY_RECOVERY *rec,
+        en_WAV_CRC_STATUS *crc_status,
+        uint16_t *crc_stored,
+        uint16_t *crc_computed,
+        uint32_t *out_end
+    );
+
+    /**
+     * @brief Najde začátek druhé kopie sekce (bez čtení dat).
+     *
+     * Hledá od section_start první běh SHORT o délce oddělovače kopie, ve stejném okně
+     * jako wav_decode_fm_try_copy2(). Běh delší než oddělovač je tón další části
+     * a hledání končí. Na rozdíl od wav_decode_fm_try_copy2() najde i kopii, která
+     * se nedá přečíst celá.
+     *
+     * @param seq Sekvence pulzů.
+     * @param section_start První datová půlvlna 1. kopie.
+     * @param threshold_us Práh SHORT/LONG v mikrosekundách.
+     * @param expected_size Velikost dat sekce v bajtech.
+     * @param[out] out_start První datová půlvlna 2. kopie (za start bitem).
+     * @return 1 = oddělovač nalezen, 0 = nenalezen.
+     */
+    extern int wav_decode_fm_find_copy_start (
+        const st_WAV_PULSE_SEQUENCE *seq,
+        uint32_t section_start,
+        double threshold_us,
+        uint32_t expected_size,
+        uint32_t *out_start
+    );
+
+    /**
+     * @brief Složí sekci ze dvou poškozených kopií.
+     *
+     * Každou kopii čte z obou konců podle start bitů (velikost je známá, konec dat určí
+     * běh SHORT, mezera v signálu nebo konec sekvence), takže po ztrátě nebo přidání
+     * půlvlny zůstanou platné úseky před i za poškozením. Bajt platný jen v jedné kopii se
+     * vezme z ní. U bajtů platných v obou a rozdílných ustoupí kopie s pochybným bitem
+     * (blízko prahu) kopii čisté; zbylé rozdíly (nejvýš 16) se zkouší proti součtu z pásky.
+     *
+     * Součet ROM je jen počet jedniček. Výsledek se proto přijme jedině tehdy, když každý
+     * bajt je aspoň v jedné kopii platný, souhlasí se součtem z pásky a vyhovuje
+     * právě jedna kombinace.
+     *
+     * @param dec Dekodér (práh, sekvence; nemění se). Nesmí být NULL.
+     * @param from1 První datová půlvlna 1. kopie.
+     * @param from2 První datová půlvlna 2. kopie.
+     * @param size Velikost dat sekce (bez součtu), aspoň 1.
+     * @param[out] out Složená data (size B); změní se jen při úspěchu.
+     * @param[out] out_from_copy Kolik bajtů se od 1. kopie liší nebo v ní bylo neplatných. Může být NULL.
+     * @return 1 = přijato, 0 = nejde složit jednoznačně nebo chyba alokace.
+     */
+    extern int wav_decode_fm_merge_copies (
+        const st_WAV_FM_DECODER *dec,
+        uint32_t from1,
+        uint32_t from2,
+        uint32_t size,
+        uint8_t *out,
+        uint32_t *out_from_copy
+    );
+
+    /**
      * @brief Dekóduje kompletní MZF soubor z FM signálu.
      *
      * Provede kompletní dekódování jednoho MZF souboru:
@@ -326,6 +459,78 @@ extern "C" {
         st_MZF **out_mzf,
         st_WAV_DECODE_RESULT *out_header_result,
         st_WAV_DECODE_RESULT *out_body_result
+    );
+
+    /**
+     * @brief Odhadne počet datových bajtů části FM z délky signálu.
+     *
+     * Od from počítá půlvlny do prvního běhu aspoň 32 SHORT půlvln (oddělovač kopie
+     * 256 S, tón; v datech je nejdelší běh SHORT 16 půlvln, protože start bit každého
+     * bajtu je LONG, kód ROM @WBYTE), do mezery v signálu, nebo do konce sekvence.
+     * Od první datové půlvlny zabere část (n + 2) x 18 půlvln včetně koncového L,
+     * proto n = (půlvlny + 1) / 18 - 2 (zaokrouhlení kvůli půlvlně splynulé s tichem).
+     *
+     * @param dec Dekodér (práh a sekvence). Nesmí být NULL.
+     * @param from První datová půlvlna (za start bitem prvního bajtu).
+     * @param[out] out_bytes Odhad počtu datových bajtů. Nesmí být NULL.
+     * @param[out] out_frame_ok 1 = počet půlvln sedí na rámec bajtů (+- 1 půlvlna). Nesmí být NULL.
+     * @return WAV_ANALYZER_OK; WAV_ANALYZER_ERROR_DECODE_DATA, když je signálu méně než
+     *         na 1 bajt a checksum; WAV_ANALYZER_ERROR_INVALID_PARAM.
+     */
+    extern en_WAV_ANALYZER_ERROR wav_decode_fm_estimate_body_bytes (
+        const st_WAV_FM_DECODER *dec,
+        uint32_t from,
+        uint32_t *out_bytes,
+        int *out_frame_ok
+    );
+
+    /**
+     * @brief Dekóduje MZF soubor z FM signálu s volbami obnovy.
+     *
+     * Totéž jako wav_decode_fm_decode_mzf(), navíc umí ponechat poškozený
+     * soubor podle voleb a popíše průběh v out_info.
+     *
+     * @param seq Sekvence pulzů. Nesmí být NULL.
+     * @param leader Informace o leader tónu hlavičky. Nesmí být NULL.
+     * @param opts Volby obnovy. NULL = bez obnovy.
+     * @param[out] out_mzf Výstupní MZF struktura (volající uvolní přes mzf_free).
+     *             Nesmí být NULL.
+     * @param[out] out_header_result Výsledek dekódování hlavičky. Může být NULL.
+     * @param[out] out_body_result Výsledek dekódování těla. Může být NULL.
+     * @param[out] out_info Informace o průběhu (vyplní se i při chybě). Může být NULL.
+     * @return WAV_ANALYZER_OK při úspěchu, jinak chybový kód.
+     *
+     * @post Stejné jako u wav_decode_fm_decode_mzf().
+     * @post S recover_body vrátí OK i pro tělo, ze kterého se přečetl aspoň 1 bajt:
+     *       když signál skončí uvnitř těla nebo checksumu, nebo když tělo s chybou
+     *       CRC přeruší běh SHORT, který v datech nemůže být (přemazáno dalším
+     *       záznamem). Tělo má fsize bajtů (přečtené + 00h), CRC těla WAV_CRC_ERROR,
+     *       recovery_status WAV_RECOVERY_PARTIAL_BODY, pulse_end je konec přečtených dat.
+     * @post S recover_header vrátí OK pro hlavičku s platným CRC (a fsize > 0), jejíž tělo
+     *       chybí (tapemark těla nenalezen, tapemark je LTM dalšího záznamu, nebo za
+     *       tapemarkem není ani bajt dat).
+     *       Tělo má fsize bajtů 00h, CRC těla WAV_CRC_NOT_AVAILABLE, recovery_status
+     *       WAV_RECOVERY_HEADER_ONLY. Hlavička s chybou CRC bez těla se neponechá.
+     * @post S recover_body se tělo s chybou CRC v obou kopiích složí, když to
+     *       wav_decode_fm_merge_copies() dovolí: CRC těla WAV_CRC_OK,
+     *       recovery_status WAV_RECOVERY_COPY_MERGED.
+     * @post Neúplná hlavička (méně než 128 B) se neponechá nikdy.
+     * @post Mají-li obě kopie platný součet a liší se nejvýš v polovině bajtů, je počet
+     *       rozdílů v header_copy_diff / body_copy_diff a na stderr jde varování. Data se
+     *       nemění. Kandidát bez platného součtu nebo s větším rozdílem se nebere jako kopie.
+     * @post Bez ohledu na volby: má-li hlavička chybu CRC bez platné kopie a fsize
+     *       nesplňuje checksum těla, ale délka těla odhadnutá ze signálu ano, použije
+     *       se odhad (header.fsize, recovery_status WAV_RECOVERY_FSIZE_REPAIRED).
+     *       CRC hlavičky zůstává WAV_CRC_ERROR.
+     */
+    extern en_WAV_ANALYZER_ERROR wav_decode_fm_decode_mzf_ex (
+        const st_WAV_PULSE_SEQUENCE *seq,
+        const st_WAV_LEADER_INFO *leader,
+        const st_WAV_FM_DECODE_OPTIONS *opts,
+        st_MZF **out_mzf,
+        st_WAV_DECODE_RESULT *out_header_result,
+        st_WAV_DECODE_RESULT *out_body_result,
+        st_WAV_FM_DECODE_INFO *out_info
     );
 
 

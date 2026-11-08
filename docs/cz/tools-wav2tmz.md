@@ -38,9 +38,9 @@ wav2tmz vstup.wav [-o vystup] [volby]
 | `--pulse-mode` | approximate, exact | approximate | Režim ukládání délek pulzů pro TMZ výstup |
 | `--charset` | eu, jp, utf8-eu, utf8-jp | eu | Znaková sada Sharp MZ pro zobrazení názvu souboru (viz níže) |
 | `--recover` | - | vypnuto | Zapnout všechny recovery módy |
-| `--recover-bsd` | - | vypnuto | Obnovit nekompletní BSD soubory (chybějící terminátor) |
-| `--recover-body` | - | vypnuto | Obnovit částečné tělo (zatím neimplementováno) |
-| `--recover-header` | - | vypnuto | Uložit osiřelé hlavičky (zatím neimplementováno) |
+| `--recover-bsd` | - | vypnuto | Obnovit nekompletní BSD soubory (chybějící terminátor nebo kusy) |
+| `--recover-body` | - | vypnuto | Ponechat neúplné tělo (zbytek doplní 00h), složit tělo FM ze dvou poškozených kopií |
+| `--recover-header` | - | vypnuto | Ponechat hlavičku záznamu FM, jejíž tělo chybí (tělo 00h) |
 | `--version` | - | - | Zobrazit verzi programu |
 | `--lib-versions` | - | - | Zobrazit verze použitých knihoven |
 | `--help`, `-h` | - | - | Zobrazit nápovědu |
@@ -103,8 +103,44 @@ dekódované chunky zachráněny. Bez této volby se nekompletní BSD data zahod
 (s diagnostickou zprávou a nápovědou). V TMZ výstupu je před obnovený
 blok vložen Text Description (0x30) s varováním.
 
-**--recover** - zapne všechny recovery módy najednou (--recover-bsd
-a budoucí --recover-body, --recover-header).
+**--recover-body** - záznam FM (NORMAL, MZ-80B, CP/M CMT), jehož tělo je
+useknuté nebo přemazané dalším záznamem, se neztratí. Přečtené bajty zůstanou,
+zbytek do velikosti z hlavičky se doplní 00h, tělo má `Body CRC: ERROR`.
+Tón dalšího záznamu se nespotřebuje, takže se další soubor dekóduje normálně.
+Z těla se musí přečíst aspoň 1 bajt. Totéž platí pro TURBO, FASTIPL a CP/M TAPE.
+
+Má-li tělo záznamu FM chybu součtu v obou kopiích, wav2tmz ho zkusí složit z platných
+úseků obou kopií. Přijme jen výsledek, který jednoznačně souhlasí se součtem z pásky;
+tělo pak má `Body CRC: OK` a výpis uvádí `copies merged`. Součet je jen počet jedniček,
+takže jde o nejlepší odhad, ne o důkaz.
+
+Chybějící kusy BSD (`--recover-bsd`) se doplní nulami na své místo, kus s chybou součtu
+a poškozeným číslem se zařadí podle pořadí.
+
+Liší-li se kopie, ačkoli obě mají platný součet, wav2tmz vždy vypíše varování
+`copies differ although the checksum is valid`. Data nemění: součet ROM
+převrácení 0 na 1 a 1 na 0 v jedné kopii nepozná.
+
+**--recover-header** - hlavička záznamu FM s platným kontrolním součtem,
+jejíž tělo na pásce není, se uloží s tělem z 00h.
+
+Bez těchto voleb se takový soubor zahodí a wav2tmz vypíše (i bez `--verbose`),
+co se našlo, kolik bajtů těla se přečetlo a kterou volbu použít. V TMZ výstupu
+je před obnovený blok vložen Text Description (0x30), například
+`WARNING: Recovered - partial body (700 of 1024 bytes read, rest filled with 00h)`.
+
+**--recover** - zapne všechny recovery módy najednou (--recover-bsd,
+--recover-body, --recover-header).
+
+**Poškozený soubor v TMZ:** záznam NORMAL 1:1 s chybou kontrolního součtu se ve výstupu
+TMZ uloží blokem 0x46 (profil ROM-800-NOMINAL) i s bajty součtu z pásky.
+Obnovené tělo součet nemá, zapíše se záměrně neplatný. Přehrání tak dopadne
+jako na poškozené pásce: ROM ohlásí chybu součtu. Bloky 0x41 součet nenesou.
+
+**Oprava velikosti z pásky:** má-li hlavička chybu součtu bez platné kopie
+a velikost z hlavičky nesouhlasí se součtem těla, použije se velikost zjištěná
+z délky signálu, pokud s ní součet těla souhlasí. Běží vždy, bez volby;
+výpis uvádí `fsize repaired from body length`.
 
 **--pulse-mode** - řídí způsob ukládání délek pulzů do TMZ bloků:
 - `approximate` (výchozí) - kvantizuje rychlost na nejbližší CMTSPEED poměr
@@ -243,6 +279,12 @@ Obnova všech částečných dat do TMZ archivu:
 
 ```
 wav2tmz damaged_tape.wav --recover --output-format tmz -o rescued.tmz
+```
+
+Ponechání useknutého těla jako MZF:
+
+```
+wav2tmz cut_tape.wav --recover-body -o rescued.mzf
 ```
 
 Dekódování s přesnými délkami pulzů do TMZ:

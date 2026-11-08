@@ -282,6 +282,12 @@ add_executable(test_fm_copy2
 )
 target_link_libraries(test_fm_copy2 PRIVATE wav_analyzer mzf sharpmz_ascii generic_driver endianity wav cmtspeed m)
 
+# test_fm_recovery (obnova hlavičky a těla FM z poškozené sekvence)
+add_executable(test_fm_recovery
+    tests/test_fm_recovery.c
+)
+target_link_libraries(test_fm_recovery PRIVATE wav_analyzer mzf sharpmz_ascii generic_driver endianity wav cmtspeed m)
+
 # test_wav_formats (WAV EXTENSIBLE a IEEE float)
 add_executable(test_wav_formats
     tests/test_wav_formats.c

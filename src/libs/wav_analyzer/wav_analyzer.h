@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.12.0
+ * @version 1.14.0
  * @brief  Hlavní API knihovny wav_analyzer - orchestrace všech vrstev.
  *
  * Poskytuje vysokoúrovňové API pro analýzu WAV nahrávek magnetofonových
@@ -120,6 +120,13 @@ extern "C" {
         uint8_t tc_a;                      /**< TURBOCOPY: čitatel poměru a/b v základním tvaru (1-9) */
         uint8_t tc_b;                      /**< TURBOCOPY: jmenovatel poměru a/b (1-9) */
         uint16_t ic_bd;                    /**< INTERCOPY: rychlost 600, 1200, 2400, 2800, 3200 (popisek v Bd) */
+        uint16_t header_crc_stored;        /**< checksum hlavičky z pásky; platí při header_crc_stored_valid */
+        uint16_t body_crc_stored;          /**< checksum těla z pásky; platí při body_crc_stored_valid */
+        int header_crc_stored_valid;       /**< záznam FM s chybou CRC hlavičky: 1 = header_crc_stored je z pásky */
+        int body_crc_stored_valid;         /**< záznam FM s chybou CRC těla, jehož checksum se přečetl: 1 = body_crc_stored je z pásky */
+        uint32_t copy_diff_bytes;          /**< záznam FM: počet bajtů, ve kterých se liší kopie, ačkoli součet je platný (0 = shoda) */
+        uint32_t merged_bytes;             /**< záznam FM složený ze dvou kopií: bajty, které pocházejí z 2. kopie */
+        uint32_t bsd_gap_chunks;           /**< BSD: chybějící kusy doplněné nulami (jen s obnovou) */
     } st_WAV_ANALYZER_FILE_RESULT;
 
 
@@ -203,7 +210,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny wav_analyzer. */
-#define WAV_ANALYZER_VERSION "1.12.0"
+#define WAV_ANALYZER_VERSION "1.14.0"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny wav_analyzer.
