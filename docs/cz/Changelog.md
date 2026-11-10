@@ -2,6 +2,18 @@
 
 ## 2026-11-10
 
+### Vydání 1.0.0
+
+První vydání sady nástrojů: archiv `tapemz-cli-1.0.0.zip` s binárkami pro Windows x64
+a dokumentací (česky a anglicky). Binárky nepotřebují žádné další knihovny (jen součásti
+Windows 10/11). Na jiných platformách se nástroje přeloží ze zdrojů příkazem `make`.
+
+- Verze nástrojů: tmzinfo 1.7.1, mzf2tmz 1.11.0, tmz2mzf 1.4.1, tmz2wav 1.3.1,
+  wav2tmz 2.13.0, tap2tmz 1.0.0, tmz2tap 1.0.0, tmzconv 1.1.0, tmzedit 1.7.2,
+  dat2bsd 1.1.0, bsd2dat 1.2.1.
+- `make portable` sestaví balík do `portable/tapemz-cli-X.Y.Z/`, `make release` z něj
+  udělá archiv ZIP.
+
 ### Blok TZX 0x18 CSW Recording
 
 Verze: tzx v1.3.0, tmz v1.13.0, tmz_player v1.5.0.

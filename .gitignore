@@ -1,2 +1,5 @@
 build/
 html-docs/
+
+# Portable package and release archive (make portable, make release)
+portable/

@@ -66,7 +66,7 @@ TESTS := \
     test_ic_loader_all \
     test_ic_sinclair_all
 
-.PHONY: all clean configure rebuild test html-docs
+.PHONY: all clean configure rebuild test html-docs portable portable-clean release release-clean
 
 # Python pro CLI testy a skripty; přednost má python3
 # (některé distribuce Linuxu příkaz python nemají)
@@ -92,6 +92,72 @@ html-docs:
 	@echo "=== Generating HTML docs from $(DOCS_SRC)/ ==="
 	@python3 scripts/md2html.py $(DOCS_SRC)
 	@echo "=== Done ==="
+
+# --- Portable distribuce a archiv vydání ---
+#
+# Verze vydání celé sady nástrojů (tag vX.Y.Z ve veřejném repozitáři).
+# Nezávisí na verzi formátu TMZ ani na verzích jednotlivých nástrojů.
+RELEASE_VERSION := 1.0.0
+
+# Nástroje, které jdou do balíku (ty, které mají uživatelský manuál).
+TOOLS := tmzinfo mzf2tmz tmz2mzf tmz2wav wav2tmz tap2tmz tmz2tap tmzconv tmzedit \
+         dat2bsd bsd2dat
+
+PORTABLE_NAME := tapemz-cli-$(RELEASE_VERSION)
+PORTABLE_DIR  := portable/$(PORTABLE_NAME)
+PORTABLE_ZIP  := portable/$(PORTABLE_NAME).zip
+
+# `make portable` sestaví balík do adresáře s verzí v názvu:
+#   portable/tapemz-cli-X.Y.Z/
+#     bin/               - nástroje
+#     docs/cz/, docs/en/ - dokumentace (.md, a .html, pokud existuje html-docs/)
+#     README.md, README_cz.md, LICENSE (pokud v kořeni existuje)
+#
+# Binárky z MSYS2 UCRT64 závisejí jen na KERNEL32.dll a api-ms-win-crt-*.dll
+# (součást Windows 10/11), proto se k nim žádné DLL nepřibalují. Cíl to na
+# Windows kontroluje přes objdump a při jiné závislosti skončí chybou.
+portable: all
+	@echo "=== Building portable package in $(PORTABLE_DIR)/ ==="
+	@rm -rf $(PORTABLE_DIR)
+	@mkdir -p $(PORTABLE_DIR)/bin $(PORTABLE_DIR)/docs/cz/ $(PORTABLE_DIR)/docs/en/
+	@for t in $(TOOLS); do cp $(BUILD_DIR)/$$t$(EXE_SUFFIX) $(PORTABLE_DIR)/bin/ || exit 1; done
+	@cp $(DOCS_SRC)/cz/*.md $(PORTABLE_DIR)/docs/cz/
+	@cp $(DOCS_SRC)/en/*.md $(PORTABLE_DIR)/docs/en/
+	@cp $(DOCS_SRC)/en/TapeMZ.md $(PORTABLE_DIR)/README.md
+	@cp $(DOCS_SRC)/cz/TapeMZ.md $(PORTABLE_DIR)/README_cz.md
+	@if [ -f LICENSE ]; then cp LICENSE $(PORTABLE_DIR)/; else echo "--- LICENSE not present, skipped ---"; fi
+	@if [ -d html-docs ]; then \
+	    echo "--- Including HTML docs from html-docs/ ---"; \
+	    cp html-docs/cz/*.html $(PORTABLE_DIR)/docs/cz/; \
+	    cp html-docs/en/*.html $(PORTABLE_DIR)/docs/en/; \
+	else \
+	    echo "--- HTML docs not present (run 'make html-docs' to include them) ---"; \
+	fi
+	@if [ -n "$(EXE_SUFFIX)" ]; then \
+	    extra=$$(for f in $(PORTABLE_DIR)/bin/*$(EXE_SUFFIX); do objdump -p $$f | grep 'DLL Name'; done \
+	        | grep -v -i -E 'KERNEL32\.dll|api-ms-win-crt-' | sort -u); \
+	    if [ -n "$$extra" ]; then \
+	        echo "ERROR: tools depend on DLLs that are not part of Windows:"; echo "$$extra"; exit 1; \
+	    fi; \
+	    echo "--- DLL check: only KERNEL32.dll and api-ms-win-crt-*.dll ---"; \
+	fi
+	@echo "=== Done: $(PORTABLE_DIR)/ ==="
+
+portable-clean:
+	@rm -rf $(PORTABLE_DIR)
+	@if [ -d portable ] && [ -z "$$(ls -A portable 2>/dev/null)" ]; then rmdir portable; fi
+
+# `make release` zabalí portable/tapemz-cli-X.Y.Z/ do portable/tapemz-cli-X.Y.Z.zip.
+# Archiv obsahuje adresář s verzí v názvu. Vyžaduje příkaz zip.
+release: portable
+	@echo "=== Creating $(PORTABLE_ZIP) ==="
+	@rm -f $(PORTABLE_ZIP)
+	@cd portable && zip -rq $(PORTABLE_NAME).zip $(PORTABLE_NAME)
+	@echo "=== Done: $(PORTABLE_ZIP) ==="
+
+release-clean:
+	@rm -f portable/tapemz-cli-*.zip
+	@if [ -d portable ] && [ -z "$$(ls -A portable 2>/dev/null)" ]; then rmdir portable; fi
 
 # Testy v C ze seznamu TESTS, pak kontroly CLI (tests/cli/test_cli.py)
 # a kontrola veřejných textů bez interních odkazů (tests/check_public_text.py).
