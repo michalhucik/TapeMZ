@@ -16,6 +16,12 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 add_compile_options(-Wall -Wextra -Wpedantic -Wjump-misses-init -pipe)
 add_link_options(-pipe)
 
+# Linux/POSIX: round() a dalsi funkce z math.h jsou v libm, kterou je nutne
+# linkovat vyslovne (MinGW ji ma v zakladni knihovne). Plati pro vsechny cile.
+if(UNIX)
+    link_libraries(m)
+endif()
+
 # Standalone build - bez baseui z mz800emu
 add_compile_definitions(GENERIC_DRIVER_NO_BASEUI)
 add_compile_definitions(GENERIC_DRIVER_FILE_CB)

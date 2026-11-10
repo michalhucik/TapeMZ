@@ -16,6 +16,12 @@ Verze: tzx v1.3.0, tmz v1.13.0, tmz_player v1.5.0.
   pulzu (stejně jako po bloku 0x15).
 - Komprese Z-RLE se nepřehrává (chyba s hlášením).
 
+### Překlad na Linuxu a automatické testy
+
+- Projekt se přeloží i na Linuxu (GCC): CMake tam linkuje matematickou knihovnu ke všem cílům.
+- Repozitář má automatické testy (GitHub Actions): `make test` na Linuxu a ve Windows
+  (MSYS2 UCRT64) při každém pushi a pull requestu.
+
 ### sharpmz_ascii v2.2.1
 
 - Upgrade knihovny na verzi 2.2.1 ze samostatného repozitáře sharpmz_ascii.

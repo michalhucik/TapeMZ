@@ -1,5 +1,7 @@
 # TapeMZ - Tape Archive Format for Sharp MZ
 
+[![CI](https://github.com/michalhucik/TapeMZ/actions/workflows/ci.yml/badge.svg)](https://github.com/michalhucik/TapeMZ/actions/workflows/ci.yml)
+
 ## 1. Introduction
 
 TapeMZ (TMZ) is a new file format for preserving the contents of cassette tapes from Sharp MZ computers (MZ-700, MZ-800, MZ-1500, MZ-80B) and ZX Spectrum. It was created in response to the long-standing absence of a unified format capable of faithfully capturing the complete contents of a tape - including non-standard speeds, turbo loaders, proprietary encodings, and multi-block programs.

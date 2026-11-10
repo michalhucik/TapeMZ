@@ -9,8 +9,8 @@ import re
 import sys
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-PUBLIC = ["src", "tests", "scripts", "dist-docs", "CMakeLists.txt", "CMakePresets.json", "Makefile"]
-EXT = (".c", ".h", ".py", ".md", ".txt", ".asm", ".sh", ".json", ".cmake", "Makefile")
+PUBLIC = ["src", "tests", "scripts", "dist-docs", "CMakeLists.txt", "CMakePresets.json", "Makefile", ".github"]
+EXT = (".c", ".h", ".py", ".md", ".txt", ".asm", ".sh", ".json", ".cmake", ".yml", "Makefile")
 SKIP = {os.path.join("tests", "check_public_text.py"), os.path.join("tests", "cli", "test_check_public_text.py")}
 
 PATTERNS = [

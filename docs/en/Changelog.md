@@ -16,6 +16,12 @@ Versions: tzx v1.3.0, tmz v1.13.0, tmz_player v1.5.0.
   the opposite of the last pulse (as after block 0x15).
 - Z-RLE compression is not played (error with a message).
 
+### Linux build and automated tests
+
+- The project builds on Linux (GCC) too: CMake links the math library to all targets there.
+- The repository has automated tests (GitHub Actions): `make test` on Linux and on Windows
+  (MSYS2 UCRT64) on every push and pull request.
+
 ### sharpmz_ascii v2.2.1
 
 - Library upgrade to version 2.2.1 from the standalone sharpmz_ascii repository.

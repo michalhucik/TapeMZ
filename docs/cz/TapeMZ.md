@@ -1,5 +1,7 @@
 # TapeMZ - kazetový archivní formát pro Sharp MZ
 
+[![CI](https://github.com/michalhucik/TapeMZ/actions/workflows/ci.yml/badge.svg)](https://github.com/michalhucik/TapeMZ/actions/workflows/ci.yml)
+
 ## 1. Úvod
 
 TapeMZ (TMZ) je nový souborový formát pro uchovávání obsahu magnetofonových kazet počítačů Sharp MZ (MZ-700, MZ-800, MZ-1500, MZ-80B) a ZX Spectrum. Vznikl jako odpověď na dlouhodobou absenci jednotného formátu, který by dokázal věrně zachytit kompletní obsah kazety - včetně nestandardních rychlostí, turbo loaderů, proprietárních kódování a víceblokových programů.
