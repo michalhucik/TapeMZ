@@ -66,7 +66,8 @@ TESTS := \
     test_ic_loader_all \
     test_ic_sinclair_all
 
-.PHONY: all clean configure rebuild test html-docs portable portable-clean release release-clean
+.PHONY: all clean configure rebuild test html-docs portable portable-clean release release-clean \
+        install uninstall
 
 # Python pro CLI testy a skripty; přednost má python3
 # (některé distribuce Linuxu příkaz python nemají)
@@ -158,6 +159,49 @@ release: portable
 release-clean:
 	@rm -f portable/tapemz-cli-*.zip
 	@if [ -d portable ] && [ -z "$$(ls -A portable 2>/dev/null)" ]; then rmdir portable; fi
+
+# --- Instalace (nástroje a dokumentace) ---
+#
+# Umístění:
+#   $(BINDIR)/      - nástroje ze seznamu TOOLS
+#   $(DOCDIR)/cz/   - česká dokumentace (.md)
+#   $(DOCDIR)/en/   - anglická dokumentace (.md)
+#   $(DOCDIR)/      - README.md, README_cz.md, LICENSE (pokud v kořeni existuje)
+#
+# Výchozí PREFIX je /usr/local. Příklady:
+#   make install PREFIX=$$HOME/.local
+#   make install DESTDIR=/tmp/stage     (pro balíčkování: /tmp/stage/usr/local/...)
+#
+# `make uninstall` odebere jen soubory, které `make install` vytvořil;
+# adresáře maže, jen když zůstanou prázdné. Volá se se stejnými proměnnými.
+PREFIX  ?= /usr/local
+BINDIR  ?= $(PREFIX)/bin
+DOCDIR  ?= $(PREFIX)/share/doc/tapemz
+DESTDIR ?=
+
+install: all
+	@echo "=== Installing TapeMZ tools $(RELEASE_VERSION) into $(DESTDIR)$(PREFIX) ==="
+	@install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(DOCDIR)/cz/" "$(DESTDIR)$(DOCDIR)/en/"
+	@for t in $(TOOLS); do \
+	    install -m 0755 $(BUILD_DIR)/$$t$(EXE_SUFFIX) "$(DESTDIR)$(BINDIR)/" || exit 1; \
+	done
+	@install -m 0644 $(DOCS_SRC)/cz/*.md "$(DESTDIR)$(DOCDIR)/cz/"
+	@install -m 0644 $(DOCS_SRC)/en/*.md "$(DESTDIR)$(DOCDIR)/en/"
+	@install -m 0644 $(DOCS_SRC)/en/TapeMZ.md "$(DESTDIR)$(DOCDIR)/README.md"
+	@install -m 0644 $(DOCS_SRC)/cz/TapeMZ.md "$(DESTDIR)$(DOCDIR)/README_cz.md"
+	@if [ -f LICENSE ]; then install -m 0644 LICENSE "$(DESTDIR)$(DOCDIR)/"; fi
+	@echo "=== Done: tools in $(DESTDIR)$(BINDIR), docs in $(DESTDIR)$(DOCDIR) ==="
+
+uninstall:
+	@echo "=== Uninstalling TapeMZ tools from $(DESTDIR)$(PREFIX) ==="
+	@for t in $(TOOLS); do rm -f "$(DESTDIR)$(BINDIR)/$$t$(EXE_SUFFIX)"; done
+	@for l in cz en; do \
+	    for f in $(DOCS_SRC)/$$l/*.md; do rm -f "$(DESTDIR)$(DOCDIR)/$$l/$$(basename $$f)"; done; \
+	    rmdir "$(DESTDIR)$(DOCDIR)/$$l" 2>/dev/null || true; \
+	done
+	@rm -f "$(DESTDIR)$(DOCDIR)/README.md" "$(DESTDIR)$(DOCDIR)/README_cz.md" "$(DESTDIR)$(DOCDIR)/LICENSE"
+	@rmdir "$(DESTDIR)$(DOCDIR)" 2>/dev/null || true
+	@echo "=== Done ==="
 
 # Testy v C ze seznamu TESTS, pak kontroly CLI (tests/cli/test_cli.py)
 # a kontrola veřejných textů bez interních odkazů (tests/check_public_text.py).

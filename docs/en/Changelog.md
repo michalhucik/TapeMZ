@@ -2,6 +2,12 @@
 
 ## 2026-11-10
 
+### Installation with make install
+
+- `make install` installs the tools into `$(PREFIX)/bin` and the documentation into
+  `$(PREFIX)/share/doc/tapemz` (the default `PREFIX` is `/usr/local`; `BINDIR`, `DOCDIR`
+  and `DESTDIR` can be set too). `make uninstall` removes only what the installation created.
+
 ### Release 1.0.0
 
 First release of the tool set: the archive `tapemz-cli-1.0.0.zip` with Windows x64 binaries

@@ -2,6 +2,12 @@
 
 ## 2026-11-10
 
+### Instalace příkazem make install
+
+- `make install` nainstaluje nástroje do `$(PREFIX)/bin` a dokumentaci do
+  `$(PREFIX)/share/doc/tapemz` (výchozí `PREFIX` je `/usr/local`; lze zadat i `BINDIR`,
+  `DOCDIR` a `DESTDIR`). `make uninstall` odebere jen to, co instalace vytvořila.
+
 ### Vydání 1.0.0
 
 První vydání sady nástrojů: archiv `tapemz-cli-1.0.0.zip` s binárkami pro Windows x64
