@@ -1,7 +1,7 @@
 /**
  * @file   cmtspeed.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.1
+ * @version 2.1.0
  * @brief  Implementace datových polí knihovny cmtspeed — násobitele rychlostí a textové poměry.
  *
  * Obsahuje definice globálních polí g_cmtspeed_divisor[] a g_cmtspeed_ratio[],
@@ -9,6 +9,7 @@
  *
  * @par Changelog:
  * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
+ * - 2026-11-09: Přidána hodnota CMTSPEED_CUSTOM (vlastní délky pulzů, UniCMT) a cmtspeed_is_custom (2.1.0).
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -35,6 +36,7 @@
  *
  * Hodnota na indexu odpovídajícím danému enumu udává poměr vůči základní
  * baudové rychlosti. Např. index CMTSPEED_2_1 obsahuje 2.0.
+ * Pro CMTSPEED_CUSTOM obsahuje 0 (délky pulzů nese volající zvlášť).
  */
 const double g_cmtspeed_divisor[] = {
                                      0,
@@ -47,12 +49,13 @@ const double g_cmtspeed_divisor[] = {
                                      ( (double) 8 / 3 ),
                                      ( (double) 9 / 7 ),
                                      ( (double) 25 / 14 ),
+                                     0, // custom - vlastní délky pulzů, nejde o poměr
 };
 
 /** @brief Textové popisy poměrů rychlosti indexované hodnotami en_CMTSPEED.
  *
  * Řetězce ve formátu "X:Y", např. "1:1", "7:3". Pro CMTSPEED_NONE obsahuje "?:?",
- * pro CMTSPEED_2_1_CPM obsahuje "2:1 (cp/m)".
+ * pro CMTSPEED_2_1_CPM obsahuje "2:1 (cp/m)", pro CMTSPEED_CUSTOM "custom".
  */
 const char *g_cmtspeed_ratio[] = {
                                   "?:?",
@@ -65,6 +68,7 @@ const char *g_cmtspeed_ratio[] = {
                                   "8:3",
                                   "9:7",
                                   "25:14",
+                                  "custom",
 };
 
 

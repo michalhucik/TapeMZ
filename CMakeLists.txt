@@ -330,6 +330,18 @@ add_executable(test_tmz_player_turbo
 )
 target_link_libraries(test_tmz_player_turbo PRIVATE tmz mzf sharpmz_ascii generic_driver endianity cmt_stream wav mztape zxtape tzx cmtspeed mzcmt_turbo mzcmt_fastipl mzcmt_fsk mzcmt_slow mzcmt_direct mzcmt_bsd m)
 
+# test_cmtspeed (CMTSPEED_CUSTOM)
+add_executable(test_cmtspeed
+    tests/test_cmtspeed.c
+)
+target_link_libraries(test_cmtspeed PRIVATE cmtspeed m)
+
+# test_mztape_pulses (pulzní sady a vlastní délky pulzů)
+add_executable(test_mztape_pulses
+    tests/test_mztape_pulses.c
+)
+target_link_libraries(test_mztape_pulses PRIVATE mztape mzf sharpmz_ascii generic_driver endianity cmt_stream wav cmtspeed m)
+
 # test_tmz_tlv (TLV pro blok 0x46)
 add_executable(test_tmz_tlv
     tests/test_tmz_tlv.c
@@ -353,6 +365,12 @@ add_executable(test_tzx_level
     tests/test_tzx_level.c
 )
 target_link_libraries(test_tzx_level PRIVATE tmz mzf sharpmz_ascii generic_driver endianity cmt_stream wav mztape zxtape tzx cmtspeed mzcmt_turbo mzcmt_fastipl mzcmt_fsk mzcmt_slow mzcmt_direct mzcmt_bsd mzcmt_fm mzcmt_manchester m)
+
+# test_tzx_csw (blok 0x18 CSW: zápis, generátor, přehrání)
+add_executable(test_tzx_csw
+    tests/test_tzx_csw.c
+)
+target_link_libraries(test_tzx_csw PRIVATE tmz mzf sharpmz_ascii generic_driver endianity cmt_stream wav mztape zxtape tzx cmtspeed mzcmt_turbo mzcmt_fastipl mzcmt_fsk mzcmt_slow mzcmt_direct mzcmt_bsd mzcmt_fm mzcmt_manchester m)
 
 # test_tmz_player_level (úroveň signálu, zastavení pásky, rezervované bloky v playeru)
 add_executable(test_tmz_player_level

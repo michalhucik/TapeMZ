@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-11-10
+
+### TZX block 0x18 CSW Recording
+
+Versions: tzx v1.3.0, tmz v1.13.0, tmz_player v1.5.0.
+
+- The tzx library can create block 0x18 (CSW Recording) with RLE compression
+  (`tzx_block_create_csw_recording()`) and generate a signal from it
+  (`tzx_generate_csw_recording()`, `tzx_generate_block()`). Pulse lengths are in samples
+  at an exact sample rate in Hz, so a 44 100 Hz recording plays with the correct length
+  at any output rate.
+- The player (`tmz_player_play_next()`, `tmz_player_play_block()`, `tmz2wav`) plays
+  block 0x18. The first pulse is low, levels alternate, and after the block the level is
+  the opposite of the last pulse (as after block 0x15).
+- Z-RLE compression is not played (error with a message).
+
+### sharpmz_ascii v2.2.1
+
+- Library upgrade to version 2.2.1 from the standalone sharpmz_ascii repository.
+- Functions returning UTF-8 (`sharpmz_eu_convert_to_UTF8()`, `sharpmz_jp_convert_to_UTF8()`,
+  `sharpmz_koi8cs_convert_to_UTF8()`, `sharpmz_display_to_utf8()`, `sharpmz_to_utf8()`)
+  use a rotating buffer in thread-local storage (`SHARPMZ_UTF8_ROTATING_SLOTS` = 16 slots).
+  They are thread-safe and can be called several times in one expression.
+
+### Profile MZ800EMU-CMT
+
+Versions: tmz_profile v1.9.0, tmz_mzt v1.2.0, mztape v2.4.0.
+
+- New profile `MZ800EMU-CMT`: block 0x46 with the signal the mz800emu emulator plays
+  from an MZF (mztape without copies, GDG clock 17 721 600 Hz, all speed ratios including
+  2:1 CP/M and custom pulses in µs). Played at 17 721 600 Hz it gives the same pulses as mztape.
+- MZT export for UniCMT (`tmz2mzf --mzt-unicmt`) treats blocks of this profile as a ROM recording.
+- PROFILE_ARGS reads the speed `2:1 (cp/m)`.
+- mztape: `mztape_get_format()` returns the definition of a format variant (tones, pulse set, blocks).
+
+## 2026-11-09
+
+### Libraries: custom pulses and pulse sets aligned with the emulator
+
+Versions: cmtspeed v2.1.0, mztape v2.3.1, tmz_profile v1.8.0, mzf v2.1.1, tmzedit v1.7.2.
+
+- mztape: API for custom pulse lengths and for the CMTSPEED header; new speed value
+  `CMTSPEED_CUSTOM` (cmtspeed).
+- The mztape pulse sets match what the Sharp MZ-800 emulator plays; the earlier symmetric
+  sets 252/504 and 249/498 are gone.
+- The TAPEMZ-V1-LEGACY profile keeps its own historical v1.0 pulse sets, so converting v1.0
+  blocks gives the same output as before.
+- Building a bitstream from a TMZ block rejects an invalid speed instead of computing from
+  unfilled lengths.
+- `tmzedit` no longer reads past the speed table when a block carries an unknown speed
+  byte (shown as "?:?").
+- Corrected file type descriptions 02h-05h in the mzf library.
+
 ## 2026-11-08
 
 ### Recovery of damaged recordings

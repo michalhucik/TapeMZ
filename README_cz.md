@@ -337,6 +337,7 @@ Projekt obsahuje sadu C knihoven (C99/C11) s modulární architekturou:
 - **tmz** - čtení/zápis TMZ/TZX souborů, bloková struktura, parsování MZ bloků
 - **tmz_blocks** - definice a parsování jednotlivých typů bloků (0x40-0x45)
 - **tmz_mzfile** - čtení, validace a zápis bloku 0x46 (MZ File)
+- **tmz_profile** - registr profilů zapisovače: z MZF sestaví blok 0x46 tak, jak soubor zapisuje ROM nebo konkrétní program (ROM-800-*, TC-1.21, IC-10.2-*, PEZIK-2.0A, BASIC-1Z016, UNICMT, TAPEMZ-V1-LEGACY). Profil `MZ800EMU-CMT` popisuje signál, který emulátor mz800emu hraje z MZF (mztape bez kopií, tóny 6400/11000, časová základna takt GDG 17 721 600 Hz, všechny poměry rychlosti včetně 2:1 CP/M i vlastní pulzy v µs); přehraný při 17 721 600 Hz dá tytéž pulzy jako mztape
 - **tmz_player** - generování CMT audio streamů z TMZ bloků
 
 ### 7.5 CMT kodéry

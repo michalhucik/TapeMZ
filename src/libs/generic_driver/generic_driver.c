@@ -1,7 +1,7 @@
 /**
  * @file   generic_driver.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.1
+ * @version 2.0.2
  * @brief  Jádrová implementace univerzální I/O abstrakce a volitelné zabudované callbacky.
  *
  * Tato knihovna slouží jako univerzální prostředek pro přístup k datovým blokům.

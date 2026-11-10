@@ -24,9 +24,12 @@ TESTS := \
     test_wav_formats \
     test_tmz_blocks_parse \
     test_tmz_tlv \
+    test_cmtspeed \
+    test_mztape_pulses \
     test_tmz_mzfile \
     test_tmz_fuzz \
     test_tzx_level \
+    test_tzx_csw \
     test_tmz_player_level \
     test_mzcmt_fm \
     test_mzcmt_manchester \

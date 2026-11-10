@@ -1,7 +1,7 @@
 /**
  * @file   tmzedit.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.7.1
+ * @version 1.7.2
  * @brief  Editor a spravce TZX/TMZ tape souboru.
  *
  * Nastroj pro manipulaci s bloky v TZX/TMZ souborech:
@@ -61,6 +61,9 @@
  * - --format <fmt>           : format zaznamu (normal, turbo, fastipl, ...)
  * - --speed <spd>            : rychlost zaznamu (1:1, 2:1, ...)
  *
+ * @par Changelog:
+ * - 2026-11-09: bajt rychlosti mimo en_CMTSPEED se vypíše jako neznámý, neindexuje tabulku (1.7.2)
+ *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
  *
@@ -99,7 +102,7 @@
 
 
 /** @brief Verze programu tmzedit. */
-#define TMZEDIT_VERSION "1.7.1"
+#define TMZEDIT_VERSION "1.7.2"
 
 
 /** @brief Znakova sada pro zobrazeni nazvu souboru (nastaveno z --charset). */
@@ -1522,7 +1525,7 @@ static int set_block_0x40 ( st_TZX_FILE *file, uint32_t index,
     } else {
         printf ( "Block [%u]: converted 0x40 -> 0x41 (format=%s, speed=%s)\n",
                  index, format_name ( new_format ),
-                 g_cmtspeed_ratio[( en_CMTSPEED ) speed_byte] );
+                 cmtspeed_get_ratiotxt ( ( en_CMTSPEED ) speed_byte ) );
     }
 
     return EXIT_SUCCESS;
@@ -1736,13 +1739,13 @@ static int set_block_0x41 ( st_TZX_FILE *file, uint32_t index,
     } else {
         printf ( "Block [%u]: 0x41 set format=%s speed=%s",
                  index, format_name ( new_format ),
-                 g_cmtspeed_ratio[( en_CMTSPEED ) new_speed_byte] );
+                 cmtspeed_get_ratiotxt ( ( en_CMTSPEED ) new_speed_byte ) );
         if ( new_format != old_format )
             printf ( " (format: %s -> %s)", format_name ( old_format ), format_name ( new_format ) );
         if ( new_speed_byte != old_speed_byte )
             printf ( " (speed: %s -> %s)",
-                     g_cmtspeed_ratio[( en_CMTSPEED ) old_speed_byte],
-                     g_cmtspeed_ratio[( en_CMTSPEED ) new_speed_byte] );
+                     cmtspeed_get_ratiotxt ( ( en_CMTSPEED ) old_speed_byte ),
+                     cmtspeed_get_ratiotxt ( ( en_CMTSPEED ) new_speed_byte ) );
         printf ( "\n" );
     }
 

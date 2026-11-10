@@ -1,7 +1,7 @@
 /**
  * @file   tmz_player.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.4.0
+ * @version 1.5.0
  * @brief  Verejne API TMZ playeru - generovani CMT audio streamu z TMZ/TZX bloku.
  *
  * Player iteruje bloky TMZ/TZX souboru a generuje CMT audio stream
@@ -194,15 +194,18 @@ extern "C" {
      * Deleguje parsovani a generovani na TZX knihovnu (tzx_generate_block).
      * Podporuje bloky: 0x10 (Standard Speed), 0x11 (Turbo Speed),
      * 0x12 (Pure Tone), 0x13 (Pulse Sequence), 0x14 (Pure Data),
-     * 0x15 (Direct Recording), 0x20 (Pause). Signál začíná nízko a první
-     * pulz je vysoko, tedy s hranou (TZX_LEVEL_AFTER_PAUSE, jako ZX); úroveň
-     * mezi bloky drží jen tmz_player_play_next().
+     * 0x15 (Direct Recording), 0x18 (CSW Recording, jen komprese RLE),
+     * 0x20 (Pause). Signál začíná nízko a první pulz je vysoko, tedy s hranou
+     * (TZX_LEVEL_AFTER_PAUSE, jako ZX); úroveň mezi bloky drží jen
+     * tmz_player_play_next(). Bloky 0x15 a 0x18 mají úrovně pulzů dané
+     * blokem (0x18: první pulz LOW), po nich je úroveň opakem posledního pulzu.
      *
      * @param block TMZ blok s TZX audio ID.
      * @param config Konfigurace playeru.
      * @param err Vystupni chybovy kod (muze byt NULL): TMZ_PLAYER_OK (i u Pause 0);
      *        TMZ_PLAYER_ERROR_NULL_INPUT; TMZ_PLAYER_ERROR_UNSUPPORTED (jiné ID);
-     *        TMZ_PLAYER_ERROR_STREAM_CREATE; TMZ_PLAYER_ERROR_ALLOC.
+     *        TMZ_PLAYER_ERROR_STREAM_CREATE (i neplatný blok a 0x18 s kompresí
+     *        Z-RLE); TMZ_PLAYER_ERROR_ALLOC.
      * @return Novy CMT stream, nebo NULL pri chybe / Pause 0.
      *
      * @pre block nesmi byt NULL.

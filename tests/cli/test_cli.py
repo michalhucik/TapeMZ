@@ -354,6 +354,13 @@ t41 = os.path.join(TMP, "cpm-41.tmz")
 rc, o = run_tool("mzf2tmz", src, t41, "--format", "turbo")
 rc2, o2 = run_tool("tmzedit", "set", t41, "0", "--format", "cpm-tape", "-o", os.path.join(TMP, "cpm-41b.tmz"))
 check(rc == 0 and rc2 == 1 and "mzf2tmz" in o2, "tmzedit set --format cpm-tape rejected with mzf2tmz hint", o + o2)
+# tmzedit: bajt rychlosti bloku 0x41 mimo en_CMTSPEED (0xFF) se nesmí použít jako index tabulky
+bad_sp = os.path.join(TMP, "cpm-41-badspeed.tmz")
+bad_d = bytearray(read(t41))
+bad_d[0x12] = 0xFF   # TapeMZ! 1Ah verze(2) ID(1) délka(4) machine pulseset format speed
+open(bad_sp, "wb").write(bad_d)
+rc, o = run_tool("tmzedit", "set", bad_sp, "0", "--speed", "2:1", "-o", os.path.join(TMP, "cpm-41-badspeed2.tmz"))
+check(rc == 0 and "speed: ?:? -> 2:1" in o, "tmzedit set reports an out-of-range speed byte as unknown", o)
 
 
 # --- wav2tmz: předzavaděč TurboCopy bez části TURBO, za ním nahrávka NORMAL

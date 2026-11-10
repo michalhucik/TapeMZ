@@ -42,8 +42,8 @@
 /** @brief Počet mutací na jeden výchozí blok. */
 #define MUTATIONS_PER_BLOCK 10000
 
-/** @brief Nejvýš výchozích bloků. */
-#define MAX_SEEDS 16
+/** @brief Nejvýš výchozích bloků (5 vektorů + profily registru, s rezervou na další profily). */
+#define MAX_SEEDS 24
 
 /** @brief Počet druhů mutací (3 náhodné + 3 cílené). */
 #define OP_COUNT 6

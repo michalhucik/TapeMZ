@@ -12,7 +12,7 @@
  * Podporuje vsechny bloky, ktere TMZ player umi prehrat:
  * - MZ bloky 0x40, 0x41 a 0x45 přes převod na blok 0x46 (tmz_v1conv),
  *   nepřevoditelné formáty 0x41 přes kodéry mzcmt_*
- * - TZX bloky 0x10-0x15 a 0x20 pres TZX knihovnu
+ * - TZX bloky 0x10-0x15, 0x18 (CSW RLE) a 0x20 pres TZX knihovnu
  * - blok 0x46 (MZ File, TMZ v1.1) přes generátor FM
  *
  * Ridici a informacni bloky jsou preskoceny.

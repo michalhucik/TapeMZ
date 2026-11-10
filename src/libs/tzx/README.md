@@ -29,6 +29,9 @@ Knihovna pracuje ve dvou krocich:
 dalšího pulzu, pulz se zapíše na ní a úroveň se otočí. Pauza > 0 při vysoké
 úrovni začne 1 ms vysoko, zbytek nízko; po pauze je úroveň nízká, Pause 0 ji
 nemění. Po 0x15 platí opak posledního vzorku (spec to neurčuje, (hypotéza)).
+0x18 (od 1.3.0) se chová jako 0x15: úrovně pulzů určuje blok (první pulz LOW,
+pak střídání), vstupní úroveň na ně nemá vliv, po posledním pulzu platí jeho
+opak (spec 0x18 úroveň neuvádí, převzato z 0x15).
 `tzx_generate_block(block, config, &level, &err)` úroveň přebírá a vrací,
 takže přehrávač ji drží mezi bloky; ostatní `tzx_generate_*()` začínají nízkou
 úrovní.
@@ -49,13 +52,16 @@ pro Sharp MZ-800 (3 546 895 Hz = 17 734 475 / 5) nebo jiny procesor.
 | 0x13 | Pulse Sequence | ano | ano | Az 255 pulzu ruznych delek |
 | 0x14 | Pure Data | ano | ano | Data bez pilot/sync, vlastni bit timing |
 | 0x15 | Direct Recording | ano | ano | Primy 1-bit zaznam, libovolny signal |
+| 0x18 | CSW Recording | ano | jen RLE | Délky pulzů ve vzorcích s přesnou frekvencí v Hz (3 B); zápis `tzx_block_create_csw_recording()`, generátor `tzx_generate_csw_recording()`. Z-RLE (deflate) vrací `TZX_ERROR_UNSUPPORTED` s hlášením, knihovna nezávisí na zlib |
 | 0x20 | Pause | ano | ano | Ticho; Pause 0 = zastaveni pasky (generator vrati NULL s TZX_OK, vyhodnoti prehravac) |
 
-### Bloky pouze s parsovanim (bez generovani)
-
-| ID   | Blok | Parsovani | Generovani | Duvod |
-|------|------|-----------|------------|-------|
-| 0x18 | CSW Recording | ano | ne | Vyzaduje CSW v2 dekompresi (RLE/Z-RLE) - externi zavislost na zlib pro Z-RLE |
+Blok 0x18 (od 1.3.0): RLE = 1 B na pulz 1-255 vzorků, delší pulz bajt 00h a DWORD
+little-endian. První pulz je LOW; signál začínající HIGH zapíše volající
+s předřazeným pulzem LOW délky 1 vzorek. Generátor převádí konce pulzů na výstupní
+frekvenci kumulativně (chyba celkové délky do půl vzorku, při shodné frekvenci
+délky přesně); pulz kratší než výstupní vzorek dostane 1 vzorek a posun vyrovná
+další delší pulz. Data musí obsahovat
+přesně `pulse_count` pulzů, jinak `TZX_ERROR_INVALID_BLOCK`.
 
 ## Neimplementovano
 
@@ -91,7 +97,7 @@ zpracovava je dispatcher v tmz_player na vyssi urovni.
 | TZX_OK | Uspech | - |
 | TZX_ERROR_NULL_INPUT | NULL parametr | Vstupni ukazatel je NULL |
 | TZX_ERROR_INVALID_BLOCK | Neplatna data | Blok je kratsi nez minimalni velikost, nebo data_length presahuje raw_length |
-| TZX_ERROR_UNSUPPORTED | Nepodporovany blok | Blok nema implementovany generator (CSW, Generalized) |
+| TZX_ERROR_UNSUPPORTED | Nepodporovany blok | Blok nemá implementovaný generátor (Generalized), 0x18 s kompresí Z-RLE |
 | TZX_ERROR_STREAM_CREATE | Selhani generovani | Chyba pri pridavani pulzu do vstreamu (typicky nedostatek pameti) |
 | TZX_ERROR_ALLOC | Selhani alokace | malloc/calloc vraci NULL |
 
@@ -116,7 +122,7 @@ zpracovava je dispatcher v tmz_player na vyssi urovni.
 ## Zavislosti
 
 - `cmt_stream` (cmt_vstream) - vystupni format
-- `endianity` - konverze byte order (vyuzito jen v CSW parseru)
+- `endianity` - konverze byte order (využito při čtení DWORD délek bloků)
 
 ## Pouziti
 

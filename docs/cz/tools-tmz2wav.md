@@ -9,7 +9,7 @@ Podporuje všechny bloky, které TMZ player umí přehrát:
   v paměti na blok 0x46 (TMZ v1.1); formáty, které převést nejde (FSK, SLOW, DIRECT
   a další, viz tmzconv `--upgrade`), přes kodéry mzcmt_*. 0x41 CPM-TAPE
   a 0x45 se převádějí vždy (0x45 jako `BASIC-1Z016`, s víc než 254 kusy se nepřehraje)
-- TZX bloky 0x10-0x15 a 0x20 přes TZX knihovnu; záznam ZX Spectrum (SINCLAIR) se
+- TZX bloky 0x10-0x15, 0x18 (CSW, komprese RLE) a 0x20 přes TZX knihovnu; záznam ZX Spectrum (SINCLAIR) se
   přehraje jako TZX blok 0x10/0x11. Blok 0x41 s formátem SINCLAIR player nepřehraje
   a nástroje ho nevytvářejí
 - blok 0x46 (MZ File, TMZ v1.1) přes generátory FM a MANCHESTER

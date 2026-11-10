@@ -9,7 +9,7 @@ Supports all blocks that the TMZ player can play:
   in memory to block 0x46 (TMZ v1.1); formats that cannot be converted (FSK, SLOW,
   DIRECT and others, see tmzconv `--upgrade`) via the mzcmt_* encoders. 0x41
   CPM-TAPE and 0x45 are always converted (0x45 as `BASIC-1Z016`, more than 254 chunks are not played)
-- TZX blocks 0x10-0x15 and 0x20 via the TZX library; a ZX Spectrum (SINCLAIR) recording
+- TZX blocks 0x10-0x15, 0x18 (CSW, RLE compression) and 0x20 via the TZX library; a ZX Spectrum (SINCLAIR) recording
   is played as TZX block 0x10/0x11. The player does not play block 0x41 with the
   SINCLAIR format and the tools do not create it
 - block 0x46 (MZ File, TMZ v1.1) via the FM and MANCHESTER generators

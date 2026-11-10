@@ -647,7 +647,8 @@ protože jde o MZ soubor s významem; čistě ZX záznamy patří do TZX 0x10/0x
 - Vestavěné profily definuje registr (v knihovně
   modul `tmz_profile`): například `ROM-800-NOMINAL`, `ROM-800-EXACT`,
   `TC-1.21`, `IC-10.2-NORMAL`, `IC-10.2-TURBO`, `IC-10.2-FASTIPL`, `UNICMT`,
-  `TAPEMZ-V1-LEGACY`, `PEZIK-2.0A`, `IC-10.2-CPM`, `BASIC-1Z016`.
+  `TAPEMZ-V1-LEGACY`, `PEZIK-2.0A`, `IC-10.2-CPM`, `BASIC-1Z016`,
+  `MZ800EMU-CMT`.
 - Vlastní profil má prefix `X-` (např. `X-DEMO`). Vestavěné ID prefix `X-`
   nikdy nemají.
 - ID je popisek. Player ho nečte. Oprava profilu v registru stávající
@@ -659,7 +660,8 @@ Parametry, se kterými registr blok vytvořil, jako ASCII řetězec
 `klíč=hodnota` oddělený čárkami (klíč `[a-z0-9_]+`, hodnota tisknutelné
 ASCII bez čárky). Příklad: `speed=2/1,loader=Y`. Slouží k zobrazení a
 validaci, player ho nečte. `speed` je poměr a:b (registr píše a:b, čte i a/b): rychlost
-en_CMTSPEED, u TC-1.21 i jiný poměr TurboCopy (číslice 1-9, 1/2 až 3/1).
+en_CMTSPEED, u TC-1.21 i jiný poměr TurboCopy (číslice 1-9, 1/2 až 3/1). Rychlost
+2:1 CPM (sada cmt.com) píše registr jako `2:1 (cp/m)` (jen MZ800EMU-CMT).
 
 ### 8.3 Registr a validace
 
@@ -671,6 +673,55 @@ která z MZF a parametrů vytvoří seznam částí. `tmzinfo --lint` umí:
 - zkontrolovat rezervy čtecího bodu u částí s READER (rezerva aspoň 10 µs;
   `mzcmt_turbo_check_readpoint`).
 
+### 8.4 Profil MZ800EMU-CMT
+
+Signál, který emulátor mz800emu hraje z MZF: knihovna mztape, formát
+`MZTAPE_FORMATSET_MZ800_SANE`, vstream při taktu GDG MZ-800 17 721 600 Hz.
+Profil ho přenáší do bloku 0x46, aby emulátor mohl držet každou pásku jako
+bloky 0x46 a MZF hrál stejně jako dřív. Míra jistoty `emulator-output`:
+popisuje výstup emulátoru, ne zápis konkrétního programu. Vlastní hodnoty
+profil nemá: tóny čte přes `mztape_get_format()`, počty pulzů tapemarku
+z maker `MZTAPE_LTM_*` a `MZTAPE_STM_*`, délky pulzů přes
+`mztape_get_speed_pulses()`. ID je v makru `TMZ_PROFILE_ID_MZ800EMU_CMT`.
+
+| část | role, zdroj | tón | tapemark | pauza za částí |
+|---|---|---|---|---|
+| 1 | HEADER, MZF_HEADER | lgap formátu (6400 S) | 40 L, 40 S, 1 L | 0 |
+| 2 | BODY, MZF_BODY (i při fsize 0) | sgap formátu (11000 S) | 20 L, 20 S, 1 L | PROFILE_ARGS `pause`, LOW |
+
+Obě části: TIMEBASE 17 721 600, 1 start bit L, MSB první, checksum
+MZ_POPCOUNT16_BE, END_L 3 (stop bit posledního bajtu checksumu a 2 L
+záznamu mztape), bez kopií, bez READER a STOP.
+
+PULSES (v tikách 17 721 600 Hz):
+- `speed=a:b` (výchozí 1:1, libovolný poměr en_CMTSPEED včetně 2:1 CPM):
+  délky z `mztape_get_speed_pulses()` (sada Intercopy změřená v emulátoru,
+  u 2:1 CPM sada cmt.com), vydělené poměrem, `round(sekundy * 17 721 600)`.
+  Při 1:1 LONG 8335/8760, SHORT 4356/4930 tiků.
+- `cmtspeed=LH/LL/SH/SL` (µs, všechna čtyři nenulová, jen bez `speed`):
+  `round(µs * 17,7216)`.
+
+PROFILE_ARGS: `speed=a:b,pause=N` (2:1 CPM jako `speed=2:1 (cp/m)`), nebo
+`cmtspeed=LH/LL/SH/SL,pause=N`; případně `machine`. Jiný parametr
+(`gap`, `loader`, `bd`, LEGACY) vrátí chybu parametrů.
+
+Ověření (`tests/test_tmz_profile.c`, MZF s tělem 1 KB, `pause=0`): při
+17 721 600 Hz je přehraný blok běh po běhu shodný s
+`mztape_create_cmt_vstream_from_mztmzf()` pro všechny platné poměry
+a s `mztape_create_cmt_vstream_from_mztmzf_pulses()` pro 470/494/240/278
+a 235/247/120/139 µs (55 864 běhů, rozdíl 0 vzorků). Při 14 336 640 Hz
+(takt GDG MZ-700 a MZ-1500) se běhy liší nejvýš o 1 vzorek: mztape
+zaokrouhluje každou půlvlnu zvlášť, model FM akumuluje čas části
+(kap. 5.4) z tiků zaokrouhlených na 17 721 600 Hz.
+
+Tělo 0 B: část BODY vznikne i tak (tón, tapemark, žádná data, checksum
+0000, závěr), stejně jako v mztape; program, který po hlavičce čte tělo,
+by jinak čekal na tapemark. Test porovnává i tento případ s mztape běh po
+běhu (1:1, 2:1 CPM, 3:1).
+
+Export MZT (kap. 10.3): rychlost UniCMT je `cmtspeed`, jinak jako 0x41
+NORMAL (`floor(1x / dělitel)`); 2:1 CPM strukturu ROM nemá.
+
 ## 9. Kompatibilita s v1.0
 
 ### 9.1 Čtení
@@ -681,6 +732,8 @@ není implementovaná (kap. 7), a případy, které model FM nevyjádří
 (tabulka 9.2). Ty se přehrají původní cestou v1.0. Bloky 0x41 CPM_TAPE
 a 0x45 se převádějí vždy, cestu v1.0 nemají; co z nich
 převést nejde, se nepřehraje (chyba bloku).
+
+Bloky přehrané cestou v1.0 používají současné pulzní sady kodérů (mztape), které se od historických generátorů v1.0 mohou lišit nejvýš o 2 vzorky při 44,1 kHz (největší rozdíl půlvlny je SHORT LOW 278,2 proti 249 µs při 1:1, tj. 1,29 vzorku); přesný výstup v1.0 reprodukuje jen převod na blok 0x46 (profil `TAPEMZ-V1-LEGACY`).
 
 ### 9.2 Mapování
 
@@ -702,6 +755,8 @@ převést nejde, se nepřehraje (chyba bloku).
 Pole "Pauza po bloku" (ms) se převede na PAUSE poslední části (přepočet
 na časovou základnu části). "Cílový
 stroj" a "Pulsní sada" se uloží do PROFILE_ARGS.
+
+Parametry playeru v1.0, které převod používá, jsou historické hodnoty generátorů uvedené v kap. 5.2 specifikace v1.0 (`tmz-specification.md`); drží je profil sám a současné pulzní sady kodérů se od nich mohou lišit.
 
 Převod `TAPEMZ-V1-LEGACY` se ověřuje testem proti generátoru v1.0:
 stejný počet a stejné úrovně půlvln, délka každé půlvlny ve vzorcích
@@ -773,7 +828,8 @@ Hlavička CMTSPEED vygenerovaná podle 10.1 je bajtově shodná se souborem
 
 Rychlost bloku pro export: 0x40 a profily ROM = 1x; 0x41 NORMAL
 a TAPEMZ-V1-LEGACY normal = floor(1x / dělitel rychlosti), tedy 2:1 a 3:1
-přesně 2x a 3x UniCMT; UNICMT = `cmtspeed`. Ostatní bloky nemají
+přesně 2x a 3x UniCMT; UNICMT = `cmtspeed`; MZ800EMU-CMT = `cmtspeed`, bez
+něj jako 0x41 NORMAL (2:1 CPM ne, kap. 8.4). Ostatní bloky nemají
 strukturu ROM: `--mzt` je zapíše s varováním, `--mzt-unicmt` odmítne.
 Hlavičky MZF jdou do MZT bajt po bajtu z bloku. MZT převedené tam a zpět
 (`mzf2tmz`, `tmz2mzf --mzt-unicmt`) je bajtově shodné s ukázkami UniCMT

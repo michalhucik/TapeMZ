@@ -1,7 +1,7 @@
 /**
  * @file   tmz_profile.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.7.0
+ * @version 1.9.0
  * @brief  Implementace registru profilů zapisovače (viz tmz_profile.h).
  *
  * Hodnoty profilů a jejich zdroje:
@@ -18,6 +18,9 @@
  *   $BB ověřené záznamem hran v emulátoru.
  * - BASIC-1Z016: pulzy, 22 kontextů, struktura (tón a kopie u každého kusu)
  *   a pauza mezi úseky ze záznamu hran BASICu 1Z-016 V1.0A v emulátoru.
+ * - MZ800EMU-CMT: žádné vlastní hodnoty; tóny, tapemarky a délky pulzů čte
+ *   z knihovny mztape (mztape_get_format(), mztape_get_speed_pulses()),
+ *   takže blok popisuje přesně signál, který mztape generuje.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -72,6 +75,8 @@ static const st_TMZ_PROFILE g_profiles[] = {
     { "IC-10.2-CPM", "Intercopy V10.2 CPM (Manchester), 1500-3600 Bd", "emulator-verified" },
     { "BASIC-1Z016", "MZ-800 BASIC 1Z-016 data file (WOPEN#/PRINT#), T-states measured in the emulator",
       "emulator-verified" },
+    { TMZ_PROFILE_ID_MZ800EMU_CMT, "Signal mz800emu plays from an MZF (mztape MZ-800 SANE format, GDG clock timebase)",
+      "emulator-output" },
 };
 
 /** @brief Index profilu ROM-800-NOMINAL v registru. */
@@ -96,6 +101,8 @@ static const st_TMZ_PROFILE g_profiles[] = {
 #define PROF_IC_CPM 9
 /** @brief Index profilu BASIC-1Z016 v registru. */
 #define PROF_BASIC 10
+/** @brief Index profilu MZ800EMU-CMT v registru. */
+#define PROF_EMU_CMT 11
 
 /** @brief Počet profilů. */
 #define PROFILE_COUNT ( sizeof ( g_profiles ) / sizeof ( g_profiles[0] ) )
@@ -553,8 +560,10 @@ int tmz_profile_args_parse ( const char *text, size_t length, st_TMZ_PROFILE_ARG
             if ( vlen == 0 || vlen >= sizeof ( ratio ) ) return EXIT_FAILURE;
             for ( size_t i = 0; i < vlen; i++ ) ratio[i] = ( val[i] == '/' ) ? ':' : val[i];
             en_CMTSPEED found = CMTSPEED_NONE;
-            for ( int s = CMTSPEED_1_1; s < CMTSPEED_COUNT && found == CMTSPEED_NONE; s++ ) {
-                if ( span_eq ( ratio, vlen, cmtspeed_get_ratiotxt ( ( en_CMTSPEED ) s ) ) ) found = ( en_CMTSPEED ) s;
+            for ( int s = CMTSPEED_1_1; s < CMTSPEED_CUSTOM && found == CMTSPEED_NONE; s++ ) {
+                /* text beze změny: "2:1 (cp/m)" obsahuje '/', který převod na ':' rozbije */
+                const char *rt = cmtspeed_get_ratiotxt ( ( en_CMTSPEED ) s );
+                if ( span_eq ( val, vlen, rt ) || span_eq ( ratio, vlen, rt ) ) found = ( en_CMTSPEED ) s;
             }
             if ( found != CMTSPEED_NONE ) {
                 args->speed = found;
@@ -980,6 +989,36 @@ static int basic_build ( st_BUILD *b, const st_TMZ_PROFILE_ARGS *a, uint32_t bod
 
 
 /**
+ * @brief Pulzní sady formátu normal profilu LEGACY při rychlosti 1:1 (sekundy).
+ *
+ * Historické sady generátorů v1.0, zachované pro shodné přehrání souborů
+ * v1.0; živé cesty používají sady mztape. Hodnoty odpovídají tabulce
+ * výchozích pulzních sad specifikace v1.0 (kap. 5.2).
+ *
+ * Řádek = pulzní sada (index en_MZTAPE_PULSESET: 0 = MZ-700/80K/80A,
+ * 1 = MZ-800/1500, 2 = MZ-80B), sloupce LONG H, LONG L, SHORT H, SHORT L.
+ * Sady MZ-700 a MZ-800 jsou symetrické (504/504 + 252/252 µs,
+ * 498/498 + 249/249 µs); MZ-80B 333/334 + 166,75/166 µs. Hodnoty nemají
+ * doložený zdroj [neověřeno]; drží se jen kvůli shodě se soubory v1.0.
+ */
+static const double g_legacy_pulses[3][4] = {
+    { 0.000504, 0.000504, 0.000252, 0.000252 },
+    { 0.000498, 0.000498, 0.000249, 0.000249 },
+    { 0.000333, 0.000334, 0.000166750, 0.000166 },
+};
+
+
+/* Kontrakt viz tmz_profile.h. */
+int tmz_profile_legacy_pulses ( int pulseset, double out[4] ) {
+    if ( !out || pulseset < 0 || pulseset >= ( int ) ( sizeof ( g_legacy_pulses ) / sizeof ( g_legacy_pulses[0] ) ) ) {
+        return EXIT_FAILURE;
+    }
+    for ( int i = 0; i < 4; i++ ) out[i] = g_legacy_pulses[pulseset][i];
+    return EXIT_SUCCESS;
+}
+
+
+/**
  * @brief Délka půlvlny v jednotkách LEGACY (zaokrouhlení a nejméně 1 jako generátory v1.0).
  * @param sec Délka při rychlosti 1:1 v sekundách.
  * @param divisor Dělitel rychlosti (cmtspeed_get_divisor).
@@ -1037,7 +1076,7 @@ static void append_pulses ( char *buf, size_t size, const st_TMZ_PROFILE_ARGS *a
  *
  * Formát normal (mztape): HEADER (tón lgap, výchozí 6400, u sady 80B
  * 10000; tapemark 40/40) a BODY (tón sgap, výchozí 11000; tapemark 20/20).
- * Pulzy ze sady (mztape_get_pulse_lengths / dělitel rychlosti), nebo
+ * Pulzy z historické sady v1.0 (g_legacy_pulses / dělitel rychlosti), nebo
  * všechna čtyři vlastní pole beze změny. Rychlost 2:1 CPM (pulzy cmt.com)
  * a částečně vyplněné vlastní pulzy model nevyjádří.
  *
@@ -1081,13 +1120,13 @@ static int legacy_build ( st_BUILD *b, const st_TMZ_PROFILE_ARGS *a, const st_MZ
     st_TMZ_PART_COMMON c = { 0, 0, 0, 0 };   /* bez STOP a READER (čtecí rutina není známá) */
 
     if ( a->legacy_format == TMZ_LEGACY_NORMAL ) {
-        double s[4];
         uint32_t pul[4];
-        if ( ( any && !all ) || mztape_get_pulse_lengths ( ( en_MZTAPE_PULSESET ) pulseset, s ) != EXIT_SUCCESS ) {
+        if ( any && !all ) {
             *err = TMZ_PROFILE_ERROR_ARGS;
             return 0;
         }
-        for ( int i = 0; i < 4; i++ ) pul[i] = all ? a->pulses[i] : legacy_units ( s[i], divisor );
+        /* pulseset je zde 0-2 (kontrola výše) */
+        for ( int i = 0; i < 4; i++ ) pul[i] = all ? a->pulses[i] : legacy_units ( g_legacy_pulses[pulseset][i], divisor );
         uint32_t lgap = a->lgap ? a->lgap : ( pulseset == 2 ? 10000u : 6400u );
         uint32_t sgap = a->sgap ? a->sgap : 11000u;
         legacy_params ( p, pul, lgap, 40, 0 );
@@ -1163,6 +1202,110 @@ static int legacy_build ( st_BUILD *b, const st_TMZ_PROFILE_ARGS *a, const st_MZ
 }
 
 
+/** @brief Časová základna MZ800EMU-CMT: takt GDG MZ-800 v Hz (vzorkovací frekvence pásky v emulátoru MZ-800). */
+#define EMU_CMT_TIMEBASE 17721600u
+
+
+/**
+ * @brief Délka půlvlny v tikách EMU_CMT_TIMEBASE.
+ *
+ * Stejný výpočet jako počet vzorků v mztape při frekvenci EMU_CMT_TIMEBASE
+ * (round(sekundy * frekvence)), takže blok přehraný při této frekvenci dá
+ * tytéž běhy jako mztape.
+ *
+ * @param sec Délka v sekundách (> 0).
+ * @return Tiky; 0, když délka po zaokrouhlení nedá ani jeden tik nebo
+ *         přeteče uint32 (volající to hlásí jako chybu parametrů).
+ */
+static uint32_t emu_cmt_ticks ( double sec ) {
+    double v = round ( sec * EMU_CMT_TIMEBASE );
+    return ( v >= 1.0 && v <= ( double ) UINT32_MAX ) ? ( uint32_t ) v : 0u;
+}
+
+
+/**
+ * @brief Sestaví části profilu MZ800EMU-CMT (spec 8.4).
+ *
+ * Popíše záznam mztape formátem MZTAPE_FORMATSET_MZ800_SANE:
+ * tón lgap, tapemark MZTAPE_LTM_*, 2 L, hlavička, checksum, 2 L, tón sgap,
+ * tapemark MZTAPE_STM_*, 2 L, tělo, checksum, 2 L; za každým bajtem stop
+ * bit L. V modelu FM je to start bit L před bajtem, 1 L za tapemarkem a 3 L
+ * za checksumem (stop bit posledního bajtu + 2 L), stejně jako u
+ * TAPEMZ-V1-LEGACY normal. Tóny a lgap/sgap jdou z mztape_get_format(),
+ * počty pulzů tapemarku z maker MZTAPE_LTM_* a MZTAPE_STM_*.
+ *
+ * PULSES: a->speed (NONE = 1:1) přes mztape_get_speed_pulses() (u 2:1 CPM
+ * sada cmt.com), nebo všechna čtyři pole a->cmtspeed v µs (jen se speed
+ * NONE) přes mztape_pulses_set_us(); obojí na tiky emu_cmt_ticks().
+ * Pauza za hlavičkou 0 (mztape pokračuje tónem těla hned), za posledním
+ * dílem a->pause_ms, LOW. Část BODY vzniká vždy, i pro tělo 0 B (tón,
+ * tapemark, checksum 0000 a závěr jako v mztape). Bez kopií, READER
+ * a STOP (signál nepochází z programu s rozebranou čtecí rutinou).
+ *
+ * @param b Seznam částí.
+ * @param a Parametry (speed, cmtspeed, pause_ms).
+ * @param p Pracovní parametry FM.
+ * @param[out] text PROFILE_ARGS ("speed=a:b,pause=N" nebo "cmtspeed=LH/LL/SH/SL,pause=N").
+ * @param text_size Velikost bufferu text.
+ * @param[out] err TMZ_PROFILE_ERROR_ARGS při neplatných parametrech, jinak beze změny.
+ * @return 1 = části přidány, 0 = chyba.
+ */
+static int emu_cmt_build ( st_BUILD *b, const st_TMZ_PROFILE_ARGS *a, st_MZCMT_FM_PARAMS *p, char *text,
+                           size_t text_size, en_TMZ_PROFILE_ERROR *err ) {
+    const st_MZTAPE_FORMAT *fmt = mztape_get_format ( MZTAPE_FORMATSET_MZ800_SANE );
+    int any = a->cmtspeed[0] || a->cmtspeed[1] || a->cmtspeed[2] || a->cmtspeed[3];
+    int all = a->cmtspeed[0] && a->cmtspeed[1] && a->cmtspeed[2] && a->cmtspeed[3];
+    en_CMTSPEED speed = ( a->speed == CMTSPEED_NONE ) ? CMTSPEED_1_1 : a->speed;
+    st_MZTAPE_PULSES_LENGTH pl;
+    uint32_t pause_last = 0;
+    int ok = fmt != NULL;
+    if ( ok && any ) {
+        ok = all && a->speed == CMTSPEED_NONE
+             && mztape_pulses_set_us ( &pl, a->cmtspeed[0], a->cmtspeed[1], a->cmtspeed[2], a->cmtspeed[3] ) == EXIT_SUCCESS;
+    } else if ( ok ) {
+        ok = mztape_get_speed_pulses ( MZTAPE_FORMATSET_MZ800_SANE, speed, &pl ) == EXIT_SUCCESS;
+    }
+    uint32_t pul[4] = { 0, 0, 0, 0 };
+    if ( ok ) {
+        pul[0] = emu_cmt_ticks ( pl.long_pulse.high );
+        pul[1] = emu_cmt_ticks ( pl.long_pulse.low );
+        pul[2] = emu_cmt_ticks ( pl.short_pulse.high );
+        pul[3] = emu_cmt_ticks ( pl.short_pulse.low );
+        ok = pul[0] && pul[1] && pul[2] && pul[3] && pause_units ( a->pause_ms, EMU_CMT_TIMEBASE, &pause_last ) == EXIT_SUCCESS;
+    }
+    if ( !ok ) {
+        *err = TMZ_PROFILE_ERROR_ARGS;
+        return 0;
+    }
+    st_TMZ_PART_COMMON c = { 0, 0, 0, 0 };   /* bez STOP a READER */
+    for ( int part = 0; part < 2; part++ ) {
+        int header = ( part == 0 );
+        mzcmt_fm_params_init ( p );
+        p->timebase = EMU_CMT_TIMEBASE;
+        p->long_first = pul[0];
+        p->long_second = pul[1];
+        p->short_first = pul[2];
+        p->short_second = pul[3];
+        p->tone = header ? fmt->lgap : fmt->sgap;
+        p->tm_long = header ? MZTAPE_LTM_LLENGTH : MZTAPE_STM_LLENGTH;
+        p->tm_short = header ? MZTAPE_LTM_SLENGTH : MZTAPE_STM_SLENGTH;
+        p->tm_end_long = 1;
+        p->checksum = MZCMT_FM_CHECKSUM_MZ_POPCOUNT16_BE;
+        p->end_long = 3;
+        p->pause = header ? 0 : pause_last;
+        if ( add_part ( b, header ? TMZ_PART_ROLE_HEADER : TMZ_PART_ROLE_BODY,
+                        header ? TMZ_SOURCE_MZF_HEADER : TMZ_SOURCE_MZF_BODY, NULL, 0, 0, 0, p, &c ) != EXIT_SUCCESS ) return 0;
+    }
+    if ( any ) {
+        snprintf ( text, text_size, "cmtspeed=%u/%u/%u/%u,pause=%u", a->cmtspeed[0], a->cmtspeed[1], a->cmtspeed[2],
+                   a->cmtspeed[3], a->pause_ms );
+    } else {
+        snprintf ( text, text_size, "speed=%s,pause=%u", cmtspeed_get_ratiotxt ( speed ), a->pause_ms );
+    }
+    return 1;
+}
+
+
 /** @name Parametry profilu (bity pro args_used_only())
  * @{ */
 #define ARG_SPEED    0x001u   /**< speed */
@@ -1202,6 +1345,7 @@ static int args_used_only ( int prof_index, const st_TMZ_PROFILE_ARGS *a ) {
         case PROF_TC: allowed = ARG_SPEED | ARG_LOADER | ARG_TCRATIO; break;
         case PROF_LEGACY: allowed = ARG_SPEED | ARG_LEGACY; break;
         case PROF_BASIC: allowed = 0; break;   /* jen pause a machine */
+        case PROF_EMU_CMT: allowed = ARG_SPEED | ARG_CMTSPEED; break;   /* speed spolu s cmtspeed odmítne emu_cmt_build() */
         default: allowed = ARG_SPEED | ARG_BD; break;   /* IC-10.2-*, PEZIK-2.0A: speed odmítne ic_build()/cpm_build() */
     }
     static const uint16_t zero4[4] = { 0, 0, 0, 0 };
@@ -1332,6 +1476,9 @@ st_TZX_BLOCK* tmz_profile_build_block ( const char *id, const st_TMZ_PROFILE_ARG
     } else if ( prof == &g_profiles[PROF_LEGACY] ) {
         args_text[0] = 0;
         ok = legacy_build ( &b, &a, header, body_size, legacy_hdr, p, args_text, sizeof ( args_text ), err );
+    } else if ( prof == &g_profiles[PROF_EMU_CMT] ) {
+        args_text[0] = 0;
+        ok = emu_cmt_build ( &b, &a, p, args_text, sizeof ( args_text ), err );
     } else {
         /* TC-1.21 */
         en_CMTSPEED speed = ( a.speed == CMTSPEED_NONE ) ? CMTSPEED_2_1 : a.speed;

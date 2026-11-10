@@ -1,7 +1,7 @@
 /**
  * @file   mztape.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.2.0
+ * @version 2.4.0
  * @brief  Veřejné API knihovny mztape — konverze MZF souborů na CMT audio streamy.
  *
  * Definuje typy, enumy, struktury a funkce pro práci s kazetovým záznamem
@@ -10,6 +10,12 @@
  *
  * @par Changelog:
  * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
+ * - 2026-11-09: Doplněny vlastní délky pulzů a hlavička CMTSPEED (UniCMT); pulzní
+ *   sady převzaty z mz800emu: výchozí sada pro vstream změřená v emulátoru z výstupu
+ *   Intercopy (takt GDG), sada cmt.com změřená stejně, údaj servisního manuálu jen
+ *   jako záložní sada bitstreamu.
+ * - 2026-11-09: kontrola rychlosti v bitstreamu (2.3.1)
+ * - 2026-11-10: mztape_get_format() - definice formátové varianty jen pro čtení (2.4.0)
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -163,9 +169,11 @@ extern "C" {
      *
      * @param mztmzf MZF data.
      * @param mztape_format Formátová varianta záznamu.
-     * @param mztape_speed Rychlost záznamu.
+     * @param mztape_speed Rychlost záznamu (platný poměr, cmtspeed_is_valid()).
      * @param sample_rate Vzorkovací frekvence výstupního bitstreamu (Hz).
-     * @return Ukazatel na nový bitstream, nebo NULL při chybě.
+     * @return Ukazatel na nový bitstream (vlastník je volající), nebo NULL při
+     *         chybě. Chybou je i neplatný formát a neplatná rychlost
+     *         (CMTSPEED_NONE, CMTSPEED_CUSTOM).
      */
     extern st_CMT_BITSTREAM* mztape_create_cmt_bitstream_from_mztmzf ( st_MZTAPE_MZF *mztmzf, en_MZTAPE_FORMATSET mztape_format, en_CMTSPEED mztape_speed, uint32_t sample_rate );
 
@@ -199,10 +207,14 @@ extern "C" {
     /**
      * @brief Rozšířená verze s volitelným přepisem délek pulzů.
      *
-     * Pokud jsou hodnoty long_high_us100 .. short_low_us100 nenulové,
-     * přepíší se výchozí délky pulzů (jinak se použije standardní
-     * výpočet z pulseset + speed). Hodnoty jsou v jednotkách 0,1 µs
-     * (sekundy = hodnota / 1e7); přípona _us100 ve jménech je historická.
+     * Jsou-li všechny čtyři hodnoty long_high_us100 .. short_low_us100
+     * nulové, chová se jako mztape_create_stream_from_mztapemzf() (délky
+     * z pulzní sady a rychlosti). Jinak se délky převedou na µs
+     * (hodnota / 10), naplní přes mztape_pulses_set_us() a záznam vznikne
+     * přes mztape_create_stream_from_mztapemzf_pulses(). Hodnoty jsou
+     * v jednotkách 0,1 µs (sekundy = hodnota / 1e7); přípona _us100 ve
+     * jménech je historická. Částečně vyplněné hodnoty (některá nulová,
+     * jiná ne) jsou chyba.
      *
      * @param mztmzf MZF data.
      * @param cmtspeed Rychlost záznamu (ignorována pokud pulse fields != 0).
@@ -213,7 +225,9 @@ extern "C" {
      * @param long_low_us100   Délka LOW části dlouhého pulzu (0,1 µs, 0 = výchozí).
      * @param short_high_us100 Délka HIGH části krátkého pulzu (0,1 µs, 0 = výchozí).
      * @param short_low_us100  Délka LOW části krátkého pulzu (0,1 µs, 0 = výchozí).
-     * @return Ukazatel na nový stream, nebo NULL při chybě.
+     * @return Ukazatel na nový stream (vlastník je volající), nebo NULL při
+     *         chybě (mimo jiné částečně nulové délky nebo část pulzu kratší
+     *         než půl vzorku).
      */
     extern st_CMT_STREAM* mztape_create_stream_from_mztapemzf_ex ( st_MZTAPE_MZF *mztmzf, en_CMTSPEED cmtspeed, en_CMT_STREAM_TYPE type, en_MZTAPE_FORMATSET mztape_fset, uint32_t rate,
                                                                      uint16_t long_high_us100, uint16_t long_low_us100,
@@ -231,9 +245,13 @@ extern "C" {
     /**
      * @brief Délky půlvln pulzní sady při rychlosti 1:1.
      *
-     * Hodnoty tabulek g_mztape_pulses_* (výstup v1.0) pro převod bloků
-     * v1.0 na TMZ v1.1 (tmz_profile, profil TAPEMZ-V1-LEGACY). Pulzy
-     * cmt.com (rychlost 2:1 CPM) sem nepatří.
+     * Hodnoty tabulky pulzních sad (g_mztape_pulses_700, g_mztape_pulses_800,
+     * g_mztape_pulses_80B), kterou používá bitstream path. Sada MZ-800 je
+     * údaj servisního manuálu (LONG 470/494 µs, SHORT 240/278 µs); vstream
+     * path MZ-800 hraje jinou sadu (viz mztape_get_speed_pulses()). Slouží
+     * k zobrazení a pro nástroje. Profil TAPEMZ-V1-LEGACY má vlastní
+     * historické sady v1.0 (viz tmz_profile_legacy_pulses()). Pulzy cmt.com
+     * (rychlost 2:1 CPM) sem nepatří.
      *
      * @param pulseset Pulzní sada.
      * @param[out] out LONG H, LONG L, SHORT H, SHORT L v sekundách.
@@ -241,8 +259,138 @@ extern "C" {
      */
     extern int mztape_get_pulse_lengths ( en_MZTAPE_PULSESET pulseset, double out[4] );
 
+    /**
+     * @brief Vrátí definici formátové varianty záznamu (jen pro čtení).
+     *
+     * Tytéž hodnoty, podle kterých generují záznam
+     * mztape_create_cmt_vstream_from_mztmzf() a ostatní cesty: počet SHORT
+     * dlouhého a krátkého tónu (lgap, sgap), pulzní sadu a posloupnost bloků.
+     * Počty pulzů tapemarků jsou společné všem variantám (MZTAPE_LTM_* a
+     * MZTAPE_STM_*). Slouží knihovnám, které mají záznam mztape popsat
+     * jinými prostředky (profil MZ800EMU-CMT v tmz_profile), aby hodnoty
+     * měly jediný zdroj. Funkce nemá vedlejší efekty.
+     *
+     * @param mztape_format Formátová varianta záznamu.
+     * @return Ukazatel na statickou definici platnou po celou dobu běhu
+     *         programu (volající ji nesmí měnit ani uvolnit, ani pole blocks),
+     *         nebo NULL pro neplatnou variantu.
+     */
+    extern const st_MZTAPE_FORMAT* mztape_get_format ( en_MZTAPE_FORMATSET mztape_format );
+
     /** @brief Pole podporovaných rychlostí záznamu, zakončené CMTSPEED_NONE. */
     extern const en_CMTSPEED g_mztape_speed[];
+
+
+/** @brief Největší přípustná délka jedné části pulzu v µs (rozsah uint16 hlavičky CMTSPEED). */
+#define MZTAPE_PULSE_US_MAX 65535.0
+
+    /**
+     * @brief Naplní délky pulzů z hodnot v mikrosekundách (vlastní délky pulzů).
+     *
+     * Pořadí parametrů odpovídá hlavičce CMTSPEED zařízení UniCMT: LONG high,
+     * LONG low, SHORT high, SHORT low. Délky se uloží v sekundách včetně
+     * součtů total.
+     *
+     * @param[out] pulses Cílová struktura (nesmí být NULL).
+     * @param long_high_us Délka high části dlouhého pulzu (bit "1") v µs.
+     * @param long_low_us Délka low části dlouhého pulzu v µs.
+     * @param short_high_us Délka high části krátkého pulzu (bit "0") v µs.
+     * @param short_low_us Délka low části krátkého pulzu v µs.
+     * @return EXIT_SUCCESS; EXIT_FAILURE, pokud některá délka není v rozsahu
+     *         (0, MZTAPE_PULSE_US_MAX] (i NaN) - pak se *pulses nemění.
+     */
+    extern int mztape_pulses_set_us ( st_MZTAPE_PULSES_LENGTH *pulses, double long_high_us, double long_low_us, double short_high_us, double short_low_us );
+
+    /**
+     * @brief Vrátí délky pulzů, se kterými se generuje záznam v daném poměru rychlosti.
+     *
+     * Jde o tytéž délky, které používá mztape_create_cmt_vstream_from_mztmzf()
+     * (pro MZ-800 sada změřená v emulátoru z výstupu Intercopy, pro 2:1 CP/M
+     * sada cmt.com), vydělené poměrem. Slouží k zobrazení a jako výchozí bod
+     * pro vlastní délky pulzů.
+     *
+     * @param mztape_format Formátová varianta záznamu (určuje pulzní sadu).
+     * @param mztape_speed Poměr rychlosti (cmtspeed_is_valid()).
+     * @param[out] pulses Výstupní délky v sekundách (nesmí být NULL).
+     * @return EXIT_SUCCESS; EXIT_FAILURE pro neplatný formát nebo rychlost
+     *         (včetně CMTSPEED_CUSTOM) - pak se *pulses nemění.
+     */
+    extern int mztape_get_speed_pulses ( en_MZTAPE_FORMATSET mztape_format, en_CMTSPEED mztape_speed, st_MZTAPE_PULSES_LENGTH *pulses );
+
+    /**
+     * @brief Spočítá ekvivalentní poměr rychlosti vlastních délek pulzů.
+     *
+     * Poměr = (dlouhý + krátký pulz při 1:1) / (dlouhý + krátký pulz zadaný),
+     * délky 1:1 podle mztape_get_speed_pulses(). Je to jen orientační údaj
+     * pro zobrazení (UniCMT 3x: asi 3,03).
+     *
+     * @param mztape_format Formátová varianta záznamu (určuje délky 1:1).
+     * @param pulses Délky pulzů (NULL vrátí 0).
+     * @return Poměr > 0; 0 pro neplatný formát, NULL nebo nulové délky.
+     */
+    extern double mztape_pulses_get_ratio ( en_MZTAPE_FORMATSET mztape_format, const st_MZTAPE_PULSES_LENGTH *pulses );
+
+
+/** @brief Offset délek pulzů v hlavičce CMTSPEED (4x uint16 LE v µs). */
+#define MZTAPE_UNICMT_PULSES_OFFSET 0x30
+
+    /** @brief Výsledek rozpoznání hlavičky CMTSPEED zařízení UniCMT. */
+    typedef enum en_MZTAPE_UNICMT_MARKER {
+        MZTAPE_UNICMT_MARKER_INVALID = -1, /**< hlavička CMTSPEED s nepoužitelnými délkami (nula) */
+        MZTAPE_UNICMT_MARKER_NONE = 0,     /**< nejde o hlavičku CMTSPEED (běžný MZF blok) */
+        MZTAPE_UNICMT_MARKER_VALID = 1,    /**< hlavička CMTSPEED, délky pulzů načteny */
+    } en_MZTAPE_UNICMT_MARKER;
+
+    /**
+     * @brief Rozpozná hlavičku CMTSPEED zařízení UniCMT a načte z ní délky pulzů.
+     *
+     * Hlavička CMTSPEED je 128bajtový MZF blok bez těla vložený do MZT mezi
+     * díly pásky; mění rychlost všech dalších dílů. Za hlavičku se považuje
+     * blok, který má zároveň typ 00h, jméno "CMTSPEED" ukončené 0Dh a délku
+     * těla 0. Na offsetu MZTAPE_UNICMT_PULSES_OFFSET jsou 4x uint16 LE v µs:
+     * LONG high, LONG low, SHORT high, SHORT low (formát ověřen hexdumpem
+     * souborů 1xspeed.mzf, 2xspeed.mzf a 3xspeed.mzf z UniCMT; pořadí slov
+     * je odvozené ze shody sady 1x s údajem servisního manuálu 470/494,
+     * 240/278 µs). Bajt 20h (u všech známých souborů 01h, význam neznámý)
+     * se nekontroluje.
+     *
+     * @param header Surová hlavička MZF, 128 bajtů v pořadí ze souboru (nesmí být NULL).
+     * @param[out] pulses Při MZTAPE_UNICMT_MARKER_VALID délky pulzů; jinak se
+     *             nemění. Smí být NULL (pak jen rozpoznání).
+     * @return en_MZTAPE_UNICMT_MARKER.
+     */
+    extern en_MZTAPE_UNICMT_MARKER mztape_unicmt_speed_marker ( const uint8_t *header, st_MZTAPE_PULSES_LENGTH *pulses );
+
+    /**
+     * @brief Vytvoří CMT vstream z MZF dat s vlastními délkami pulzů.
+     *
+     * Stejný záznam jako mztape_create_cmt_vstream_from_mztmzf(), jen délky
+     * pulzů nejsou dané poměrem, ale parametrem (např. hlavička CMTSPEED).
+     * Každá část pulzu se zaokrouhlí na celý počet vzorků samostatně.
+     *
+     * @param mztmzf MZF data.
+     * @param mztape_format Formátová varianta záznamu (bloky, délky GAPů).
+     * @param pulses Délky pulzů v sekundách (NULL je chyba).
+     * @param rate Vzorkovací frekvence výstupního vstreamu (Hz).
+     * @return Ukazatel na nový vstream (vlastník je volající), nebo NULL při
+     *         chybě - mimo jiné, když by některá část pulzu měla 0 vzorků.
+     */
+    extern st_CMT_VSTREAM* mztape_create_cmt_vstream_from_mztmzf_pulses ( st_MZTAPE_MZF *mztmzf, en_MZTAPE_FORMATSET mztape_format, const st_MZTAPE_PULSES_LENGTH *pulses, uint32_t rate );
+
+    /**
+     * @brief Jednotné API pro vytvoření CMT streamu s vlastními délkami pulzů.
+     *
+     * Obdoba mztape_create_stream_from_mztapemzf(); bitstream vzniká
+     * převodem vstreamu.
+     *
+     * @param mztmzf MZF data.
+     * @param pulses Délky pulzů v sekundách (NULL je chyba).
+     * @param type Typ výstupního streamu (bitstream/vstream).
+     * @param mztape_fset Formátová varianta záznamu.
+     * @param rate Vzorkovací frekvence (Hz).
+     * @return Ukazatel na nový stream (vlastník je volající), nebo NULL při chybě.
+     */
+    extern st_CMT_STREAM* mztape_create_stream_from_mztapemzf_pulses ( st_MZTAPE_MZF *mztmzf, const st_MZTAPE_PULSES_LENGTH *pulses, en_CMT_STREAM_TYPE type, en_MZTAPE_FORMATSET mztape_fset, uint32_t rate );
 
 
     /** @brief Uživatelský alokátor — umožňuje nahradit výchozí malloc/calloc/free. */
@@ -269,7 +417,7 @@ extern "C" {
     extern void mztape_set_error_callback ( mztape_error_cb cb );
 
     /** @brief Verze knihovny mztape. */
-#define MZTAPE_VERSION "2.2.0"
+#define MZTAPE_VERSION "2.4.0"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny mztape.

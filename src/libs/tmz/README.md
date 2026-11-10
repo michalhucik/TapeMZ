@@ -29,8 +29,10 @@ knihovna tmz k ní přidává bloky Sharp MZ, registr profilů a player.
 ROM-800-NOMINAL, ROM-800-EXACT, TC-1.21 (TurboCopy), TAPEMZ-V1-LEGACY
 (generátory v1.0 pro převedené bloky), UNICMT, IC-10.2-NORMAL,
 IC-10.2-TURBO, IC-10.2-FASTIPL, IC-10.2-CPM (Intercopy V10.2), PEZIK-2.0A
-(CP/M TAPE.COM) a BASIC-1Z016 (datové soubory BASICu). Hodnoty a zdroje
-jsou ve specifikaci v1.1 (kap. 6-8).
+(CP/M TAPE.COM), BASIC-1Z016 (datové soubory BASICu) a MZ800EMU-CMT
+(signál, který emulátor mz800emu hraje z MZF přes mztape; ID v makru
+`TMZ_PROFILE_ID_MZ800EMU_CMT`). Hodnoty a zdroje jsou ve specifikaci v1.1
+(kap. 6-8).
 
 ## Architektura
 
@@ -44,7 +46,7 @@ TMZ/TZX soubor (generic_driver)
         +-- 0x40, 0x41, 0x45 --> tmz_v1conv --> 0x46 (převoditelné případy)
         |                    --> mztape / mzcmt_* (ostatní, cesta v1.0)
         +-- 0x46 --> části FM (mzcmt_fm) a MANCHESTER (mzcmt_manchester)
-        +-- TZX audio bloky (0x10-0x15, 0x20) --> tzx --> cmt_vstream
+        +-- TZX audio bloky (0x10-0x15, 0x18, 0x20) --> tzx --> cmt_vstream
         +-- řídicí a informační bloky --> bez zvuku (stavový automat)
 ```
 
@@ -66,7 +68,7 @@ TMZ/TZX soubor (generic_driver)
 | ID | Blok | Player | Poznámka |
 |----|------|--------|----------|
 | 0x10-0x15 | Standard/Turbo Speed, Pure Tone, Pulse Sequence, Pure Data, Direct Recording | ano | generuje knihovna tzx |
-| 0x18 | CSW Recording | ne | parser ano, dekomprese ne |
+| 0x18 | CSW Recording | ano | jen komprese RLE (Z-RLE = TMZ_PLAYER_ERROR_STREAM_CREATE); úrovně pulzů určuje blok (první LOW), po bloku opak posledního pulzu jako u 0x15 |
 | 0x19 | Generalized Data | ne | |
 | 0x20 | Pause | ano | Pause 0 zastaví pásku |
 | 0x21-0x28 | Group, Jump, Loop, Call, Return, Select | řídí | stavový automat `tmz_player_play_next()`; bezstavové `tmz_player_play_block()` je jen přeskočí |
@@ -100,7 +102,7 @@ Player vrací `en_TMZ_PLAYER_ERROR` (tmz_player.h):
 |-----|-------------|
 | TMZ_PLAYER_OK | úspěch, i u bloků bez zvuku (NULL stream) |
 | TMZ_PLAYER_ERROR_NULL_INPUT | parametr je NULL |
-| TMZ_PLAYER_ERROR_UNSUPPORTED | CSW, Generalized Data, neznámé ID, blok bez přehratelné části, blok, který nejde převést |
+| TMZ_PLAYER_ERROR_UNSUPPORTED | Generalized Data, neznámé ID, blok bez přehratelné části, blok, který nejde převést |
 | TMZ_PLAYER_ERROR_STREAM_CREATE | generátor nevytvořil stream |
 | TMZ_PLAYER_ERROR_ALLOC | selhala alokace |
 | TMZ_PLAYER_ERROR_UNREADABLE | signál by po převodu na vzorky čtecí rutina nepřečetla (rezerva čtecího bodu pod 0, FSK/SLOW/DIRECT při nečitelné frekvenci) |

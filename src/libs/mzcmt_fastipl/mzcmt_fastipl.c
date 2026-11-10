@@ -400,6 +400,7 @@ static const uint8_t g_fastipl_readpoints[CMTSPEED_COUNT] = {
     17,   /* CMTSPEED_8_3    - 3200 Bd */
     55,   /* CMTSPEED_9_7    - ~1543 Bd (odhad) */
     40,   /* CMTSPEED_25_14  - ~2143 Bd (odhad) */
+    0,    /* CMTSPEED_CUSTOM - vlastní délky pulzů, readpoint z poměru nelze odvodit */
 };
 
 

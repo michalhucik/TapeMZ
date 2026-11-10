@@ -395,6 +395,65 @@ export_done:
         for ( int i = 0; i < 4; i++ ) tmz_block_free ( v[i] );
     }
 
+    /*
+     * MZ800EMU-CMT: záznam ROM; poměr jako 0x41 NORMAL (2:1 = floor(1x / 2) = 2x), 2:1 CPM bez
+     * struktury ROM (pulzy cmt.com), vlastní pulzy = cmtspeed. Export UniCMT 1x + vlastní 2x
+     * vloží mezi soubory hlavičku CMTSPEED bajtově shodnou s tmz_mzt_build_cmtspeed().
+     */
+    {
+        static uint8_t body4[4] = { 0x11, 0x22, 0x33, 0x44 };
+        st_MZF_HEADER h;
+        memset ( &h, 0, sizeof ( h ) );
+        h.ftype = 0x01;
+        h.fname.name[0] = 'E';
+        h.fname.terminator = 0x0D;
+        h.fsize = 4;
+        h.fstrt = h.fexec = 0x1200;
+        st_TMZ_PROFILE_ARGS a;
+        tmz_profile_args_init ( &a );
+        st_TZX_BLOCK *e1 = tmz_profile_build_block ( TMZ_PROFILE_ID_MZ800EMU_CMT, &a, &h, body4, 4, NULL );
+        memcpy ( a.cmtspeed, pv[1], sizeof ( a.cmtspeed ) );
+        st_TZX_BLOCK *e2 = tmz_profile_build_block ( TMZ_PROFILE_ID_MZ800EMU_CMT, &a, &h, body4, 4, NULL );
+        tmz_profile_args_init ( &a );
+        a.speed = CMTSPEED_2_1;
+        st_TZX_BLOCK *e3 = tmz_profile_build_block ( TMZ_PROFILE_ID_MZ800EMU_CMT, &a, &h, body4, 4, NULL );
+        a.speed = CMTSPEED_2_1_CPM;
+        st_TZX_BLOCK *e4 = tmz_profile_build_block ( TMZ_PROFILE_ID_MZ800EMU_CMT, &a, &h, body4, 4, NULL );
+        st_TZX_BLOCK *eb[4] = { e1, e2, e3, e4 };
+        static const int want_rom[4] = { 1, 1, 1, 0 };
+        static const int want_pv[4] = { 0, 1, 1, -1 };
+        ok = e1 && e2 && e3 && e4;
+        for ( int i = 0; ok && i < 4; i++ ) {
+            st_TMZ_MZT_BLOCK_INFO info;
+            memset ( &info, 0, sizeof ( info ) );   /* diagnostika níž ho tiskne i při r != 1 */
+            int r = tmz_mzt_block_info ( eb[i], &info );
+            ok = r == 1 && info.rom_structure == want_rom[i]
+                 && ( want_pv[i] < 0 || memcmp ( info.pulses_us, pv[want_pv[i]], sizeof ( info.pulses_us ) ) == 0 )
+                 && info.body_size == 4 && memcmp ( info.body, body4, 4 ) == 0;
+            if ( !ok ) printf ( "  block %d: r %d, rom_structure %d, pulses %u/%u/%u/%u\n", i, r, info.rom_structure,
+                                info.pulses_us[0], info.pulses_us[1], info.pulses_us[2], info.pulses_us[3] );
+            if ( r == 1 ) tmz_mzt_block_info_free ( &info );
+        }
+        CHECK ( ok, "MZ800EMU-CMT: 1:1 = 1x, cmtspeed 2x = cmtspeed, 2:1 = 2x, 2:1 CPM not ROM structure" );
+        if ( e1 && e2 ) {
+            st_TZX_BLOCK arr[2] = { *e1, *e2 };
+            st_TZX_FILE f;
+            memset ( &f, 0, sizeof ( f ) );
+            f.blocks = arr;
+            f.block_count = 2;
+            uint8_t *out = NULL;
+            uint32_t on = 0;
+            uint8_t cs[128];
+            tmz_mzt_build_cmtspeed ( pv[1], cs );
+            ok = tmz_mzt_export ( &f, TMZ_MZT_UNICMT, &out, &on, NULL, NULL ) == EXIT_SUCCESS && on == 2 * 132 + 128
+                 && memcmp ( out + 132, cs, 128 ) == 0 && memcmp ( out + 128, body4, 4 ) == 0
+                 && memcmp ( out + 132 + 128 + 128, body4, 4 ) == 0;
+            free ( out );
+            CHECK ( ok, "MZ800EMU-CMT 1x + cmtspeed 2x -> UniCMT MZT, CMTSPEED header byte-identical" );
+        }
+        for ( int i = 0; i < 4; i++ ) if ( eb[i] ) tmz_block_free ( eb[i] );
+    }
+
     /* blok bez struktury ROM: unicmt chyba, classic varování */
     {
         st_TMZ_PROFILE_ARGS a;

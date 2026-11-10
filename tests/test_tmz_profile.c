@@ -2,7 +2,9 @@
  * @file   test_tmz_profile.c
  * @brief  Registr profilů (spec kap. 8): bloky sestavené z emutest.mzf
  *         přehrané generátorem FM proti záznamům z emulátoru (tstdata/ref),
- *         parametry, PROFILE_ARGS, odmítnutí neplatných parametrů.
+ *         parametry, PROFILE_ARGS, odmítnutí neplatných parametrů;
+ *         profil MZ800EMU-CMT proti mztape (MZ800_SANE) při 17 721 600
+ *         a 14 336 640 Hz.
  *         Spouštět z build/.
  * Bez tstdata/ vypíše SKIP a skončí 0 (tests/tstdata_skip.h).
  */
@@ -18,6 +20,8 @@
 #include "libs/tmz/tmz_mzfile.h"
 #include "libs/tmz/tmz_tlv.h"
 #include "libs/tmz/tmz_profile.h"
+#include "libs/tmz/tmz_player.h"
+#include "libs/mztape/mztape.h"
 #include "tmz_ref_compare.h"
 #include "tstdata_skip.h"
 
@@ -34,6 +38,8 @@ static int g_failures = 0;
 static st_MZF_HEADER g_hdr;
 /** @brief Tělo testovacího MZF. */
 static uint8_t g_body[1024];
+/** @brief Hlavička testovacího MZF v pořadí souboru (bajty, jak je dostane mztape). */
+static uint8_t g_hdr_le[128];
 
 
 /**
@@ -48,6 +54,7 @@ static int load_emutest ( void ) {
     fclose ( f );
     if ( n != sizeof ( raw ) ) return EXIT_FAILURE;
     memcpy ( &g_hdr, raw, 128 );
+    memcpy ( g_hdr_le, raw, 128 );
     /* jen pořadí bajtů: mzf_header_items_correction() by přepsal 11h na 0Dh (ROM záznam má 00h) */
     g_hdr.fsize = endianity_bswap16_LE ( g_hdr.fsize );
     g_hdr.fstrt = endianity_bswap16_LE ( g_hdr.fstrt );
@@ -78,6 +85,343 @@ static void build_and_compare ( const char *id, const st_TMZ_PROFILE_ARGS *args,
 }
 
 
+/** @brief ID profilu signálu emulátoru (makro registru). */
+#define EMU_ID TMZ_PROFILE_ID_MZ800EMU_CMT
+/** @brief Takt GDG MZ-800 = časová základna profilu MZ800EMU-CMT (Hz). */
+#define EMU_RATE_800 17721600u
+/** @brief Takt GDG MZ-700 a MZ-1500 (Hz). */
+#define EMU_RATE_700 14336640u
+
+
+/**
+ * @brief Porovná běhy (úroveň, délka ve vzorcích) dvou vstreamů.
+ *
+ * Vypíše počet běhů obou streamů a při první neshodě její index, délky
+ * a úrovně.
+ *
+ * @param ref Výstup mztape.
+ * @param got Přehraný blok 0x46.
+ * @param tol Povolený rozdíl délky běhu ve vzorcích (0 = shoda).
+ * @param label Popis do výpisu.
+ * @return 1 = stejný počet běhů, stejné úrovně a délky v toleranci; 0 jinak (zvýší g_failures).
+ * @post Čtecí pozice obou vstreamů je na konci nebo u první neshody.
+ */
+static int emu_runs_compare ( st_CMT_VSTREAM *ref, st_CMT_VSTREAM *got, int tol, const char *label ) {
+    if ( !ref || !got ) {
+        printf ( "FAIL: %s (missing stream: ref %p, got %p)\n", label, ( void* ) ref, ( void* ) got );
+        g_failures++;
+        return 0;
+    }
+    cmt_vstream_read_reset ( ref );
+    cmt_vstream_read_reset ( got );
+    uint64_t n = 0, sa = 0, sb = 0;
+    int va = 0, vb = 0, diffs = 0;
+    for ( ;; ) {
+        int ea = cmt_vstream_read_pulse ( ref, &sa, &va );
+        int eb = cmt_vstream_read_pulse ( got, &sb, &vb );
+        if ( ea != EXIT_SUCCESS || eb != EXIT_SUCCESS ) {
+            if ( ea != eb ) {
+                /* dopočítat celkové počty běhů pro výpis */
+                uint64_t na = n + ( ea == EXIT_SUCCESS ), nb = n + ( eb == EXIT_SUCCESS );
+                while ( ea == EXIT_SUCCESS && cmt_vstream_read_pulse ( ref, &sa, &va ) == EXIT_SUCCESS ) na++;
+                while ( eb == EXIT_SUCCESS && cmt_vstream_read_pulse ( got, &sb, &vb ) == EXIT_SUCCESS ) nb++;
+                printf ( "FAIL: %s: run count differs (mztape %llu, block %llu)\n", label, ( unsigned long long ) na,
+                         ( unsigned long long ) nb );
+                g_failures++;
+                return 0;
+            }
+            break;
+        }
+        long long d = ( long long ) sa - ( long long ) sb;
+        if ( va != vb || d > tol || d < -tol ) {
+            printf ( "FAIL: %s: run %llu: mztape %llu/%d, block %llu/%d\n", label, ( unsigned long long ) n,
+                     ( unsigned long long ) sa, va, ( unsigned long long ) sb, vb );
+            g_failures++;
+            return 0;
+        }
+        if ( d ) diffs++;
+        n++;
+    }
+    printf ( "OK: %s (%llu runs, %d differ by 1 sample)\n", label, ( unsigned long long ) n, diffs );
+    return 1;
+}
+
+
+/**
+ * @brief Sestaví blok MZ800EMU-CMT z emutest.mzf a přehraje ho playerem.
+ * @param a Parametry profilu.
+ * @param rate Vzorkovací frekvence přehrání.
+ * @return Vstream (uvolnit cmt_stream_destroy() přes vrácený stream), nebo NULL.
+ */
+static st_CMT_STREAM* emu_play ( const st_TMZ_PROFILE_ARGS *a, uint32_t rate ) {
+    en_TMZ_PROFILE_ERROR pe;
+    st_TZX_BLOCK *b = tmz_profile_build_block ( EMU_ID, a, &g_hdr, g_body, 1024, &pe );
+    if ( !b ) {
+        printf ( "  build failed: %s\n", tmz_profile_error_string ( pe ) );
+        return NULL;
+    }
+    st_TMZ_PLAYER_CONFIG cfg;
+    tmz_player_config_init ( &cfg );
+    cfg.sample_rate = rate;
+    cfg.stream_type = CMT_STREAM_TYPE_VSTREAM;
+    en_TMZ_PLAYER_ERROR e;
+    st_CMT_STREAM *s = tmz_player_play_mz_file ( b, &cfg, &e );
+    tmz_block_free ( b );
+    return s;
+}
+
+
+/**
+ * @brief Naplní st_MZTAPE_MZF z emutest.mzf (hlavička v pořadí souboru, checksumy mztape).
+ * @param m Výstup; body ukazuje do g_body.
+ */
+static void emu_mztmzf ( st_MZTAPE_MZF *m ) {
+    memset ( m, 0, sizeof ( *m ) );
+    memcpy ( m->header, g_hdr_le, 128 );
+    m->body = g_body;
+    m->size = 1024;
+    for ( int i = 0; i < 128; i++ ) for ( uint8_t v = g_hdr_le[i]; v; v >>= 1 ) m->chkh += v & 1;
+    for ( int i = 0; i < 1024; i++ ) for ( uint8_t v = g_body[i]; v; v >>= 1 ) m->chkb += v & 1;
+}
+
+
+/**
+ * @brief Profil MZ800EMU-CMT proti mztape (formát MZ800_SANE) při zadané frekvenci.
+ *
+ * Všechny platné poměrové rychlosti (nadmnožina g_mztape_speed) a vlastní
+ * pulzy 1x a 2x UniCMT. Blok s pause_ms 0.
+ *
+ * @param rate Vzorkovací frekvence obou streamů.
+ * @param tol Povolený rozdíl délky běhu (0 při časové základně profilu).
+ */
+static void emu_vs_mztape ( uint32_t rate, int tol ) {
+    st_MZTAPE_MZF m;
+    emu_mztmzf ( &m );
+    char label[128];
+    for ( int s = CMTSPEED_1_1; s < CMTSPEED_CUSTOM; s++ ) {
+        st_TMZ_PROFILE_ARGS a;
+        tmz_profile_args_init ( &a );
+        a.speed = ( en_CMTSPEED ) s;
+        a.pause_ms = 0;
+        st_CMT_VSTREAM *ref = mztape_create_cmt_vstream_from_mztmzf ( &m, MZTAPE_FORMATSET_MZ800_SANE, ( en_CMTSPEED ) s, rate );
+        st_CMT_STREAM *got = emu_play ( &a, rate );
+        snprintf ( label, sizeof ( label ), EMU_ID " speed %s vs mztape at %u Hz", cmtspeed_get_ratiotxt ( ( en_CMTSPEED ) s ),
+                   rate );
+        emu_runs_compare ( ref, got ? got->str.vstream : NULL, tol, label );
+        cmt_vstream_destroy ( ref );
+        cmt_stream_destroy ( got );
+    }
+    static const uint16_t own[2][4] = { { 470, 494, 240, 278 }, { 235, 247, 120, 139 } };
+    for ( int k = 0; k < 2; k++ ) {
+        st_TMZ_PROFILE_ARGS a;
+        tmz_profile_args_init ( &a );
+        a.pause_ms = 0;
+        memcpy ( a.cmtspeed, own[k], sizeof ( a.cmtspeed ) );
+        st_MZTAPE_PULSES_LENGTH pl;
+        st_CMT_VSTREAM *ref = NULL;
+        if ( mztape_pulses_set_us ( &pl, own[k][0], own[k][1], own[k][2], own[k][3] ) == EXIT_SUCCESS ) {
+            ref = mztape_create_cmt_vstream_from_mztmzf_pulses ( &m, MZTAPE_FORMATSET_MZ800_SANE, &pl, rate );
+        }
+        st_CMT_STREAM *got = emu_play ( &a, rate );
+        snprintf ( label, sizeof ( label ), EMU_ID " cmtspeed %u/%u/%u/%u vs mztape at %u Hz", own[k][0], own[k][1],
+                   own[k][2], own[k][3], rate );
+        emu_runs_compare ( ref, got ? got->str.vstream : NULL, tol, label );
+        cmt_vstream_destroy ( ref );
+        cmt_stream_destroy ( got );
+    }
+}
+
+
+/**
+ * @brief Text PROFILE_ARGS bloku se zapíše, přečte zpět a znovu sestaví bajtově stejný blok.
+ * @param a Parametry.
+ * @param expect Očekávaný text PROFILE_ARGS.
+ * @return 1 = shoda.
+ */
+static int emu_args_roundtrip ( const st_TMZ_PROFILE_ARGS *a, const char *expect ) {
+    en_TMZ_PROFILE_ERROR pe;
+    st_TZX_BLOCK *b = tmz_profile_build_block ( EMU_ID, a, &g_hdr, g_body, 1024, &pe );
+    st_TMZ_MZFILE mf;
+    int ok = b && tmz_mzfile_parse ( b, &mf ) == TZX_OK;
+    st_TZX_BLOCK *b2 = NULL;
+    if ( ok ) {
+        st_TMZ_TLV_ITER it;
+        st_TMZ_TLV t = { 0 };
+        st_TMZ_PROFILE_ARGS back;
+        tmz_tlv_iter_init ( &it, mf.block_tlv, mf.block_tlv_length );
+        ok = tmz_tlv_iter_next ( &it, &t ) == 1 && t.tag == TMZ_TAG_PROFILE_ARGS && t.length == strlen ( expect )
+             && memcmp ( t.value, expect, t.length ) == 0
+             && tmz_profile_args_parse ( ( const char* ) t.value, t.length, &back ) == EXIT_SUCCESS;
+        if ( !ok && t.value ) printf ( "  PROFILE_ARGS \"%.*s\", expected \"%s\"\n", ( int ) t.length, t.value, expect );
+        if ( ok ) b2 = tmz_profile_build_block ( EMU_ID, &back, &g_hdr, g_body, 1024, &pe );
+        tmz_mzfile_free ( &mf );
+    }
+    ok = ok && b2 && b2->length == b->length && memcmp ( b2->data, b->data, b->length ) == 0;
+    if ( b ) tmz_block_free ( b );
+    if ( b2 ) tmz_block_free ( b2 );
+    return ok;
+}
+
+
+/**
+ * @brief Profil MZ800EMU-CMT: shoda s mztape, hodnoty bloku, parametry, PROFILE_ARGS.
+ */
+static void test_emu_cmt ( void ) {
+    const st_TMZ_PROFILE *ep = tmz_profile_find ( EMU_ID );
+    CHECK ( ep && strcmp ( ep->confidence, "emulator-output" ) == 0, EMU_ID " registered, emulator-output" );
+
+    /* shoda s mztape: při časové základně profilu běh po běhu přesně, při taktu MZ-700 nejvýš o 1 vzorek */
+    emu_vs_mztape ( EMU_RATE_800, 0 );
+    emu_vs_mztape ( EMU_RATE_700, 1 );
+
+    en_TMZ_PROFILE_ERROR pe;
+    st_TMZ_PROFILE_ARGS a;
+
+    /* pevné hodnoty: TIMEBASE, tóny a tapemarky MZ800_SANE, bez kopií a READER, PULSES 1:1 v tikách GDG */
+    tmz_profile_args_init ( &a );
+    st_TZX_BLOCK *b = tmz_profile_build_block ( EMU_ID, &a, &g_hdr, g_body, 1024, &pe );
+    st_TMZ_MZFILE mf;
+    int ok = b && tmz_mzfile_parse ( b, &mf ) == TZX_OK;
+    if ( ok ) {
+        static st_MZCMT_FM_PARAMS p0, p1;
+        st_TMZ_PART_COMMON c0, c1;
+        ok = mf.part_count == 2 && mf.parts[0].role == TMZ_PART_ROLE_HEADER && mf.parts[1].role == TMZ_PART_ROLE_BODY
+             && tmz_part_fm_decode ( mf.parts[0].tlv, mf.parts[0].tlv_length, 3546895, &p0, &c0 ) == TMZ_PART_OK
+             && tmz_part_fm_decode ( mf.parts[1].tlv, mf.parts[1].tlv_length, 3546895, &p1, &c1 ) == TMZ_PART_OK
+             && p0.timebase == EMU_RATE_800 && p1.timebase == EMU_RATE_800
+             && p0.long_first == 8335 && p0.long_second == 8760 && p0.short_first == 4356 && p0.short_second == 4930
+             && p0.tone == 6400 && p1.tone == 11000 && p0.tm_long == 40 && p0.tm_short == 40 && p1.tm_long == 20
+             && p1.tm_short == 20 && p0.tm_end_long == 1 && p0.end_long == 3 && p0.copies == 0 && p1.copies == 0
+             && p0.pause == 0 && p1.pause == EMU_RATE_800 && p1.pause_level == 0
+             && !c0.has_reader && !c1.has_reader && !c0.stop && !c1.stop;
+        tmz_mzfile_free ( &mf );
+    }
+    CHECK ( ok, EMU_ID " 1:1: GDG timebase, Intercopy ticks 8335/8760/4356/4930, tones 6400/11000, no copy/READER" );
+    if ( b ) tmz_block_free ( b );
+
+    /* pause_ms 1000 přidá za tělo ticho LOW: poslední běh = LONG LOW + 17 721 600 vzorků */
+    tmz_profile_args_init ( &a );
+    st_CMT_STREAM *s = emu_play ( &a, EMU_RATE_800 );
+    uint64_t smp = 0, last = 0;
+    int val = 1, lastv = 1;
+    if ( s ) {
+        cmt_vstream_read_reset ( s->str.vstream );
+        while ( cmt_vstream_read_pulse ( s->str.vstream, &smp, &val ) == EXIT_SUCCESS ) {
+            last = smp;
+            lastv = val;
+        }
+    }
+    CHECK ( s && lastv == 0 && last == 8760u + EMU_RATE_800, EMU_ID " pause_ms 1000: trailing LOW silence of 1 s" );
+    cmt_stream_destroy ( s );
+
+    /*
+     * Tělo 0 B: části HEADER i BODY (tón, tapemark, prázdná data, checksum 0000, závěr),
+     * přehrání při 17 721 600 Hz běh po běhu shodné s mztape (fsize 0, pause_ms 0).
+     */
+    {
+        st_MZF_HEADER h0 = g_hdr;
+        h0.fsize = 0;
+        st_MZTAPE_MZF m0z;
+        memset ( &m0z, 0, sizeof ( m0z ) );
+        memcpy ( m0z.header, g_hdr_le, 128 );
+        m0z.header[0x12] = 0;   /* fsize 0 v pořadí souboru */
+        m0z.header[0x13] = 0;
+        for ( int i = 0; i < 128; i++ ) for ( uint8_t v = m0z.header[i]; v; v >>= 1 ) m0z.chkh += v & 1;
+        static const en_CMTSPEED sp0[3] = { CMTSPEED_1_1, CMTSPEED_2_1_CPM, CMTSPEED_3_1 };
+        for ( int k = 0; k < 3; k++ ) {
+            tmz_profile_args_init ( &a );
+            a.speed = sp0[k];
+            a.pause_ms = 0;
+            st_TZX_BLOCK *b0 = tmz_profile_build_block ( EMU_ID, &a, &h0, NULL, 0, &pe );
+            st_TMZ_MZFILE m0;
+            int two = b0 && tmz_mzfile_parse ( b0, &m0 ) == TZX_OK;
+            if ( two ) {
+                two = m0.part_count == 2 && m0.parts[0].role == TMZ_PART_ROLE_HEADER
+                      && m0.parts[1].role == TMZ_PART_ROLE_BODY && m0.body_size == 0;
+                tmz_mzfile_free ( &m0 );
+            }
+            char label[128];
+            snprintf ( label, sizeof ( label ), EMU_ID " body 0 B speed %s: HEADER and BODY parts",
+                       cmtspeed_get_ratiotxt ( sp0[k] ) );
+            CHECK ( two, label );
+            st_CMT_STREAM *g0 = NULL;
+            if ( b0 ) {
+                st_TMZ_PLAYER_CONFIG cfg;
+                tmz_player_config_init ( &cfg );
+                cfg.sample_rate = EMU_RATE_800;
+                cfg.stream_type = CMT_STREAM_TYPE_VSTREAM;
+                en_TMZ_PLAYER_ERROR e;
+                g0 = tmz_player_play_mz_file ( b0, &cfg, &e );
+            }
+            st_CMT_VSTREAM *r0 = mztape_create_cmt_vstream_from_mztmzf ( &m0z, MZTAPE_FORMATSET_MZ800_SANE, sp0[k],
+                                                                         EMU_RATE_800 );
+            snprintf ( label, sizeof ( label ), EMU_ID " body 0 B speed %s vs mztape at %u Hz",
+                       cmtspeed_get_ratiotxt ( sp0[k] ), EMU_RATE_800 );
+            emu_runs_compare ( r0, g0 ? g0->str.vstream : NULL, 0, label );
+            cmt_vstream_destroy ( r0 );
+            cmt_stream_destroy ( g0 );
+            if ( b0 ) tmz_block_free ( b0 );
+        }
+    }
+
+    /* odmítnutí: speed + cmtspeed, gap_rom, nepoužité parametry, neplatná rychlost */
+    tmz_profile_args_init ( &a );
+    a.speed = CMTSPEED_2_1;
+    a.cmtspeed[0] = 235;
+    a.cmtspeed[1] = 247;
+    a.cmtspeed[2] = 120;
+    a.cmtspeed[3] = 139;
+    CHECK ( !tmz_profile_build_block ( EMU_ID, &a, &g_hdr, g_body, 1024, &pe ) && pe == TMZ_PROFILE_ERROR_ARGS,
+            EMU_ID " speed 2:1 with cmtspeed -> ARGS" );
+    a.speed = CMTSPEED_1_1;
+    CHECK ( !tmz_profile_build_block ( EMU_ID, &a, &g_hdr, g_body, 1024, &pe ) && pe == TMZ_PROFILE_ERROR_ARGS,
+            EMU_ID " speed 1:1 with cmtspeed -> ARGS" );
+    a.speed = CMTSPEED_NONE;
+    a.cmtspeed[3] = 0;
+    CHECK ( !tmz_profile_build_block ( EMU_ID, &a, &g_hdr, g_body, 1024, &pe ) && pe == TMZ_PROFILE_ERROR_ARGS,
+            EMU_ID " partial cmtspeed -> ARGS" );
+    tmz_profile_args_init ( &a );
+    a.speed = CMTSPEED_CUSTOM;
+    CHECK ( !tmz_profile_build_block ( EMU_ID, &a, &g_hdr, g_body, 1024, &pe ) && pe == TMZ_PROFILE_ERROR_ARGS,
+            EMU_ID " CMTSPEED_CUSTOM -> ARGS" );
+    {
+        int okr = 1;
+        for ( int f = 0; f < 6; f++ ) {
+            tmz_profile_args_init ( &a );
+            switch ( f ) {
+                case 0: a.gap_rom = 1; break;
+                case 1: a.loader = 0; break;
+                case 2: a.bd = 2400; break;
+                case 3: a.legacy_format = TMZ_LEGACY_NORMAL; break;
+                case 4: a.pulses[0] = 4700; break;
+                default: a.tc_a = 2; a.tc_b = 1; break;
+            }
+            st_TZX_BLOCK *bx = tmz_profile_build_block ( EMU_ID, &a, &g_hdr, g_body, 1024, &pe );
+            if ( bx || pe != TMZ_PROFILE_ERROR_ARGS ) {
+                printf ( "  field %d accepted\n", f );
+                okr = 0;
+            }
+            if ( bx ) tmz_block_free ( bx );
+        }
+        CHECK ( okr, EMU_ID " rejects gap_rom 1, loader, bd, legacy fields, TurboCopy ratio" );
+    }
+
+    /* PROFILE_ARGS: zapsané, čitelné zpět, nové sestavení dá stejný blok (tmzinfo --lint) */
+    tmz_profile_args_init ( &a );
+    CHECK ( emu_args_roundtrip ( &a, "speed=1:1,pause=1000" ), EMU_ID " PROFILE_ARGS default" );
+    a.speed = CMTSPEED_2_1_CPM;
+    a.pause_ms = 0;
+    a.machine = 2;
+    CHECK ( emu_args_roundtrip ( &a, "speed=2:1 (cp/m),pause=0,machine=mz800" ), EMU_ID " PROFILE_ARGS 2:1 CPM" );
+    tmz_profile_args_init ( &a );
+    a.cmtspeed[0] = 235;
+    a.cmtspeed[1] = 247;
+    a.cmtspeed[2] = 120;
+    a.cmtspeed[3] = 139;
+    CHECK ( emu_args_roundtrip ( &a, "cmtspeed=235/247/120/139,pause=1000" ), EMU_ID " PROFILE_ARGS cmtspeed" );
+}
+
+
 int main ( void ) {
     if ( tstdata_skip ( "test_tmz_profile" ) ) return 0;
     if ( load_emutest () != EXIT_SUCCESS ) {
@@ -86,8 +430,11 @@ int main ( void ) {
     }
 
     CHECK ( tmz_profile_find ( "TC-1.21" ) && tmz_profile_find ( "ROM-800-NOMINAL" ) && tmz_profile_find ( "ROM-800-EXACT" )
-            && !tmz_profile_find ( "X-NOPE" ) && tmz_profile_count () == 11 && tmz_profile_get ( 11 ) == NULL,
-            "registry has 11 profiles" );
+            && !tmz_profile_find ( "X-NOPE" ) && tmz_profile_count () == 12 && tmz_profile_get ( 12 ) == NULL,
+            "registry has 12 profiles" );
+
+    /* MZ800EMU-CMT: signál, který emulátor hraje z MZF přes mztape */
+    test_emu_cmt ();
 
     /* CPM-TAPE (rodina MANCHESTER) */
     {
@@ -542,7 +889,7 @@ int main ( void ) {
     CHECK ( tmz_profile_args_parse ( "machine=zx", 10, &a ) == EXIT_FAILURE, "unknown machine rejected" );
     CHECK ( tmz_profile_args_parse ( "", 0, &a ) == EXIT_SUCCESS && a.machine == -1 && a.legacy_format == TMZ_LEGACY_NONE
             && a.pulseset == -1, "new arg defaults" );
-    CHECK ( tmz_profile_find ( "TAPEMZ-V1-LEGACY" ) != NULL && tmz_profile_count () == 11, "registry has LEGACY" );
+    CHECK ( tmz_profile_find ( "TAPEMZ-V1-LEGACY" ) != NULL && tmz_profile_count () == 12, "registry has LEGACY" );
 
     /* machine se zapíše i u ROM profilu a čte se zpět */
     tmz_profile_args_init ( &a );
@@ -561,7 +908,7 @@ int main ( void ) {
     if ( b ) tmz_block_free ( b );
 
     /* UNICMT: 1x = PULSES a struktura ROM-800-NOMINAL, 2x z CMTSPEED, READER jen 1x */
-    CHECK ( tmz_profile_count () == 11 && tmz_profile_find ( "UNICMT" ), "registry has UNICMT" );
+    CHECK ( tmz_profile_count () == 12 && tmz_profile_find ( "UNICMT" ), "registry has UNICMT" );
     tmz_profile_args_init ( &a );
     st_TZX_BLOCK *bn = tmz_profile_build_block ( "ROM-800-NOMINAL", &a, &g_hdr, g_body, 1024, &pe );
     st_TZX_BLOCK *bu = tmz_profile_build_block ( "UNICMT", &a, &g_hdr, g_body, 1024, &pe );

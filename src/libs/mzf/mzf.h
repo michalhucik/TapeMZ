@@ -1,7 +1,7 @@
 /**
  * @file   mzf.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.1.0
+ * @version 2.1.1
  * @brief  Veřejné API knihovny pro MZF souborový formát počítačů Sharp MZ.
  *
  * Knihovna pro práci s MZF souborovým formátem počítačů Sharp MZ
@@ -19,6 +19,7 @@
  *
  * @par Changelog:
  * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
+ * - 2026-11-09: popisy typů souborů 02h-05h podle dokumentace BASICu 1Z-016 (2.1.1)
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -79,13 +80,16 @@ extern "C" {
 
 /** @brief Strojový kód (object file) */
 #define MZF_FTYPE_OBJ           0x01
-/** @brief BASIC textový program (MZ-700/800) */
+/** @brief Program BASICu uložený `SAVE` bez volby A (binární forma) */
 #define MZF_FTYPE_BTX           0x02
-/** @brief BASIC datový soubor */
+/** @brief BSD - jméno podle tabulky typů ROM; podle dokumentace BASICu 1Z-016
+ *  sekvenční data nebo program BASICu v ASCII (`SAVE ...,A`, kód 03h
+ *  neověřen); používá ho i boot disku IPLPRO */
 #define MZF_FTYPE_BSD           0x03
-/** @brief Datový soubor BASICu (ROM ho jmenuje BRD; zapisuje ho WOPEN# BASICu 1Z-016) */
+/** @brief BRD - datový soubor BASICu 1Z-016 z `WOPEN#`/`PRINT#` (dokumentace
+ *  BASICu ho nazývá "BSD file") */
 #define MZF_FTYPE_BRD           0x04
-/** @brief Read and branch (spuštění po načtení) */
+/** @brief RB - program BASICu ve sbalené formě */
 #define MZF_FTYPE_RB            0x05
 
 /** @} */
@@ -379,7 +383,7 @@ typedef enum en_MZF_ERROR {
 #define MZF_UINT8_FNAME(n) ((uint8_t*)&(n))
 
     /** @brief Verze knihovny mzf. */
-#define MZF_VERSION "2.1.0"
+#define MZF_VERSION "2.1.1"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny mzf.

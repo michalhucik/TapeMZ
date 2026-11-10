@@ -1,7 +1,7 @@
 /**
  * @file   tmz_player.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.4.0
+ * @version 1.5.0
  * @brief  Implementace TMZ playeru - generovani CMT audio streamu z TMZ/TZX bloku.
  *
  * Player prehrava jednotlive TMZ/TZX bloky na CMT audio streamy pomoci
@@ -967,12 +967,12 @@ st_CMT_STREAM* tmz_player_play_mz_file ( const st_TZX_BLOCK *block, const st_TMZ
 /**
  * @brief Zjistí, zda jde o audio blok TZX, který generuje tzx_generate_block().
  * @param id ID bloku.
- * @return 1 = 0x10-0x15 nebo 0x20, jinak 0.
+ * @return 1 = 0x10-0x15, 0x18 nebo 0x20, jinak 0.
  */
 static int is_tzx_audio ( uint8_t id ) {
     return id == TZX_BLOCK_ID_STANDARD_SPEED || id == TZX_BLOCK_ID_TURBO_SPEED || id == TZX_BLOCK_ID_PURE_TONE
            || id == TZX_BLOCK_ID_PULSE_SEQUENCE || id == TZX_BLOCK_ID_PURE_DATA || id == TZX_BLOCK_ID_DIRECT_RECORDING
-           || id == TZX_BLOCK_ID_PAUSE;
+           || id == TZX_BLOCK_ID_CSW_RECORDING || id == TZX_BLOCK_ID_PAUSE;
 }
 
 
@@ -1046,9 +1046,12 @@ static int mz_block_ends_with_pause ( const st_TZX_BLOCK *block, const st_TMZ_PL
 /**
  * @brief Přehraje blok s úrovní signálu na vstupu a výstupu.
  *
- * Audio bloky TZX (0x10-0x15, 0x20) generuje tzx_generate_block() od úrovně
+ * Audio bloky TZX (0x10-0x15, 0x18, 0x20) generuje tzx_generate_block() od úrovně
  * *level a vrátí úroveň po bloku (pravidla TZX 1.20, po pauze ale
- * TZX_LEVEL_AFTER_PAUSE: další pulz s hranou jako na ZX). Ostatní bloky přehraje
+ * TZX_LEVEL_AFTER_PAUSE: další pulz s hranou jako na ZX). Vzorkované bloky
+ * 0x15 a 0x18 mají úrovně pulzů dané blokem (0x18: první pulz LOW), vstupní
+ * úroveň platí jen pro pauzu bloku bez vzorků; po nich je úroveň opakem
+ * posledního pulzu. Ostatní bloky přehraje
  * tmz_player_play_block(); vrátí-li vstream, nastaví *level na opak poslední
  * hodnoty, aby další blok TZX začal hranou; po bloku MZ, který končí tichem
  * na nízké úrovni (mz_block_ends_with_pause()), na TZX_LEVEL_AFTER_PAUSE
@@ -1100,12 +1103,13 @@ static st_CMT_STREAM* play_with_level ( const st_TZX_BLOCK *block, const st_TMZ_
 
 
 /**
- * @brief Prehaje libovolny TZX audio blok (0x10-0x15, 0x20) na CMT stream.
+ * @brief Prehaje libovolny TZX audio blok (0x10-0x15, 0x18, 0x20) na CMT stream.
  *
  * Pouzije TZX knihovnu (tzx_generate_block) pro parsovani bloku a generovani
  * vstreamu. Podporuje bloky: Standard Speed (0x10), Turbo Speed (0x11),
  * Pure Tone (0x12), Pulse Sequence (0x13), Pure Data (0x14),
- * Direct Recording (0x15) a Pause (0x20). Signál začíná nízko a první pulz
+ * Direct Recording (0x15), CSW Recording (0x18, jen komprese RLE; Z-RLE
+ * = TMZ_PLAYER_ERROR_STREAM_CREATE) a Pause (0x20). Signál začíná nízko a první pulz
  * je vysoko, tedy s hranou (TZX_LEVEL_AFTER_PAUSE, jako ZX); úroveň mezi
  * bloky drží jen tmz_player_play_next().
  *
@@ -1229,6 +1233,7 @@ st_CMT_STREAM* tmz_player_play_block ( const st_TZX_BLOCK *block,
         case TZX_BLOCK_ID_PULSE_SEQUENCE:
         case TZX_BLOCK_ID_PURE_DATA:
         case TZX_BLOCK_ID_DIRECT_RECORDING:
+        case TZX_BLOCK_ID_CSW_RECORDING:
         case TZX_BLOCK_ID_PAUSE:
             return tmz_player_play_tzx_block ( block, config, err );
 
@@ -1251,7 +1256,7 @@ st_CMT_STREAM* tmz_player_play_block ( const st_TZX_BLOCK *block,
             *err = TMZ_PLAYER_OK;
             return NULL;
 
-        /* nepodporovane bloky (CSW, Generalized Data, ...); rezervované MZ bloky se přeskočí */
+        /* nepodporované bloky (Generalized Data, ...); rezervované MZ bloky se přeskočí */
         default:
             if ( block->id >= TMZ_BLOCK_ID_RESERVED_FIRST && block->id <= TMZ_BLOCK_ID_RESERVED_LAST ) {
                 g_player_error_cb ( __func__, __LINE__, "Warning: reserved block 0x%02X skipped\n", block->id );

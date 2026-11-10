@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "libs/mzf/mzf.h"
 #include "libs/mztape/mztape.h"
@@ -108,7 +109,16 @@ static void case_normal ( const char *label, en_MZTAPE_FORMATSET fset, int pulse
     a.sgap = 11000;
     a.pause_ms = 0;
     memcpy ( a.pulses, pul, sizeof ( a.pulses ) );
-    st_CMT_STREAM *r = v1_normal ( fset, speed, pul );
+    /* reference = skutečný výstup v1.0: historická sada se předá výslovně, živé sady mztape už sledují emulátor */
+    uint16_t hist[4];
+    const uint16_t *rp = pul;
+    double s[4];
+    if ( !( pul[0] || pul[1] || pul[2] || pul[3] ) && tmz_profile_legacy_pulses ( pulseset, s ) == EXIT_SUCCESS ) {
+        double div = cmtspeed_get_divisor ( speed );
+        for ( int i = 0; i < 4; i++ ) hist[i] = ( uint16_t ) lround ( s[i] * 1e7 / div );
+        rp = hist;
+    }
+    st_CMT_STREAM *r = v1_normal ( fset, speed, rp );
     st_CMT_STREAM *g = legacy_play ( &a, g_body, BODY );
     hw_compare ( r ? r->str.vstream : NULL, g ? g->str.vstream : NULL, label, &g_failures );
     cmt_stream_destroy ( r );
@@ -149,6 +159,27 @@ static void test_normal ( void ) {
         tmz_mzfile_free ( &mf );
     }
     CHECK ( ok, "normal 700: PULSES 252/504 us, tones 6400/11000, pause 250 ms on body" );
+    if ( b ) tmz_block_free ( b );
+
+    /* pulzní sada 800: pevné hodnoty PULSES historické sady v1.0 (ochrana tabulky profilu) */
+    tmz_profile_args_init ( &a );
+    a.legacy_format = TMZ_LEGACY_NORMAL;
+    a.pulseset = 1;
+    b = tmz_profile_build_block ( "TAPEMZ-V1-LEGACY", &a, &g_hdr, g_body, BODY, &pe );
+    ok = b && tmz_mzfile_parse ( b, &mf ) == TZX_OK;
+    if ( ok ) {
+        static st_MZCMT_FM_PARAMS p0, p1;
+        st_TMZ_PART_COMMON c0, c1;
+        ok = mf.part_count == 2
+             && tmz_part_fm_decode ( mf.parts[0].tlv, mf.parts[0].tlv_length, 3546895, &p0, &c0 ) == TMZ_PART_OK
+             && tmz_part_fm_decode ( mf.parts[1].tlv, mf.parts[1].tlv_length, 3546895, &p1, &c1 ) == TMZ_PART_OK
+             && p0.timebase == 10000000 && p0.short_first == 2490 && p0.short_second == 2490
+             && p0.long_first == 4980 && p0.long_second == 4980
+             && p1.short_first == 2490 && p1.short_second == 2490
+             && p1.long_first == 4980 && p1.long_second == 4980;
+        tmz_mzfile_free ( &mf );
+    }
+    CHECK ( ok, "normal 800: PULSES 249/498 us (historical v1.0 set)" );
     if ( b ) tmz_block_free ( b );
 
     /* nevyjádřitelné: 2:1 CPM a částečné vlastní pulzy */

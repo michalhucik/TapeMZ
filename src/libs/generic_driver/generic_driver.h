@@ -1,8 +1,11 @@
 /**
  * @file   generic_driver.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.0.1
+ * @version 2.0.2
  * @brief  Univerzální I/O abstrakce pro práci s datovými bloky (soubory, paměťové buffery).
+ *
+ * @par Historie:
+ * - 2026-11-09: memory_driver přes makra baseui_tools_mem_* (2.0.2)
  *
  * Virtualizuje datovou vrstvu — nadřazená vrstva používá vždy stejné API
  * nezávisle na typu úložiště. Obsahuje definice datových typů, enumů,
@@ -325,7 +328,7 @@ extern "C" {
     }
 
     /** @brief Verze knihovny generic_driver. */
-#define GENERIC_DRIVER_VERSION "2.0.1"
+#define GENERIC_DRIVER_VERSION "2.0.2"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny generic_driver.

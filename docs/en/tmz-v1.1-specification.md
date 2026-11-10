@@ -649,7 +649,8 @@ because it is an MZ file with meaning; pure ZX recordings belong to TZX 0x10/0x1
 - Built-in profiles are defined by the registry (in the library the
   `tmz_profile` module): for example `ROM-800-NOMINAL`, `ROM-800-EXACT`,
   `TC-1.21`, `IC-10.2-NORMAL`, `IC-10.2-TURBO`, `IC-10.2-FASTIPL`, `UNICMT`,
-  `TAPEMZ-V1-LEGACY`, `PEZIK-2.0A`, `IC-10.2-CPM`, `BASIC-1Z016`.
+  `TAPEMZ-V1-LEGACY`, `PEZIK-2.0A`, `IC-10.2-CPM`, `BASIC-1Z016`,
+  `MZ800EMU-CMT`.
 - A custom profile has the prefix `X-` (e.g. `X-DEMO`). Built-in IDs never have the prefix `X-`.
 - The ID is a label. The player does not read it. A correction of a profile in the registry does not change
   existing files, because blocks carry effective values.
@@ -660,7 +661,8 @@ The parameters with which the registry created the block, as an ASCII string
 of `key=value` pairs separated by commas (key `[a-z0-9_]+`, value printable
 ASCII without a comma). Example: `speed=2/1,loader=Y`. Used for display and
 validation, the player does not read it. `speed` is a ratio a:b (the registry writes a:b and also reads a/b):
-an en_CMTSPEED speed, for TC-1.21 also any other TurboCopy ratio (digits 1-9, 1/2 to 3/1).
+an en_CMTSPEED speed, for TC-1.21 also any other TurboCopy ratio (digits 1-9, 1/2 to 3/1). The registry
+writes the speed 2:1 CPM (cmt.com set) as `2:1 (cp/m)` (MZ800EMU-CMT only).
 
 ### 8.3 Registry and Validation
 
@@ -672,6 +674,56 @@ that creates the list of parts from an MZF and parameters. `tmzinfo --lint` can:
 - check read point margins for parts with READER (margin at least 10 µs;
   `mzcmt_turbo_check_readpoint`).
 
+### 8.4 Profile MZ800EMU-CMT
+
+The signal the mz800emu emulator plays from an MZF: the mztape library, format
+`MZTAPE_FORMATSET_MZ800_SANE`, a vstream at the MZ-800 GDG clock of 17 721 600 Hz.
+The profile carries it into block 0x46, so the emulator can hold every tape as
+blocks 0x46 and an MZF plays the same as before. Confidence `emulator-output`:
+it describes the emulator output, not how a particular program writes. The profile
+has no values of its own: it reads the tones through `mztape_get_format()`, the
+tapemark pulse counts from the macros `MZTAPE_LTM_*` and `MZTAPE_STM_*` and the
+pulse lengths through `mztape_get_speed_pulses()`. The ID is in the macro
+`TMZ_PROFILE_ID_MZ800EMU_CMT`.
+
+| part | role, source | tone | tapemark | pause after the part |
+|---|---|---|---|---|
+| 1 | HEADER, MZF_HEADER | format lgap (6400 S) | 40 L, 40 S, 1 L | 0 |
+| 2 | BODY, MZF_BODY (also with fsize 0) | format sgap (11000 S) | 20 L, 20 S, 1 L | PROFILE_ARGS `pause`, LOW |
+
+Both parts: TIMEBASE 17 721 600, 1 start bit L, MSB first, checksum
+MZ_POPCOUNT16_BE, END_L 3 (stop bit of the last checksum byte and the 2 L of
+the mztape recording), no copies, no READER and STOP.
+
+PULSES (in ticks of 17 721 600 Hz):
+- `speed=a:b` (default 1:1, any en_CMTSPEED ratio including 2:1 CPM):
+  lengths from `mztape_get_speed_pulses()` (the Intercopy set measured in the
+  emulator, for 2:1 CPM the cmt.com set), divided by the ratio,
+  `round(seconds * 17 721 600)`. At 1:1 LONG 8335/8760, SHORT 4356/4930 ticks.
+- `cmtspeed=LH/LL/SH/SL` (µs, all four non-zero, only without `speed`):
+  `round(µs * 17.7216)`.
+
+PROFILE_ARGS: `speed=a:b,pause=N` (2:1 CPM as `speed=2:1 (cp/m)`), or
+`cmtspeed=LH/LL/SH/SL,pause=N`; optionally `machine`. Any other parameter
+(`gap`, `loader`, `bd`, LEGACY) is a parameter error.
+
+Verification (`tests/test_tmz_profile.c`, MZF with a 1 KB body, `pause=0`): at
+17 721 600 Hz the played block is run for run identical with
+`mztape_create_cmt_vstream_from_mztmzf()` for all valid ratios and with
+`mztape_create_cmt_vstream_from_mztmzf_pulses()` for 470/494/240/278 and
+235/247/120/139 µs (55 864 runs, difference 0 samples). At 14 336 640 Hz
+(GDG clock of the MZ-700 and MZ-1500) the runs differ by at most 1 sample:
+mztape rounds every half-wave separately, the FM model accumulates the time of
+the part (chapter 5.4) from ticks rounded to 17 721 600 Hz.
+
+Body of 0 B: the BODY part is built anyway (tone, tapemark, no data, checksum
+0000, end), the same as in mztape; a program that reads the body after the
+header would otherwise wait for the tapemark. The test compares this case with
+mztape run for run as well (1:1, 2:1 CPM, 3:1).
+
+MZT export (chapter 10.3): the UniCMT speed is `cmtspeed`, otherwise as 0x41
+NORMAL (`floor(1x / divisor)`); 2:1 CPM has no ROM structure.
+
 ## 9. Compatibility with v1.0
 
 ### 9.1 Reading
@@ -682,6 +734,8 @@ is not implemented (chapter 7) and cases the FM model cannot express
 (table 9.2). These are played by the original v1.0 path. Blocks 0x41 CPM_TAPE
 and 0x45 are always converted, they have no v1.0 path; whatever cannot be
 converted from them is not played (block error).
+
+Blocks played by the v1.0 path use the current pulse sets of the encoders (mztape), which may differ from the historical v1.0 generators by at most 2 samples at 44.1 kHz (the largest half-wave difference is SHORT LOW 278.2 versus 249 µs at 1:1, i.e. 1.29 samples); the exact v1.0 output is reproduced only by the conversion to block 0x46 (profile `TAPEMZ-V1-LEGACY`).
 
 ### 9.2 Mapping
 
@@ -703,6 +757,8 @@ converted from them is not played (block error).
 The "Pause after block" field (ms) is converted to PAUSE of the last part (recalculated
 to the time base of the part). "Target
 machine" and "Pulse set" are stored in PROFILE_ARGS.
+
+The v1.0 player parameters used by the conversion are the historical generator values listed in chapter 5.2 of the v1.0 specification (`tmz-specification.md`); the profile holds them itself and current encoder pulse sets may differ.
 
 The `TAPEMZ-V1-LEGACY` conversion is verified by a test against the v1.0 generator:
 the same number and the same levels of half-waves, the length of each half-wave in samples
@@ -774,7 +830,8 @@ A CMTSPEED header generated according to 10.1 is byte-identical to the file
 
 Block speed for export: 0x40 and ROM profiles = 1x; 0x41 NORMAL
 and TAPEMZ-V1-LEGACY normal = floor(1x / speed divisor), i.e. 2:1 and 3:1
-exactly 2x and 3x UniCMT; UNICMT = `cmtspeed`. Other blocks do not have
+exactly 2x and 3x UniCMT; UNICMT = `cmtspeed`; MZ800EMU-CMT = `cmtspeed`, without
+it as 0x41 NORMAL (not 2:1 CPM, chapter 8.4). Other blocks do not have
 ROM structure: `--mzt` writes them with a warning, `--mzt-unicmt` refuses them.
 MZF headers go into the MZT byte for byte from the block. An MZT converted there and back
 (`mzf2tmz`, `tmz2mzf --mzt-unicmt`) is byte-identical to the UniCMT samples

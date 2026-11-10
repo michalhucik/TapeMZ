@@ -46,7 +46,24 @@ extern "C" {
 #include <stddef.h>
 
 /** @brief Verze knihovny sharpmz_ascii. */
-#define SHARPMZ_ASCII_VERSION "2.2.0"
+#define SHARPMZ_ASCII_VERSION "2.2.1"
+
+/**
+ * @brief Počet slotů rotujícího bufferu pro UTF-8 výstup konverzních funkcí.
+ *
+ * Funkce vracející UTF-8 řetězec (sharpmz_eu_convert_to_UTF8(),
+ * sharpmz_jp_convert_to_UTF8(), sharpmz_koi8cs_convert_to_UTF8(),
+ * sharpmz_display_to_utf8(), sharpmz_to_utf8()) vrací buď řetězcový literál,
+ * nebo ukazatel do thread-local rotujícího bufferu společného pro celou
+ * knihovnu. Vrácený ukazatel zůstává platný přes dalších
+ * SHARPMZ_UTF8_ROTATING_SLOTS - 1 volání těchto funkcí ve stejném vlákně,
+ * takže je lze volat vícekrát v jednom výrazu (např. printf s několika
+ * %s argumenty).
+ *
+ * Hodnota 16 je kompromis mezi velikostí (64 B na vlákno) a použitelností.
+ * Musí být > 0. Při změně je nutné překompilovat knihovnu.
+ */
+#define SHARPMZ_UTF8_ROTATING_SLOTS 16
 
 /**
  * @brief Volba znakové sady / kódování pro funkce knihovny.
@@ -78,7 +95,7 @@ typedef enum {
 /**
  * @brief Vrátí řetězec s verzí knihovny sharpmz_ascii.
  *
- * @return Ukazatel na statický řetězec s verzí (např. "2.1.0").
+ * @return Ukazatel na statický řetězec s verzí (např. "2.2.1").
  *         Platný po celou dobu běhu programu.
  */
 extern const char *sharpmz_ascii_version(void);
@@ -147,14 +164,18 @@ extern uint8_t sharpmz_convert_to_ASCII(uint8_t c, int *converted, int *printabl
  * @param[in]  c         Vstupní znak v Sharp MZ ASCII (0x00-0xFF).
  * @param[out] converted 1 pokud se podařila konverze, 0 pokud ne.
  * @param[out] printable 1 pokud MZ znak reprezentuje tisknutelný glyf, 0 pokud ne.
- * @return Ukazatel na statický null-terminated UTF-8 řetězec.
- *         Platný do dalšího volání této funkce (pro ASCII znaky se
- *         používá sdílený statický buffer).
+ * @return Ukazatel na null-terminated UTF-8 řetězec. Pro speciální znaky
+ *         (vícebajtové UTF-8 sekvence) jde o řetězcový literál. Pro ASCII
+ *         znaky jde o slot thread-local rotujícího bufferu; slot se
+ *         recykluje po SHARPMZ_UTF8_ROTATING_SLOTS dalších voláních UTF-8
+ *         funkcí knihovny ve stejném vlákně.
  *
  * @pre converted nesmí být NULL.
  * @pre printable nesmí být NULL.
  *
- * @note Funkce není reentrantní kvůli statickému bufferu pro ASCII znaky.
+ * @note Funkce je thread-safe (rotující buffer je v thread-local storage).
+ *       Pro uchování výsledku přes SHARPMZ_UTF8_ROTATING_SLOTS nebo více
+ *       dalších volání proveďte kopii do vlastního bufferu.
  */
 extern const char *sharpmz_eu_convert_to_UTF8(uint8_t c, int *converted, int *printable);
 
@@ -237,12 +258,14 @@ extern uint8_t sharpmz_jp_convert_to_ASCII(uint8_t c, int *converted, int *print
  * @param[in]  c         Vstupní znak v Sharp MZ ASCII (0x00-0xFF).
  * @param[out] converted 1 pokud se podařila konverze, 0 pokud ne.
  * @param[out] printable 1 pokud MZ znak reprezentuje tisknutelný glyf, 0 pokud ne.
- * @return Ukazatel na statický null-terminated UTF-8 řetězec.
+ * @return Ukazatel na null-terminated UTF-8 řetězec (pro ASCII vstup slot
+ *         thread-local rotujícího bufferu - viz sharpmz_eu_convert_to_UTF8()
+ *         pro detaily životnosti).
  *
  * @pre converted nesmí být NULL.
  * @pre printable nesmí být NULL.
  * @note Identifikace kanji 0x77-0x7C je orientační a může vyžadovat opravu.
- * @note Funkce není reentrantní kvůli statickému bufferu pro ASCII znaky.
+ * @note Funkce je thread-safe (rotující buffer v thread-local storage).
  */
 extern const char *sharpmz_jp_convert_to_UTF8(uint8_t c, int *converted, int *printable);
 
@@ -324,7 +347,7 @@ extern uint8_t sharpmz_koi8cs_convert_to_ASCII(uint8_t c, int *converted, int *p
 /**
  * @brief Konvertuje jeden znak z KOI8-CS do UTF-8.
  *
- * Vrací ukazatel na statický UTF-8 řetězec odpovídající KOI8-CS bytu.
+ * Vrací ukazatel na UTF-8 řetězec odpovídající KOI8-CS bytu.
  * Bytes 0x00-0x7F mapují 1:1 na ASCII. Bytes 0x80-0xFF s diakritikou
  * mapují na příslušný Unicode codepoint (U+00B0, U+010D, ...).
  * Digrafy "ch"/"CH" (0xC7/0xE7) se vrací jako dvouznaková UTF-8
@@ -336,13 +359,15 @@ extern uint8_t sharpmz_koi8cs_convert_to_ASCII(uint8_t c, int *converted, int *p
  * @param[in]  c         Vstupní KOI8-CS byte (0x00-0xFF).
  * @param[out] converted 1 pokud konverze úspěšná, 0 pokud ne.
  * @param[out] printable 1 pokud znak reprezentuje tisknutelný glyf.
- * @return Ukazatel na statický UTF-8 řetězec (null-terminated). Nikdy
- *         nevrací NULL. Platný do dalšího volání této funkce.
+ * @return Ukazatel na null-terminated UTF-8 řetězec. Nikdy nevrací NULL.
+ *         Jde buď o řetězcový literál (mezera, digrafy), nebo o slot
+ *         thread-local rotujícího bufferu - viz sharpmz_eu_convert_to_UTF8()
+ *         pro detaily životnosti.
  *
  * @pre converted nesmí být NULL.
  * @pre printable nesmí být NULL.
  *
- * @note Funkce není reentrantní (statický buffer).
+ * @note Funkce je thread-safe (rotující buffer v thread-local storage).
  */
 extern const char *sharpmz_koi8cs_convert_to_UTF8(uint8_t c, int *converted, int *printable);
 
@@ -412,10 +437,11 @@ extern uint8_t sharpmz_display_cnv_to(uint8_t ascii, sharpmz_charset_t charset);
  *
  * @param[in] display_code Display kód (0x00-0xFF).
  * @param[in] charset      SHARPMZ_CHARSET_DISPLAY_EU nebo _DISPLAY_JP.
- * @return Ukazatel na statický UTF-8 řetězec. Nikdy nevrací NULL.
+ * @return Ukazatel na null-terminated UTF-8 řetězec. Nikdy nevrací NULL.
+ *         Životnost viz sharpmz_eu_convert_to_UTF8().
  *
  * @pre charset musí být SHARPMZ_CHARSET_DISPLAY_EU nebo _DISPLAY_JP.
- * @note Funkce není reentrantní.
+ * @note Funkce je thread-safe (rotující buffer v thread-local storage).
  */
 extern const char *sharpmz_display_to_utf8(uint8_t display_code, sharpmz_charset_t charset);
 
@@ -435,10 +461,11 @@ extern const char *sharpmz_display_to_utf8(uint8_t display_code, sharpmz_charset
  *
  * @param[in] code     Vstupní byte (0x00-0xFF). Interpretace záleží na charset.
  * @param[in] charset  Volba kódování.
- * @return Ukazatel na statický UTF-8 řetězec. Nikdy nevrací NULL.
+ * @return Ukazatel na null-terminated UTF-8 řetězec. Nikdy nevrací NULL.
+ *         Životnost viz sharpmz_eu_convert_to_UTF8().
  *
  * @pre charset musí být platná hodnota sharpmz_charset_t.
- * @note Funkce není reentrantní.
+ * @note Funkce je thread-safe (rotující buffer v thread-local storage).
  */
 extern const char *sharpmz_to_utf8(uint8_t code, sharpmz_charset_t charset);
 

@@ -337,6 +337,7 @@ The project contains a set of C libraries (C99/C11) with modular architecture:
 - **tmz** - reading/writing TMZ/TZX files, block structure, parsing MZ blocks
 - **tmz_blocks** - definition and parsing of individual block types (0x40-0x45)
 - **tmz_mzfile** - reading, validation and writing of block 0x46 (MZ File)
+- **tmz_profile** - writer profile registry: builds block 0x46 from an MZF the way the ROM or a particular program writes the file (ROM-800-*, TC-1.21, IC-10.2-*, PEZIK-2.0A, BASIC-1Z016, UNICMT, TAPEMZ-V1-LEGACY). Profile `MZ800EMU-CMT` describes the signal the mz800emu emulator plays from an MZF (mztape without copies, tones 6400/11000, time base the GDG clock 17 721 600 Hz, all speed ratios including 2:1 CP/M and custom pulses in µs); played at 17 721 600 Hz it gives the same pulses as mztape
 - **tmz_player** - generating CMT audio streams from TMZ blocks
 
 ### 7.5 CMT Encoders

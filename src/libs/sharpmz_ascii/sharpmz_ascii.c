@@ -34,6 +34,41 @@
 #include <string.h>
 #include "sharpmz_ascii.h"
 
+/**
+ * @brief Velikost jednoho slotu rotujícího bufferu v bajtech.
+ *
+ * Stačí na nejdelší dynamicky skládaný výstup: 3 bajty UTF-8 (codepoint
+ * do U+FFFF) + null terminátor.
+ */
+#define SHARPMZ_UTF8_SLOT_SIZE 4
+
+/**
+ * @brief Vrátí další slot thread-local rotujícího bufferu pro UTF-8 výstup.
+ *
+ * Společný buffer všech funkcí knihovny, které skládají UTF-8 výstup za běhu
+ * (ASCII větve *_convert_to_UTF8() a koi8cs_encode_utf8()). Sloty se
+ * přidělují cyklicky, takže vrácený ukazatel zůstává platný přes dalších
+ * SHARPMZ_UTF8_ROTATING_SLOTS - 1 volání této funkce ve stejném vlákně.
+ *
+ * @return Ukazatel na slot o velikosti SHARPMZ_UTF8_SLOT_SIZE bajtů.
+ *         Obsah slotu není inicializován - volající musí zapsat i null
+ *         terminátor. Nikdy nevrací NULL.
+ *
+ * @post Vnitřní index slotu je posunut o 1 (modulo počet slotů).
+ * @note Thread-safe: buffer i index jsou v thread-local storage (__thread,
+ *       rozšíření GCC/Clang). Ukazatel nesmí být předán jinému vláknu, které
+ *       by ho používalo po skončení vlákna volajícího.
+ */
+static char *sharpmz_utf8_next_slot(void)
+{
+    static __thread char slots[SHARPMZ_UTF8_ROTATING_SLOTS][SHARPMZ_UTF8_SLOT_SIZE];
+    static __thread unsigned int next_slot = 0;
+
+    char *buf = slots[next_slot];
+    next_slot = (next_slot + 1) % SHARPMZ_UTF8_ROTATING_SLOTS;
+    return buf;
+}
+
 
 /**
  * @brief Konverzní tabulka Sharp MZ kódů 0x90-0xC0 na ASCII znaky.
@@ -114,7 +149,7 @@ uint8_t sharpmz_cnv_to(uint8_t c)
 /**
  * @brief Vrátí řetězec s verzí knihovny sharpmz_ascii.
  *
- * @return Ukazatel na statický řetězec s verzí (např. "2.1.0").
+ * @return Ukazatel na statický řetězec s verzí (např. "2.2.1").
  *         Platný po celou dobu běhu programu.
  */
 const char *sharpmz_ascii_version(void)
@@ -205,25 +240,27 @@ uint8_t sharpmz_convert_to_ASCII(uint8_t c, int *converted, int *printable)
  * @param[in]  c         Vstupní znak v Sharp MZ ASCII (0x00-0xFF).
  * @param[out] converted 1 pokud se podařila konverze, 0 pokud ne.
  * @param[out] printable 1 pokud MZ znak reprezentuje tisknutelný glyf, 0 pokud ne.
- * @return Ukazatel na statický null-terminated UTF-8 řetězec.
- *         Platný do dalšího volání této funkce (pro ASCII znaky se
- *         používá sdílený statický buffer).
+ * @return Ukazatel na null-terminated UTF-8 řetězec. Pro speciální znaky
+ *         jde o řetězcový literál, pro ASCII znaky o slot thread-local
+ *         rotujícího bufferu (viz SHARPMZ_UTF8_ROTATING_SLOTS).
  *
  * @pre converted nesmí být NULL.
  * @pre printable nesmí být NULL.
  *
- * @note Funkce není reentrantní kvůli statickému bufferu pro ASCII znaky.
+ * @note Funkce je thread-safe; rotující buffer umožňuje více volání v jednom
+ *       výrazu. Pro uchování výsledku přes SHARPMZ_UTF8_ROTATING_SLOTS nebo
+ *       více dalších volání UTF-8 funkcí knihovny proveďte vlastní kopii.
  */
 const char *sharpmz_eu_convert_to_UTF8(uint8_t c, int *converted, int *printable)
 {
-    static char ascii_buf[2] = {0, 0};
-
     /* Zkusíme ASCII konverzi */
     uint8_t ascii_ch = sharpmz_convert_to_ASCII(c, converted, printable);
     if (*converted)
     {
-        ascii_buf[0] = (char)ascii_ch;
-        return ascii_buf;
+        char *buf = sharpmz_utf8_next_slot();
+        buf[0] = (char)ascii_ch;
+        buf[1] = '\0';
+        return buf;
     }
 
     /* EU speciální znaky */
@@ -436,26 +473,26 @@ uint8_t sharpmz_jp_convert_to_ASCII(uint8_t c, int *converted, int *printable)
  * @param[in]  c         Vstupní znak v Sharp MZ ASCII (0x00-0xFF).
  * @param[out] converted 1 pokud se podařila konverze, 0 pokud ne.
  * @param[out] printable 1 pokud MZ znak reprezentuje tisknutelný glyf, 0 pokud ne.
- * @return Ukazatel na statický null-terminated UTF-8 řetězec.
- *         Platný do dalšího volání této funkce (pro ASCII znaky se
- *         používá sdílený statický buffer).
+ * @return Ukazatel na null-terminated UTF-8 řetězec (pro ASCII vstup slot
+ *         thread-local rotujícího bufferu - viz sharpmz_eu_convert_to_UTF8
+ *         pro detaily životnosti).
  *
  * @pre converted nesmí být NULL.
  * @pre printable nesmí být NULL.
  *
  * @note Identifikace kanji 0x77-0x7C je orientační a může vyžadovat opravu.
- * @note Funkce není reentrantní kvůli statickému bufferu pro ASCII znaky.
+ * @note Funkce je thread-safe (rotující buffer v thread-local storage).
  */
 const char *sharpmz_jp_convert_to_UTF8(uint8_t c, int *converted, int *printable)
 {
-    static char ascii_buf[2] = {0, 0};
-
     /* Zkusíme ASCII konverzi */
     uint8_t ascii_ch = sharpmz_jp_convert_to_ASCII(c, converted, printable);
     if (*converted)
     {
-        ascii_buf[0] = (char)ascii_ch;
-        return ascii_buf;
+        char *buf = sharpmz_utf8_next_slot();
+        buf[0] = (char)ascii_ch;
+        buf[1] = '\0';
+        return buf;
     }
 
     /* Japonské znaky */
@@ -779,19 +816,20 @@ static const uint8_t koi8cs_to_ascii_translit[256] = {
 };
 
 /**
- * @brief Zakóduje Unicode codepoint do UTF-8 sekvence (statický buffer).
+ * @brief Zakóduje Unicode codepoint do UTF-8 sekvence (rotující buffer).
  *
  * Podporuje rozsah U+0000 - U+FFFF (1-3 bajty UTF-8).
  *
  * @param[in] cp Unicode codepoint (0x0000-0xFFFF).
- * @return Ukazatel na statický null-terminated UTF-8 řetězec. Pro cp == 0
+ * @return Ukazatel na null-terminated UTF-8 řetězec ve slotu thread-local
+ *         rotujícího bufferu (viz sharpmz_utf8_next_slot()). Pro cp == 0
  *         vrací prázdný řetězec "".
  *
- * @note Funkce není reentrantní (statický buffer).
+ * @note Funkce je thread-safe (rotující buffer v thread-local storage).
  */
 static const char *koi8cs_encode_utf8(uint16_t cp)
 {
-    static char buf[4];
+    char *buf = sharpmz_utf8_next_slot();
     if (cp == 0) { buf[0] = 0; return buf; }
     if (cp < 0x80) {
         buf[0] = (char)cp;
@@ -873,21 +911,14 @@ uint8_t sharpmz_koi8cs_cnv_to(uint8_t c)
  */
 const char *sharpmz_koi8cs_convert_to_UTF8(uint8_t c, int *converted, int *printable)
 {
-    static char ascii_buf[2] = {0, 0};
-
-    /* Řídicí znaky */
-    if (c < 0x20) {
-        *printable = 0;
-        *converted = 1;
-        ascii_buf[0] = (char)c;
-        return ascii_buf;
-    }
-    /* ASCII printable */
+    /* Řídicí znaky a ASCII printable - 1:1 do slotu rotujícího bufferu */
     if (c < 0x7F) {
-        *printable = 1;
+        char *buf = sharpmz_utf8_next_slot();
+        *printable = (c >= 0x20);
         *converted = 1;
-        ascii_buf[0] = (char)c;
-        return ascii_buf;
+        buf[0] = (char)c;
+        buf[1] = '\0';
+        return buf;
     }
     if (c == 0x7F) {
         *printable = 0;

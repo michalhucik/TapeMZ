@@ -1,7 +1,7 @@
 /**
  * @file   mzf.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.1.0
+ * @version 2.1.1
  * @brief  Implementace nízkoúrovňového I/O, validace a lifecycle API pro MZF formát.
  *
  * Implementace nízkoúrovňového I/O, validace a lifecycle API
@@ -9,6 +9,7 @@
  *
  * @par Changelog:
  * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
+ * - 2026-11-09: popisy typů souborů 02h-05h podle dokumentace BASICu 1Z-016 (2.1.1)
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)

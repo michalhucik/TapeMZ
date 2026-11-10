@@ -1,12 +1,13 @@
 /**
  * @file   tzx.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.2.0
+ * @version 1.3.0
  * @brief  Verejne API knihovny pro format TZX v1.20 - kazetovy archiv ZX Spectrum.
  *
  * Knihovna pro parsovani a generovani audio streamu ze vsech bloku TZX v1.20.
- * Generuje audio bloky 0x10-0x15 a pauzu 0x20; ostatni bloky (0x18, 0x19 a ridici
- * bloky 0x21-0x2B) parsuje, zvuk z nich negeneruje (ridici bloky zpracuje player).
+ * Generuje audio bloky 0x10-0x15, 0x18 (CSW, jen komprese RLE) a pauzu 0x20;
+ * blok 0x18 umí také vytvořit. Z bloku 0x19 a z řídicích bloků 0x21-0x2B zvuk
+ * negeneruje (řídicí bloky zpracuje player).
  *
  * Audio bloky generuji CMT stream (bitstream/vstream) z pulsovych definici.
  * Casovani je v Z80 T-states pri 3.5 MHz, ale lze prepocitat na libovolny
@@ -430,7 +431,14 @@ extern "C" {
     /**
      * @brief Naparsovany blok 0x18 - CSW Recording.
      *
-     * Komprimovany zvukovy zaznam ve formatu CSW v2.
+     * Komprimovany zvukovy zaznam ve formatu CSW v2: posloupnost délek pulzů
+     * (půlvln) ve vzorcích při sample_rate. V kompresi RLE je každý pulz jeden
+     * bajt 1-255; bajt 00h uvozuje 32bitovou délku little-endian. Tato
+     * knihovna bere první pulz jako LOW a úrovně dalších střídá.
+     *
+     * @par Ownership:
+     * data ukazuje do surových dat bloku, ze kterých struktura vznikla
+     * (tzx_parse_csw_recording()), a platí, dokud platí ona.
      */
     typedef struct st_TZX_CSW_RECORDING {
         uint16_t pause_ms;           /**< pauza po bloku (ms) */
@@ -440,6 +448,13 @@ extern "C" {
         uint32_t data_length;        /**< delka CSW dat */
         uint8_t *data;               /**< ukazatel na CSW data */
     } st_TZX_CSW_RECORDING;
+
+/** @brief Typ komprese bloku 0x18: RLE (CSW v2). */
+#define TZX_CSW_COMPRESSION_RLE     0x01
+/** @brief Typ komprese bloku 0x18: Z-RLE (RLE + deflate, CSW v2); knihovna ho negeneruje. */
+#define TZX_CSW_COMPRESSION_ZRLE    0x02
+/** @brief Největší vzorkovací frekvence bloku 0x18 (pole má 3 bajty). */
+#define TZX_CSW_MAX_SAMPLE_RATE     0xFFFFFFu
 
     /**
      * @brief Naparsovany blok 0x20 - Pause / Stop Tape.
@@ -563,7 +578,10 @@ extern "C" {
  *  nejdřív 1 ms vysoko (dokončí hranu posledního pulzu), zbytek nízko; při
  *  nízké úrovni a po pauze celá nízko. Pause 0 úroveň nemění.
  *  Po bloku 0x15 je úroveň opakem posledního vzorku (spec 0x15 neuvádí,
- *  (hypotéza): další blok tak začne hranou).
+ *  (hypotéza): další blok tak začne hranou). Blok 0x18 se chová stejně jako
+ *  0x15: úrovně určuje blok sám (první pulz LOW, pak střídání), vstupní
+ *  úroveň na ně nemá vliv a po posledním pulzu je úroveň jeho opakem (spec
+ *  0x18 úroveň neuvádí, převzato z 0x15).
  *
  *  Odchylka od TZX 1.20: po pauze je úroveň TZX_LEVEL_AFTER_PAUSE (signál
  *  nízko, první pulz dalšího bloku vysoko, tedy s hranou), ne nízká. TZX 1.20
@@ -578,10 +596,10 @@ extern "C" {
     /**
      * @brief Vygeneruje signál audio bloku TZX s úrovní signálu na vstupu a výstupu.
      *
-     * Podporuje bloky 0x10, 0x11, 0x12, 0x13, 0x14, 0x15 a 0x20. Data bloku
-     * naparsuje příslušnou funkcí tzx_parse_*() a vygeneruje signál podle
-     * pravidel úrovně (viz skupina). Pilot bloků 0x10 a 0x11 má pilot_count
-     * pulzů (půlvln).
+     * Podporuje bloky 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x18 (jen RLE) a 0x20.
+     * Data bloku naparsuje příslušnou funkcí tzx_parse_*() a vygeneruje signál
+     * podle pravidel úrovně (viz skupina). Pilot bloků 0x10 a 0x11 má
+     * pilot_count pulzů (půlvln).
      *
      * @param block Blok (block->data jako v st_TZX_FILE, bez ID).
      * @param config Konfigurace generátoru.
@@ -591,9 +609,9 @@ extern "C" {
      *        (po pauze TZX_LEVEL_AFTER_PAUSE). Při chybě, u Pause 0 a u bloku
      *        bez signálu se nemění. Jiná nenulová hodnota se bere jako 1.
      * @param err Výstupní chybový kód (může být NULL): TZX_OK;
-     *        TZX_ERROR_NULL_INPUT; TZX_ERROR_UNSUPPORTED (jiné ID bloku);
-     *        chyba parseru (TZX_ERROR_INVALID_BLOCK); TZX_ERROR_ALLOC;
-     *        TZX_ERROR_STREAM_CREATE.
+     *        TZX_ERROR_NULL_INPUT; TZX_ERROR_UNSUPPORTED (jiné ID bloku,
+     *        0x18 s kompresí Z-RLE); chyba parseru nebo neplatná data CSW
+     *        (TZX_ERROR_INVALID_BLOCK); TZX_ERROR_ALLOC; TZX_ERROR_STREAM_CREATE.
      * @return Nový vstream, nebo NULL: při chybě, nebo u Pause 0 (err TZX_OK,
      *         příkaz zastavení pásky vyhodnocuje přehrávač). Blok bez signálu
      *         (0x12 a 0x13 s 0 pulzy, 0x14 bez dat a s pauzou 0) dá vstream
@@ -686,6 +704,39 @@ extern "C" {
      * @post Volající uvolní vrácený vstream přes cmt_vstream_destroy().
      */
     extern st_CMT_VSTREAM* tzx_generate_direct_recording ( const st_TZX_DIRECT_RECORDING *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err );
+
+    /**
+     * @brief Generuje vstream z bloku 0x18 (CSW Recording), jen komprese RLE.
+     *
+     * Dekóduje přesně block->pulse_count pulzů z dat RLE (bajt 1-255 = délka,
+     * bajt 00h + DWORD little-endian = delší délka). První pulz je LOW, úrovně
+     * se střídají. Délky jsou ve vzorcích při block->sample_rate a převádějí se
+     * na config->sample_rate kumulativně: konec k-tého pulzu je zaokrouhlený
+     * čas součtu prvních k délek, takže chyba celkové délky nepřesáhne půl
+     * výstupního vzorku a při shodné frekvenci vyjdou délky přesně. Pulz, který
+     * by vyšel na 0 výstupních vzorků, dostane 1 vzorek (střídání úrovní se
+     * nezmění); posun, který tím vznikne (nejvýš 1 vzorek za každý takový pulz
+     * v řadě), vyrovná první další pulz, jehož zaokrouhlený konec leží za již
+     * zapsanými vzorky. Za pulzy následuje pauza
+     * pause_ms od úrovně opačné k poslednímu pulzu (viz skupina). Blok
+     * s pulse_count 0 a bez dat dá jen pauzu (nebo vstream s 0 vzorky).
+     *
+     * @param block Naparsovaný blok (např. z tzx_parse_csw_recording()).
+     * @param config Konfigurace generátoru (cpu_clock se nepoužívá).
+     * @param err Výstupní chybový kód (může být NULL): TZX_OK;
+     *        TZX_ERROR_NULL_INPUT (block nebo config NULL, data NULL při
+     *        data_length > 0); TZX_ERROR_UNSUPPORTED (komprese Z-RLE, hlášení
+     *        přes error callback); TZX_ERROR_INVALID_BLOCK (jiný typ komprese,
+     *        sample_rate 0, useknutá 32bitová délka, délka pulzu 0, data
+     *        kratší nebo delší než pulse_count pulzů; vše s hlášením přes error
+     *        callback); TZX_ERROR_ALLOC; TZX_ERROR_STREAM_CREATE (selhání
+     *        zápisu do vstreamu, také pulz delší než 0xFFFFFFFF výstupních
+     *        vzorků).
+     * @return Nový vstream, nebo NULL při chybě.
+     *
+     * @post Volající uvolní vrácený vstream přes cmt_vstream_destroy().
+     */
+    extern st_CMT_VSTREAM* tzx_generate_csw_recording ( const st_TZX_CSW_RECORDING *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err );
 
     /**
      * @brief Generuje vstream pauzy (ticha) od nízké úrovně (celá pauza nízko).
@@ -1073,11 +1124,43 @@ extern "C" {
         st_TZX_BLOCK *block
     );
 
+    /**
+     * @brief Vytvoří blok 0x18 (CSW Recording) s kompresí RLE.
+     *
+     * Data bloku mají tvar jako v st_TZX_FILE (tzx_load()): [DWORD délka za
+     * tímto polem = 10 + N][WORD pause_ms][3B sample_rate][1B komprese = 01h]
+     * [DWORD pulse_count][N B dat RLE]. V RLE je pulz 1-255 vzorků jeden bajt,
+     * delší pulz bajt 00h a DWORD délky little-endian (5 B). Z-RLE se nezapisuje.
+     *
+     * Úrovně: první pulz je LOW, další se střídají. Signál, který začíná
+     * úrovní HIGH, zapíše volající s předřazeným pulzem LOW délky 1 vzorek,
+     * jinak by se přehrál s obrácenou polaritou.
+     *
+     * @param sample_rate Vzorkovací frekvence záznamu v Hz (1 až
+     *        TZX_CSW_MAX_SAMPLE_RATE).
+     * @param pause_ms Pauza po bloku v milisekundách.
+     * @param pulses Délky pulzů ve vzorcích při sample_rate; každá >= 1 (nula
+     *        je v RLE únikový znak). Pole se jen čte.
+     * @param pulse_count Počet pulzů (>= 1).
+     * @param[out] block Výstupní blok (id, length, data).
+     * @return TZX_OK při úspěchu; TZX_ERROR_NULL_INPUT (pulses nebo block
+     *         NULL, pulse_count 0); TZX_ERROR_INVALID_BLOCK (sample_rate 0 nebo
+     *         nad 24 bitů, pulz délky 0, blok by přesáhl 0xFFFFFFFF B; s hlášením
+     *         přes error callback); TZX_ERROR_ALLOC. Při chybě se block nemění.
+     *
+     * @pre pulses ukazuje na nejméně pulse_count prvků.
+     * @post block->data je vlastněno volajícím a alokováno alokátorem knihovny
+     *       (výchozí malloc, uvolnit free nebo přes tzx_free() po vložení do
+     *       souboru).
+     */
+    extern en_TZX_ERROR tzx_block_create_csw_recording ( uint32_t sample_rate, uint16_t pause_ms, const uint32_t *pulses,
+                                                         uint32_t pulse_count, st_TZX_BLOCK *block );
+
 /** @} */
 
 
     /** @brief Verze knihovny tzx. */
-#define TZX_VERSION "1.2.0"
+#define TZX_VERSION "1.3.0"
 
     /** @brief Verze formátu TZX jako řetězec ("1.20"). */
 #define TZX_FORMAT_VERSION "1.20"

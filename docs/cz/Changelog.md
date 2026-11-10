@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-11-10
+
+### Blok TZX 0x18 CSW Recording
+
+Verze: tzx v1.3.0, tmz v1.13.0, tmz_player v1.5.0.
+
+- Knihovna tzx umí blok 0x18 (CSW Recording) s kompresí RLE vytvořit
+  (`tzx_block_create_csw_recording()`) a vygenerovat z něj signál
+  (`tzx_generate_csw_recording()`, `tzx_generate_block()`). Délky pulzů jsou ve vzorcích
+  s přesnou vzorkovací frekvencí v Hz, záznam 44 100 Hz se proto přehraje se správnou
+  délkou při libovolné výstupní frekvenci.
+- Player (`tmz_player_play_next()`, `tmz_player_play_block()`, `tmz2wav`) blok 0x18
+  přehraje. První pulz je nízko, úrovně se střídají, po bloku platí opak posledního
+  pulzu (stejně jako po bloku 0x15).
+- Komprese Z-RLE se nepřehrává (chyba s hlášením).
+
+### sharpmz_ascii v2.2.1
+
+- Upgrade knihovny na verzi 2.2.1 ze samostatného repozitáře sharpmz_ascii.
+- Funkce vracející UTF-8 (`sharpmz_eu_convert_to_UTF8()`, `sharpmz_jp_convert_to_UTF8()`,
+  `sharpmz_koi8cs_convert_to_UTF8()`, `sharpmz_display_to_utf8()`, `sharpmz_to_utf8()`)
+  používají rotující buffer v thread-local storage (`SHARPMZ_UTF8_ROTATING_SLOTS` = 16 slotů).
+  Jsou thread-safe a lze je volat vícekrát v jednom výrazu.
+
+### Profil MZ800EMU-CMT
+
+Verze: tmz_profile v1.9.0, tmz_mzt v1.2.0, mztape v2.4.0.
+
+- Nový profil `MZ800EMU-CMT`: blok 0x46 se signálem, který emulátor mz800emu hraje
+  z MZF (mztape bez kopií, takt GDG 17 721 600 Hz, všechny poměry rychlosti včetně
+  2:1 CP/M a vlastní pulzy v µs). Přehraný při 17 721 600 Hz dá tytéž pulzy jako mztape.
+- Export MZT pro UniCMT (`tmz2mzf --mzt-unicmt`) bere bloky tohoto profilu jako záznam ROM.
+- PROFILE_ARGS čte rychlost `2:1 (cp/m)`.
+- mztape: `mztape_get_format()` vrací definici formátové varianty (tóny, pulzní sada, bloky).
+
+## 2026-11-09
+
+### Knihovny: vlastní pulzy a sady shodné s emulátorem
+
+Verze: cmtspeed v2.1.0, mztape v2.3.1, tmz_profile v1.8.0, mzf v2.1.1, tmzedit v1.7.2.
+
+- mztape: API pro vlastní délky pulzů a pro hlavičku CMTSPEED; nová hodnota rychlosti
+  `CMTSPEED_CUSTOM` (cmtspeed).
+- Pulzní sady mztape odpovídají tomu, co přehrává emulátor Sharp MZ-800; dřívější symetrické
+  sady 252/504 a 249/498 odpadly.
+- Profil TAPEMZ-V1-LEGACY si drží vlastní historické sady pulzů v1.0, převod bloků v1.0
+  proto dává stejný výstup jako dřív.
+- Tvorba bitstreamu z bloku TMZ odmítne neplatnou rychlost místo výpočtu z nenaplněných délek.
+- `tmzedit` už nečte za tabulkou rychlostí, když blok nese neznámý bajt rychlosti (výpis "?:?").
+- Opravené popisy typů souborů 02h-05h v knihovně mzf.
+
 ## 2026-11-08
 
 ### Obnova poškozených nahrávek

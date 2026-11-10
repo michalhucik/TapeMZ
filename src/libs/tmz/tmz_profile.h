@@ -1,7 +1,7 @@
 /**
  * @file   tmz_profile.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.7.0
+ * @version 1.9.0
  * @brief  Registr profilů zapisovače pro blok 0x46 (TMZ v1.1).
  *
  * Profil popisuje, jak konkrétní program nebo ROM zapisuje soubor na
@@ -16,8 +16,9 @@
  * převedené bloky v1.0, spec 9.2), UNICMT (přehrávač UniCMT, pulzy z hlavičky
  * CMTSPEED, struktura jako ROM-800-NOMINAL [neověřeno], spec 10), IC-10.2-NORMAL,
  * IC-10.2-TURBO a IC-10.2-FASTIPL (Intercopy V10.2, T-stavy z kódu ověřené
- * záznamem hran v emulátoru, pauza mezi bloky HIGH), IC-10.2-CPM, PEZIK-2.0A
- * a BASIC-1Z016.
+ * záznamem hran v emulátoru, pauza mezi bloky HIGH), IC-10.2-CPM, PEZIK-2.0A,
+ * BASIC-1Z016 a MZ800EMU-CMT (signál, který emulátor mz800emu hraje z MZF:
+ * mztape, formát MZ800_SANE, časová základna takt GDG).
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -66,6 +67,17 @@ extern "C" {
 
 
     /**
+     * @brief ID profilu MZ800EMU-CMT (signál, který emulátor mz800emu hraje z MZF přes mztape).
+     *
+     * Jediné místo, kde je ID zapsané: registr i zařazení pro export MZT
+     * (tmz_mzt) a volající v emulátoru používají toto makro, takže
+     * přejmenování profilu je změna jednoho řádku. Bloky už zapsané do
+     * souborů ale nesou staré ID.
+     */
+#define TMZ_PROFILE_ID_MZ800EMU_CMT "MZ800EMU-CMT"
+
+
+    /**
      * @brief Formát záznamu profilu TAPEMZ-V1-LEGACY (spec 9.2).
      */
     typedef enum en_TMZ_LEGACY_FORMAT {
@@ -82,7 +94,8 @@ extern "C" {
      * @invariant machine je -1 nebo en_TMZ_MACHINE; pulseset je -1 nebo en_TMZ_PULSESET
      */
     typedef struct st_TMZ_PROFILE_ARGS {
-        en_CMTSPEED speed;   /**< TC-1.21: rychlost (CMTSPEED_NONE = výchozí 2:1); ROM: jen NONE nebo 1:1; LEGACY: NONE = 1:1 */
+        en_CMTSPEED speed;   /**< TC-1.21: rychlost (CMTSPEED_NONE = výchozí 2:1); ROM: jen NONE nebo 1:1; LEGACY: NONE = 1:1;
+                                  MZ800EMU-CMT: NONE = 1:1, jinak libovolný platný poměr včetně 2:1 CPM */
         int loader;          /**< TC-1.21: 1 = předzavaděč (Loader Y, výchozí), 0 = Loader N */
         int gap_rom;         /**< ROM: -1 = výchozí profilu, 1 = tóny ROM 22000/11000, 0 = poloviční 11000/5500 */
         uint32_t pause_ms;   /**< pauza za posledním dílem v ms (výchozí 1000) */
@@ -92,7 +105,8 @@ extern "C" {
         uint32_t lgap;       /**< LEGACY: počet SHORT úvodního tónu, 0 = výchozí formátu */
         uint32_t sgap;       /**< LEGACY: počet SHORT tónu před tělem, 0 = výchozí formátu */
         uint16_t pulses[4];  /**< LEGACY: vlastní půlvlny LONG H, LONG L, SHORT H, SHORT L v 0,1 µs; 0 = ze sady */
-        uint16_t cmtspeed[4];/**< UNICMT: pulzy z hlavičky CMTSPEED, LONG H, LONG L, SHORT H, SHORT L v µs; všechny 0 = 1x */
+        uint16_t cmtspeed[4];/**< UNICMT: pulzy z hlavičky CMTSPEED, LONG H, LONG L, SHORT H, SHORT L v µs; všechny 0 = 1x;
+                                  MZ800EMU-CMT: vlastní pulzy v µs (všechny nenulové, jen se speed NONE), všechny 0 = podle speed */
         uint16_t bd;         /**< IC-10.2-*: rychlost Intercopy 600, 1200, 2400, 2800, 3200 (popisek v Bd), 0 = 1200;
                                   PEZIK-2.0A: 2400 nebo 3200, IC-10.2-CPM: 1500, 2400, 2800, 3200, 3600 (0 = 2400) */
         uint8_t tc_a;        /**< TC-1.21: čitatel poměru a/b TurboCopy (1-9), 0 = rychlost podle speed */
@@ -146,7 +160,8 @@ extern "C" {
     /**
      * @brief Přečte text PROFILE_ARGS (`klíč=hodnota` oddělené čárkou).
      *
-     * Klíče: speed (`a:b` jako cmtspeed_get_ratiotxt, přijme i `a/b`; jiný poměr
+     * Klíče: speed (`a:b` jako cmtspeed_get_ratiotxt, přijme i `a/b`; 2:1 CPM
+     * jako `2:1 (cp/m)`; jiný poměr
      * jednociferných a, b z 1..9 v rozsahu 1/2..3/1 = poměr TurboCopy do tc_a/tc_b), loader (Y/N), gap
      * (rom/short), pause (ms, desítkově), machine (generic, mz700, mz800,
      * mz1500, mz80b), format (normal, fastipl, bsd), pulseset (700, 800, 80b),
@@ -211,8 +226,23 @@ extern "C" {
      * N = 82) dostanou jen pulzy 1x. Rychlost (args->speed) jiná než NONE
      * vrátí TMZ_PROFILE_ERROR_ARGS.
      *
+     * MZ800EMU-CMT (TMZ_PROFILE_ID_MZ800EMU_CMT, spec 8.4) popíše signál,
+     * který mztape generuje formátem MZTAPE_FORMATSET_MZ800_SANE: část
+     * HEADER (tón lgap formátu, tapemark MZTAPE_LTM_*) a BODY (tón sgap,
+     * tapemark MZTAPE_STM_*; i pro tělo 0 B, pak s checksumem 0000 jako
+     * v mztape), bez kopií, bez READER
+     * a STOP, TIMEBASE 17 721 600 (takt GDG MZ-800). PULSES jsou délky
+     * z mztape_get_speed_pulses() pro args->speed (NONE = 1:1; u 2:1 CPM sada
+     * cmt.com) v tikách GDG, round(sekundy * 17 721 600); s args->cmtspeed
+     * (všechna čtyři pole nenulová) round(µs * 17,7216). Mezi hlavičkou
+     * a tělem pauza 0, za posledním dílem args->pause_ms, LOW.
+     * TMZ_PROFILE_ERROR_ARGS: neplatná rychlost (CMTSPEED_CUSTOM), cmtspeed
+     * spolu se speed jiným než NONE, částečně vyplněné cmtspeed, pauza mimo
+     * rozsah uint32 v tikách.
+     *
      * Každý profil čte jen své parametry: pause_ms a machine všechny,
-     * speed a gap_rom ROM-800-*, navíc cmtspeed UNICMT, speed a loader
+     * speed a gap_rom ROM-800-*, navíc cmtspeed UNICMT, speed a cmtspeed
+     * MZ800EMU-CMT, speed a loader
      * TC-1.21, bd IC-10.2-* a PEZIK-2.0A, speed, legacy_format, pulseset, lgap, sgap a
      * pulses TAPEMZ-V1-LEGACY; BASIC-1Z016 jen pause_ms a machine. Jiný parametr s hodnotou odlišnou od
      * tmz_profile_args_init() vrátí TMZ_PROFILE_ERROR_ARGS (dřív se tiše
@@ -238,6 +268,23 @@ extern "C" {
      * @return Statický řetězec.
      */
     extern const char* tmz_profile_error_string ( en_TMZ_PROFILE_ERROR err );
+
+    /**
+     * @brief Historická pulzní sada generátorů v1.0 profilu TAPEMZ-V1-LEGACY (formát normal).
+     *
+     * Délky půlvln při rychlosti 1:1, se kterými profil převádí bloky v1.0.
+     * Jsou to historické sady generátorů v1.0, zachované pro shodné přehrání
+     * souborů v1.0 (tabulka výchozích pulzních sad specifikace v1.0, kap. 5.2);
+     * živé cesty (mztape) používají jiné sady. Funkce jen čte statickou
+     * tabulku, nemá vedlejší efekty.
+     *
+     * @param pulseset Pulzní sada: 0 = MZ-700/80K/80A, 1 = MZ-800/1500,
+     *                 2 = MZ-80B (hodnoty en_MZTAPE_PULSESET).
+     * @param[out] out LONG H, LONG L, SHORT H, SHORT L v sekundách.
+     * @return EXIT_SUCCESS, nebo EXIT_FAILURE (out je NULL, neplatná sada;
+     *         out se pak nemění).
+     */
+    extern int tmz_profile_legacy_pulses ( int pulseset, double out[4] );
 
 #ifdef __cplusplus
 }

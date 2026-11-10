@@ -1,7 +1,7 @@
 /**
  * @file   tmz_mzt.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.1
+ * @version 1.2.0
  * @brief  MZT (MZF soubory za sebou) a hlavička CMTSPEED UniCMT (spec kap. 10).
  *
  * MZT není součástí TMZ, je to vstupní a výstupní formát jako MZF.
@@ -204,7 +204,10 @@ extern "C" {
      * Zařazení: 0x40 = 1x; 0x41 NORMAL = 1x při 1:1, jinak floor(1x / dělitel
      * rychlosti) (2:1 a 3:1 dají přesně 2x a 3x UniCMT), neplatná rychlost
      * jako 1:1; 0x46 ROM-800-NOMINAL, ROM-800-EXACT = 1x, UNICMT = cmtspeed
-     * z PROFILE_ARGS, TAPEMZ-V1-LEGACY format normal jako 0x41 NORMAL.
+     * z PROFILE_ARGS, TAPEMZ-V1-LEGACY format normal jako 0x41 NORMAL,
+     * MZ800EMU-CMT = cmtspeed z PROFILE_ARGS (všechna čtyři pole nenulová),
+     * jinak speed jako 0x41 NORMAL (2:1 CPM bez struktury ROM),
+     * IC-10.2-NORMAL podle bd, TC-1.21 loader=N podle poměru TurboCopy.
      * Ostatní (0x41 TURBO, FASTIPL, 2:1 CPM a další, 0x46 jiných profilů)
      * mají rom_structure = 0.
      *

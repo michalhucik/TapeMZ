@@ -1,7 +1,7 @@
 /**
  * @file   tmz_mzt.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.1
+ * @version 1.2.0
  * @brief  Implementace MZT a hlavičky CMTSPEED UniCMT (viz tmz_mzt.h, spec kap. 10).
  *
  * @par Licence:
@@ -269,7 +269,8 @@ static int info_v1 ( const st_TZX_BLOCK *block, st_TMZ_MZT_BLOCK_INFO *info ) {
 /**
  * @brief Blok 0x46: MZF bajty bloku, rychlost podle profilu.
  *
- * Jako záznam ROM se berou ROM-800-*, UNICMT, TAPEMZ-V1-LEGACY normal,
+ * Jako záznam ROM se berou ROM-800-*, UNICMT, MZ800EMU-CMT (cmtspeed, nebo
+ * poměr jako TAPEMZ-V1-LEGACY normal), TAPEMZ-V1-LEGACY normal,
  * IC-10.2-NORMAL (rychlost z bd) a TC-1.21 bez předzavaděče (loader=N:
  * hlavička a tělo rychlostí a/b, pulzy z S tiků CTC0, 1:1 jako 1x); ostatní profily mají
  * rom_structure = 0.
@@ -297,6 +298,20 @@ static int info_mzfile ( const st_TZX_BLOCK *block, st_TMZ_MZT_BLOCK_INFO *info 
         info->rom_structure = 1;
         if ( a.cmtspeed[0] && a.cmtspeed[1] && a.cmtspeed[2] && a.cmtspeed[3] ) {
             memcpy ( info->pulses_us, a.cmtspeed, sizeof ( info->pulses_us ) );
+        }
+    } else if ( strcmp ( mf.profile_id, TMZ_PROFILE_ID_MZ800EMU_CMT ) == 0 && args_ok ) {
+        /*
+         * Signál mztape MZ800_SANE: hlavička a tělo s tónem a tapemarkem bez kopií.
+         * Vlastní pulzy = cmtspeed; poměr jako 0x41 NORMAL (floor(1x / dělitel)),
+         * 2:1 CPM ne (pulzy cmt.com, poměr by je nepopsal).
+         */
+        if ( a.cmtspeed[0] && a.cmtspeed[1] && a.cmtspeed[2] && a.cmtspeed[3] ) {
+            info->rom_structure = 1;
+            memcpy ( info->pulses_us, a.cmtspeed, sizeof ( info->pulses_us ) );
+        } else {
+            en_CMTSPEED speed = ( a.speed == CMTSPEED_NONE ) ? CMTSPEED_1_1 : a.speed;
+            info->rom_structure = ( speed != CMTSPEED_2_1_CPM && cmtspeed_is_valid ( speed ) );
+            if ( info->rom_structure ) normal_speed_pulses ( speed, info->pulses_us );
         }
     } else if ( strcmp ( mf.profile_id, "TAPEMZ-V1-LEGACY" ) == 0 && args_ok && a.legacy_format == TMZ_LEGACY_NORMAL ) {
         en_CMTSPEED speed = ( a.speed == CMTSPEED_NONE ) ? CMTSPEED_1_1 : a.speed;
