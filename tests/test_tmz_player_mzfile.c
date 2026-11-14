@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "libs/tzx/tzx.h"
 #include "libs/tmz/tmz.h"
@@ -186,6 +187,152 @@ static void test_v1_blocks ( st_TMZ_PLAYER_CONFIG *cfg ) {
 }
 
 
+/**
+ * @brief Sestaví TLV: PULSES z g_fm_tlv a za ním další značky.
+ * @param out Výstup (min. 20 + n B). @param extra Další TLV. @param n Jejich délka.
+ * @return Délka TLV.
+ */
+static uint32_t fm_tlv_plus ( uint8_t *out, const uint8_t *extra, uint32_t n ) {
+    memcpy ( out, g_fm_tlv, sizeof ( g_fm_tlv ) );
+    memcpy ( out + sizeof ( g_fm_tlv ), extra, n );
+    return ( uint32_t ) sizeof ( g_fm_tlv ) + n;
+}
+
+
+/**
+ * @brief Přehraje blok 0x46 s jednou částí a ověří odmítnutí mezí generátoru.
+ * @param cfg Konfigurace. @param family Rodina. @param tlv TLV. @param n Délka. @param what Popis.
+ */
+static void expect_rejected ( st_TMZ_PLAYER_CONFIG *cfg, uint8_t family, const uint8_t *tlv, uint32_t n, const char *what ) {
+    st_TMZ_PART part = { TMZ_PART_ROLE_BODY, family, TMZ_SOURCE_MZF_BODY, 0, 0, NULL, 0, tlv, n };
+    st_TZX_BLOCK *b = make_block ( &part, 1 );
+    en_TMZ_PLAYER_ERROR e = TMZ_PLAYER_OK;
+    clock_t t0 = clock ();
+    st_CMT_STREAM *s = b ? tmz_player_play_block ( b, cfg, &e ) : NULL;
+    double sec = ( double ) ( clock () - t0 ) / CLOCKS_PER_SEC;
+    char msg[200];
+    snprintf ( msg, sizeof ( msg ), "%s: rejected quickly as unplayable (%.3f s)", what, sec );
+    CHECK ( b && !s && e == TMZ_PLAYER_ERROR_UNSUPPORTED && sec < 2.0, msg );
+    cmt_stream_destroy ( s );
+    tmz_block_free ( b );
+}
+
+
+/**
+ * @brief Meze generátorů FM a MANCHESTER: počty a délky z nedůvěryhodného
+ *        souboru, které by zahltily paměť a čas, se odmítnou hned.
+ * @param cfg Konfigurace playeru.
+ */
+static void test_limits ( st_TMZ_PLAYER_CONFIG *cfg ) {
+    uint8_t tlv[64];
+    /* TONE 0xFFFFFFFF (4,29e9 SHORT) */
+    static const uint8_t tone_max[] = { 0x02, 0x81, 0x04, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    expect_rejected ( cfg, TMZ_FAMILY_FM, tlv, fm_tlv_plus ( tlv, tone_max, sizeof ( tone_max ) ), "FM TONE 0xFFFFFFFF" );
+    /* COPIES 255 s oddělovačem 65535 SHORT: 16,7 milionu pulzů */
+    static const uint8_t copies_max[] = { 0x07, 0x81, 0x03, 0x00, 0xFF, 0xFF, 0xFF };
+    expect_rejected ( cfg, TMZ_FAMILY_FM, tlv, fm_tlv_plus ( tlv, copies_max, sizeof ( copies_max ) ), "FM COPIES 255 x 65535" );
+    /* TIMEBASE 1000 Hz a PAUSE 0xFFFFFFFF (49 dní) */
+    static const uint8_t pause_long[] = { 0x01, 0x80, 0x04, 0x00, 0xE8, 0x03, 0x00, 0x00,
+                                          0x03, 0x80, 0x04, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    expect_rejected ( cfg, TMZ_FAMILY_FM, tlv, fm_tlv_plus ( tlv, pause_long, sizeof ( pause_long ) ), "FM PAUSE over an hour" );
+    /* půlvlna PULSES 0xFFFFFFFF (20 minut při výchozím taktu) */
+    static const uint8_t long_half[20] = { 0x01, 0x81, 0x10, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xE8, 0x03, 0, 0,
+                                           0xD0, 0x07, 0, 0, 0xD0, 0x07, 0, 0 };
+    expect_rejected ( cfg, TMZ_FAMILY_FM, long_half, sizeof ( long_half ), "FM half-wave over 1 s" );
+    /* MANCHESTER: HALVES 1000 x 4, PILOT 0xFFFFFFFF vzorů po 8 bitech */
+    static const uint8_t manch[] = { 0x01, 0x85, 0x10, 0x00, 0xE8, 0x03, 0, 0, 0xE8, 0x03, 0, 0, 0xE8, 0x03, 0, 0,
+                                     0xE8, 0x03, 0, 0, 0x02, 0x85, 0x06, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x08, 0x55 };
+    expect_rejected ( cfg, TMZ_FAMILY_MANCHESTER, manch, sizeof ( manch ), "MANCHESTER PILOT 0xFFFFFFFF" );
+
+    /* platné hodnoty dál fungují: tón ROM 22000 a pauza 10 minut */
+    static const uint8_t rom[] = { 0x02, 0x81, 0x04, 0x00, 0xF0, 0x55, 0x00, 0x00,
+                                   0x03, 0x80, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    uint8_t ok_tlv[64];
+    uint32_t n = fm_tlv_plus ( ok_tlv, rom, sizeof ( rom ) );
+    uint32_t pause = 600u * 3546895u / 1u;   /* 10 minut při výchozím taktu (2 128 137 000 < 2^32) */
+    ok_tlv[n - 4] = ( uint8_t ) pause; ok_tlv[n - 3] = ( uint8_t ) ( pause >> 8 );
+    ok_tlv[n - 2] = ( uint8_t ) ( pause >> 16 ); ok_tlv[n - 1] = ( uint8_t ) ( pause >> 24 );
+    st_TMZ_PART part = { TMZ_PART_ROLE_BODY, TMZ_FAMILY_FM, TMZ_SOURCE_MZF_BODY, 0, 0, NULL, 0, ok_tlv, n };
+    st_TZX_BLOCK *b = make_block ( &part, 1 );
+    en_TMZ_PLAYER_ERROR e = TMZ_PLAYER_OK;
+    uint32_t rate = cfg->sample_rate;
+    en_CMT_STREAM_TYPE type = cfg->stream_type;
+    cfg->sample_rate = 17721600;   /* pauza 600 s = 1,06e10 vzorků: víc než jeden event vstreamu */
+    cfg->stream_type = CMT_STREAM_TYPE_VSTREAM;
+    st_CMT_STREAM *s = b ? tmz_player_play_block ( b, cfg, &e ) : NULL;
+    uint64_t want = 600ull * 17721600ull;
+    uint64_t got = s ? cmt_stream_get_count_scans ( s ) : 0;
+    /* tón 22000 x 2000 T (12,4 s) + 1 bajt + pauza 600 s */
+    CHECK ( s && e == TMZ_PLAYER_OK && got > want + 12ull * 17721600ull && got < want + 13ull * 17721600ull,
+            "FM tone 22000 and pause 10 min at 17721600 Hz play (pause longer than one vstream event)" );
+    cmt_stream_destroy ( s );
+    tmz_block_free ( b );
+    cfg->sample_rate = rate;
+    cfg->stream_type = type;
+}
+
+
+/**
+ * @brief Přehraje blok 0x46 s n stejnými FM částmi a změří dobu.
+ * @param cfg Konfigurace. @param tlv TLV části. @param len Délka TLV. @param n Počet částí.
+ * @param[out] e Chyba playeru. @param[out] sec Doba v s.
+ * @return Stream (uvolnit), nebo NULL.
+ */
+static st_CMT_STREAM* play_parts ( st_TMZ_PLAYER_CONFIG *cfg, const uint8_t *tlv, uint32_t len, uint8_t n,
+                                   en_TMZ_PLAYER_ERROR *e, double *sec ) {
+    static st_TMZ_PART parts[32];
+    for ( uint8_t i = 0; i < n; i++ ) {
+        st_TMZ_PART pt = { TMZ_PART_ROLE_BODY, TMZ_FAMILY_FM, TMZ_SOURCE_MZF_BODY, 0, 0, NULL, 0, tlv, len };
+        parts[i] = pt;
+    }
+    st_TZX_BLOCK *b = make_block ( parts, n );
+    *e = TMZ_PLAYER_OK;
+    clock_t t0 = clock ();
+    st_CMT_STREAM *s = b ? tmz_player_play_block ( b, cfg, e ) : NULL;
+    *sec = ( double ) ( clock () - t0 ) / CLOCKS_PER_SEC;
+    tmz_block_free ( b );
+    return s;
+}
+
+
+/**
+ * @brief Mez celého bloku 0x46 (součet částí): 4 hodiny signálu a 16 000 000
+ *        pulzů. Každá část je v mezích části, blok jako celek ne -> UNSUPPORTED
+ *        před generováním; blok pod mezí se přehraje.
+ * @param cfg Konfigurace playeru (44 100 Hz).
+ */
+static void test_block_limits ( st_TMZ_PLAYER_CONFIG *cfg ) {
+    uint8_t tlv[64];
+    /* TIMEBASE 2000 Hz (PULSES 1000/2000 = půlvlny 0,5 a 1 s), PAUSE 6 600 000 = 3300 s */
+    static const uint8_t pause_3300[] = { 0x01, 0x80, 0x04, 0x00, 0xD0, 0x07, 0x00, 0x00,
+                                          0x03, 0x80, 0x04, 0x00, 0x40, 0xB5, 0x64, 0x00 };
+    uint32_t n = fm_tlv_plus ( tlv, pause_3300, sizeof ( pause_3300 ) );
+    en_TMZ_PLAYER_ERROR e;
+    double sec;
+    char msg[200];
+    /* 5 částí x ~3300 s = přes 4 hodiny */
+    st_CMT_STREAM *s = play_parts ( cfg, tlv, n, 5, &e, &sec );
+    snprintf ( msg, sizeof ( msg ), "0x46 with 5 parts of 3300 s: UNSUPPORTED (%.3f s)", sec );
+    CHECK ( !s && e == TMZ_PLAYER_ERROR_UNSUPPORTED && sec < 1.0, msg );
+    cmt_stream_destroy ( s );
+    /* 4 části x ~3300 s = pod mezí: přehraje se */
+    s = play_parts ( cfg, tlv, n, 4, &e, &sec );
+    uint64_t got = s ? cmt_stream_get_count_scans ( s ) : 0;
+    CHECK ( s && e == TMZ_PLAYER_OK && got > 13200ull * cfg->sample_rate && got < 14400ull * cfg->sample_rate,
+            "0x46 with 4 parts of 3300 s plays (under 4 h)" );
+    cmt_stream_destroy ( s );
+
+    /* 17 částí s tónem 1 000 000 pulzů (výchozí takt: 0,56 ms na pulz, celkem ~9600 s):
+     * 17 milionů pulzů přes mez bloku 16 000 000 */
+    static const uint8_t tone_1m[] = { 0x02, 0x81, 0x04, 0x00, 0x40, 0x42, 0x0F, 0x00 };
+    n = fm_tlv_plus ( tlv, tone_1m, sizeof ( tone_1m ) );
+    s = play_parts ( cfg, tlv, n, 17, &e, &sec );
+    snprintf ( msg, sizeof ( msg ), "0x46 with 17 parts of 1 000 000 pulses: UNSUPPORTED (%.3f s)", sec );
+    CHECK ( !s && e == TMZ_PLAYER_ERROR_UNSUPPORTED && sec < 1.0, msg );
+    cmt_stream_destroy ( s );
+}
+
+
 int main ( void ) {
     st_TMZ_PLAYER_CONFIG cfg;
     tmz_player_config_init ( &cfg );
@@ -349,6 +496,8 @@ int main ( void ) {
     test_reader_rate ( &cfg );
     test_v1_blocks ( &cfg );
 
+    test_limits ( &cfg );
+    test_block_limits ( &cfg );
     printf ( "\n=== TMZ Player MZ File Test: %s ===\n", g_failures ? "FAIL" : "PASS" );
     return g_failures ? 1 : 0;
 }

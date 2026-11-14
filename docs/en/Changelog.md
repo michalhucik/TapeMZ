@@ -1,6 +1,83 @@
 # Changelog
 
+## 2026-11-14
+
+### Release 1.1.0
+
+The archive `tapemz-cli-1.1.0.zip` with Windows x64 binaries and the documentation. Compared
+with release 1.0.0 it contains the changes described below in the sections "Analysis of
+a pulse sequence", "Input limits and long signal runs" and "Installation with make install".
+
+- tmz2wav v1.3.2: a pulse longer than 2^32 output samples is written to the WAV in full.
+- Tool versions: tmzinfo 1.7.1, mzf2tmz 1.11.0, tmz2mzf 1.4.1, tmz2wav 1.3.2,
+  wav2tmz 2.13.0, tap2tmz 1.0.0, tmz2tap 1.0.0, tmzconv 1.1.0, tmzedit 1.7.2,
+  dat2bsd 1.1.0, bsd2dat 1.2.1.
+
 ## 2026-11-10
+
+### Analysis of a pulse sequence
+
+Versions: wav_analyzer v1.15.0.
+
+- New `wav_analyzer_analyze_pulses()`: analyses a signal that is already
+  split into pulses (e.g. edges of the tape recorder output captured by an
+  emulator) instead of a WAV file. The result is the same as from
+  `wav_analyzer_analyze()` over the pulses of the same signal and is freed
+  the same way. The pulse rate may be 1 to 2^32-1 Hz; a zero-length pulse
+  is skipped and the neighbouring pulses of the same level are merged, a
+  pulse longer than one hour (`WAV_ANALYZER_PULSE_MAX_US`) is shortened to
+  one hour. On an error the whole result is zeroed.
+- The pulse length histogram limits the number of bins and the bin index
+  before converting them to an integer, so neither a very long pulse nor a
+  very small bin width gives an undefined conversion. Results in the usual
+  range do not change.
+- At a high rate (exact pulses, 17 721 600 Hz) the TurboCopy and Intercopy
+  writer is recognised even with a slightly different clock: the tolerance
+  of the tone period has a lower limit of 2 µs. WAV analysis up to 750 kHz
+  does not change.
+- A raw block over 2^35 samples (1 bit per sample, only at a very high
+  rate) is not created, instead of a truncated size and a write outside
+  the buffer.
+
+### Input limits and long signal runs
+
+Versions: tzx v1.4.0, tmz v1.14.0, tmz_player v1.6.0, mzcmt_fm v1.2.0,
+mzcmt_manchester v1.1.0, cmt_stream v2.1.0, wav v2.1.1.
+
+- A block 0x46 from an untrusted file can no longer generate billions of
+  pulses: every part has limits (tone at most 1 000 000 pulses, MANCHESTER
+  pilot at most 1 000 000 patterns, a half-wave at most 1 s, the pause and
+  the whole part at most one hour, at most 16 million pulses or bits). A part
+  outside the limits is not played and an error is reported. The limits are
+  described in the v1.1 specification, chapter 5.7.
+- A long silence plays in full: a pulse of block 0x18 (and so a WAV), the
+  pause of a part of block 0x46 and a run of equal samples in block 0x15 may
+  be longer than 2^32 output samples (about 242 s at 17 721 600 Hz).
+  Previously block 0x18 ended with an error and block 0x15 got a wrong
+  length. The cmt_stream library has the new `cmt_vstream_add_value_long()`.
+- The player reports a block that cannot be played (CSW with Z-RLE
+  compression, invalid data of a TZX block, an invalid block 0x40 / 0x41) as
+  `TMZ_PLAYER_ERROR_UNSUPPORTED` (previously `TMZ_PLAYER_ERROR_STREAM_CREATE`)
+  and prints one message instead of two.
+- `tzx_generate_csw_recording()` refuses a sample rate above 24 bits.
+- A limit for the whole block: block 0x46 (sum of its parts) at most 4 hours
+  of signal and 16 million pulses or bits, blocks 0x15 and 0x18 at most 4
+  hours of signal including the pause. It is checked in advance from the
+  block header and data; a block outside the limit is not played (an
+  unsupported block). Previously a block 0x18 with a 1 Hz sample rate and
+  pulses 0xFFFFFFFF or a block 0x46 with 255 parts within the part limits
+  could request gigabytes of memory. Specification v1.1 chapter 5.7. The new
+  `tzx_csw_recording_check()` checks a block 0x18 without generating the
+  signal.
+- Converting time to samples in the FM and MANCHESTER generators
+  (`cmt_vstream_scale_time()`) no longer overflows even with a timebase close
+  to 2^32; previously a part with TIMEBASE 4 000 000 000 longer than about
+  260 s ended with an error, or its pause got a wrong length.
+- New `tmz_player_play_next_budget()`: the guard against an endless loop of
+  control blocks comes from a shared budget, so a program that calls the
+  player repeatedly (skipping blocks) limits the whole search with one budget.
+- WAV reading: a chunk size no longer overflows; a file with a chunk size
+  close to 4 GB previously made the reader loop forever.
 
 ### Installation with make install
 

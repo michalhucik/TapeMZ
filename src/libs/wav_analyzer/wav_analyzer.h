@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.14.0
+ * @version 1.15.0
  * @brief  Hlavní API knihovny wav_analyzer - orchestrace všech vrstev.
  *
  * Poskytuje vysokoúrovňové API pro analýzu WAV nahrávek magnetofonových
@@ -14,6 +14,10 @@
  *   4. Specialized Decoding (FM, TURBO, FASTIPL, BSD, CPM-TAPE, FSK, SLOW, DIRECT dekodéry)
  *
  * Výstupem jsou dekódované MZF soubory a diagnostické informace.
+ *
+ * Vstupem je soubor WAV (wav_analyzer_analyze(), vrstvy 0-4), nebo hotová
+ * posloupnost pulzů (wav_analyzer_analyze_pulses(), vrstvy 2-4), např.
+ * hrany výstupu magnetofonu zaznamenané emulátorem s libovolnou frekvencí.
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -182,6 +186,92 @@ extern "C" {
 
 
     /**
+     * @brief Nejdelší pulz, který wav_analyzer_analyze_pulses() předá analýze (us, 3600 s).
+     *
+     * Delší pulz (dlouhé ticho, i vzniklé sloučením přes vynechaný nulový
+     * pulz) se na tuto délku zkrátí: duration_us na mez, duration_samples
+     * nejvýš na odpovídající počet vzorků. Datová půlvlna je i v bloku 0x46
+     * nejvýš 1 s (spec v1.1, kap. 5.7), zkrácení se tedy týká jen ticha;
+     * posunou se jen časy za ním (start_time_sec, wav_duration_sec). Mez
+     * zaručuje, že další vrstvy nedostanou nekonečno ani délku, která by
+     * přetekla převody na celá čísla. Hodnota odpovídá nejdelší pauze části
+     * bloku 0x46 (tamtéž).
+     */
+#define WAV_ANALYZER_PULSE_MAX_US 3600000000.0
+
+
+    /**
+     * @brief Analyzuje posloupnost pulzů (místo WAV) a dekóduje všechny nalezené záznamy.
+     *
+     * Vstupem je signál už rozložený na pulzy (půlvlny), např. hrany výstupu
+     * magnetofonu zaznamenané emulátorem s přesností na takt. Provede tytéž
+     * kroky jako wav_analyzer_analyze() od detekce leaderů dál (statistiky
+     * pulzů, leadery, CPM-TAPE, klasifikace a dekodéry, surové bloky, časy);
+     * pro posloupnost, kterou dává extrakce pulzů z WAV, je výsledek shodný.
+     * Předzpracování a extrakce pulzů se nepoužijí, volby konfigurace pro ně
+     * (pulse_mode, schmitt_*, channel, polarity, enable_*) nemají vliv.
+     *
+     * Délky se čtou z duration_us (rozhoduje o všem kromě dekodéru DIRECT
+     * a surových bloků), duration_samples a level používá dekodér DIRECT
+     * (1 vzorek = 1 bit) a sběr surových bloků (keep_unknown, 1 bit na vzorek).
+     * Signál DIRECT je definovaný ve vzorcích frekvence, pro kterou vznikl;
+     * při jiné frekvenci posloupnosti se jeho data nedekódují.
+     * sample_rate smí být 1 až 2^32-1 Hz: tolerance periody tónu zapisovače
+     * (1,5 vzorku) má spodní mez 2 us, kvantizační podlaha detektoru leaderu
+     * (1 vzorek) se s frekvencí zmenšuje a rozhoduje relativní tolerance,
+     * takže přesné pulzy při 17 721 600 Hz se dekódují jako WAV.
+     *
+     * Pulz s délkou duration_us, která není kladné konečné číslo (0, záporná,
+     * NaN, nekonečno), se přeskočí: nenese hranu, a pulz za ním se stejnou
+     * úrovní jako předchozí ponechaný pulz se k němu přičte. Pulz delší než
+     * WAV_ANALYZER_PULSE_MAX_US (i po sloučení) se na tuto mez zkrátí (zvoleno
+     * místo odmítnutí: dlouhé ticho je v záznamu běžné). Bez takových pulzů
+     * se posloupnost nekopíruje.
+     *
+     * @param seq Posloupnost pulzů. Nesmí být NULL; sample_rate > 0; při
+     *            count > 0 pulses != NULL. Funkce ji nevlastní a nemění.
+     * @param config Konfigurace analyzéru. Nesmí být NULL.
+     * @param[out] result Výstupní výsledek. Nesmí být NULL. Volající ho uvolní
+     *             přes wav_analyzer_result_destroy().
+     * @return WAV_ANALYZER_OK při úspěchu (i bez nalezených záznamů),
+     *         WAV_ANALYZER_ERROR_INVALID_PARAM při neplatném parametru,
+     *         WAV_ANALYZER_ERROR_ALLOC při selhání alokace.
+     *
+     * @post result->sample_rate = seq->sample_rate, result->wav_duration_sec
+     *       je součet délek pulzů po přípravě (kladné délky, nejvýš
+     *       WAV_ANALYZER_PULSE_MAX_US každá), result->total_pulses počet pulzů
+     *       po vynechání nulových. Indexy pulzů ve výsledku (leadery,
+     *       header_leader_pulse, consumed_until_pulse, raw_blocks) se vztahují
+     *       k posloupnosti po vynechání nulových pulzů; bez nich k @p seq.
+     *       Časy (start_time_sec, duration_sec) vynechání pulzů s nulovou
+     *       délkou nemění; zkrácení pulzu nad mez je zkrátí.
+     * @post Při chybě (každý návrat jiný než WAV_ANALYZER_OK, s result != NULL)
+     *       je celý *result vynulovaný (memset 0, nic alokovaného); volání
+     *       wav_analyzer_result_destroy() je i tak bezpečné.
+     *
+     * @note keep_unknown při vysoké frekvenci dá velké surové bloky (1 bit
+     *       na vzorek: 17 721 600 Hz = asi 2,2 MB na sekundu nedekódovaného
+     *       úseku); úsek nad 2^35 vzorků se jako surový blok nevrátí. Pod
+     *       touto mezí se blok alokuje celý (paměť úměrná vzorkům úseku),
+     *       volající s vysokou frekvencí má proto volit keep_unknown = 0.
+     * @note Pulz s duration_samples 0 (a kladným duration_us, např. při
+     *       nízké sample_rate) čte dekodér DIRECT při čtení bitu jako
+     *       1 vzorek (při přeskakování synchronizace jako 0 vzorků) a do
+     *       surového bloku nepřispěje žádným bitem.
+     * @note Úroveň rychlosti FSK/SLOW (fsl_speed) se určuje z tabulky podle
+     *       sample_rate (od 46 050 Hz tabulka 48 000 Hz); u posloupnosti,
+     *       která nepochází z WAV, může vyjít -1. Data na ní nezávisí.
+     * @note Synchronizace: posloupnost se jen čte, výsledek se zapisuje;
+     *       volající zajistí, že je během volání nemění jiné vlákno.
+     */
+    extern en_WAV_ANALYZER_ERROR wav_analyzer_analyze_pulses (
+        const st_WAV_PULSE_SEQUENCE *seq,
+        const st_WAV_ANALYZER_CONFIG *config,
+        st_WAV_ANALYZER_RESULT *result
+    );
+
+
+    /**
      * @brief Uvolní výsledek analýzy včetně všech MZF souborů.
      *
      * Bezpečné volání s NULL (no-op).
@@ -210,7 +300,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny wav_analyzer. */
-#define WAV_ANALYZER_VERSION "1.14.0"
+#define WAV_ANALYZER_VERSION "1.15.0"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny wav_analyzer.

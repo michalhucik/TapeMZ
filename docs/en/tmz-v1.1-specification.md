@@ -167,7 +167,7 @@ cannot be determined, the part is skipped according to its length).
 |---|---|
 | field lengths exceed the block, sum does not match L, `n > 32`, disallowed character in the profile ID, `P = 0`, part length exceeds the block | structure error: file load error |
 | block version other than 1 | the block is not played, warning, processing continues with the next block |
-| unknown family or source, slice outside the body, unknown mandatory tag, invalid value of a mandatory tag | part error: the player does not play the part and reports an error; it does not guess anything |
+| unknown family or source, slice outside the body, unknown mandatory tag, invalid value of a mandatory tag, signal outside the limits (chapter 5.7) | part error: the player does not play the part and reports an error; it does not guess anything |
 | unknown optional tag | skipped |
 
 ## 5. TLV
@@ -268,6 +268,44 @@ half-wave LONG and SHORT period floor). Margin below 0 = the block is not played
 | 1 | the same ROM routine with a changed constant N (the TurboCopy and Intercopy preloader overwrites 0A4Bh) | same with N from the value |
 | 2 | routine 1 with the FAST IPL V07 loader (Intercopy), which adds 86 T after each rising edge (hook at 061Fh) | as 1, all limits shifted by 86 T |
 | other | reserved | lint skips the part |
+
+### 5.7 Playback limits (normative)
+
+Numbers in the TLV are up to 32 bits wide and a file need not be trusted.
+So that one block cannot generate billions of pulses, every part has
+limits derived from the signal duration: one part (a program header or
+body) including its copies and pause is shorter than an hour of tape.
+
+| limit | family | value |
+|---|---|---|
+| number of SHORT in TONE | FM | at most 1 000 000 (ROM 22 000) |
+| number of PILOT patterns | MANCHESTER | at most 1 000 000 (profiles 1 024 - 2 134) |
+| length of one half-wave (PULSES, CONTEXT, HALVES) | FM, MANCHESTER | at most 1 s (TIMEBASE units) |
+| PAUSE | FM, MANCHESTER | at most 3 600 s |
+| number of pulses of a part (tone, tapemark, bytes with start bits and checksum, END, TAIL, all of it 1 + COPIES times, copy separators) | FM | at most 16 000 000 |
+| number of bits of a part (pilot, sync, flag, data, checksum, end bits) | MANCHESTER | at most 16 000 000 |
+| upper estimate of the part duration (number of pulses or bits x the longest pair of half-waves + PAUSE) | FM, MANCHESTER | at most 3 600 s |
+
+A part outside the limits is a part error (chapter 4.4): the player does
+not play it and reports an error. The limits do not restrict valid
+recordings (a 65 535 B body with two copies at 1:1 has about 1.2 million
+pulses and 20 minutes).
+
+A block 0x46 has up to 255 parts, so limits of the whole block apply too
+(sum over the playable parts):
+
+| block limit | value |
+|---|---|
+| sum of the upper estimates of the part durations | at most 14 400 s (4 hours) |
+| sum of the FM pulses and MANCHESTER bits of all parts | at most 16 000 000 |
+
+A block outside the limits is not played (the player reports it as
+unsupported) and the tape continues with the next block. Every generated
+TZX block whose lengths come from its data (0x15, 0x18) has the same limit
+of 4 hours of signal (pulses and pause). The player checks it in advance,
+from the block header and data, not while generating the signal. The limit
+covers a recording of a whole C120 cassette in one block (a WAV converted
+to 0x18).
 
 ## 6. FM Family
 

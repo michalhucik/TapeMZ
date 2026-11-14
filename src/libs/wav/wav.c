@@ -1,7 +1,7 @@
 /**
  * @file   wav.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.1.0
+ * @version 2.1.1
  * @brief  Implementace knihovny pro čtení a zápis WAV souborů.
  *
  * Parsování hlavičky:
@@ -26,6 +26,8 @@
  * - 2026-03-14: Proběhla kompletní kontrola kódu a refaktorizace. Vytvořeny unit testy.
  * - 2026-10-18 (2.1.0): čtení IEEE float a WAVE_FORMAT_EXTENSIBLE; převod
  *   vzorků sjednocen do wav_decode_sample().
+ * - 2026-11-10 (2.1.1): hledání chunku v 64 bitech - velikost chunku z
+ *   nedůvěryhodného souboru nepřeteče (dřív nekonečná smyčka).
  *
  * @par Licence:
  * GNU General Public License v3 (GPLv3)
@@ -159,6 +161,12 @@ static en_WAV_ERROR wav_read_chunk_header ( st_HANDLER *h, uint32_t offset,
  * s neshodným tagem, respektuje RIFF padding (zarovnání chunk_size na sudý bajt).
  *
  * Při nalezení vrátí offset na začátek dat chunku (za hlavičkou) a velikost dat chunku.
+ * Hledaný chunk smí sahat za konec souboru (useknutý poslední chunk "data"
+ * se přijme, čtení vzorků pak skončí na konci souboru). Přeskakovaný
+ * chunk, který sahá za konec souboru, končí hledání chybou: další
+ * hlavička chunku se už nepřečte (offset se počítá v 64 bitech, takže
+ * velikost chunku z nedůvěryhodného souboru nepřeteče a hledání vždy
+ * postoupí dopředu).
  *
  * @param h               Otevřený handler s WAV daty
  * @param start_offset    Počáteční offset pro vyhledávání
@@ -166,29 +174,31 @@ static en_WAV_ERROR wav_read_chunk_header ( st_HANDLER *h, uint32_t offset,
  * @param wanted_tag      Hledaný tag chunku (4 znaky)
  * @param data_offset_out Výstupní offset dat nalezeného chunku
  * @param chunk_size_out  Výstupní velikost dat nalezeného chunku
- * @return WAV_OK při nalezení, WAV_ERROR_NO_DATA_CHUNK pokud chunk nenalezen
+ * @return WAV_OK při nalezení; WAV_ERROR_NO_DATA_CHUNK pokud chunk nenalezen nebo
+ *         offset přesáhne 32 bitů; chyba čtení hlavičky chunku (také chunk
+ *         za koncem souboru)
  */
-static en_WAV_ERROR wav_find_chunk ( st_HANDLER *h, uint32_t start_offset, uint32_t riff_end,
+static en_WAV_ERROR wav_find_chunk ( st_HANDLER *h, uint32_t start_offset, uint64_t riff_end,
                                      const char *wanted_tag, uint32_t *data_offset_out,
                                      uint32_t *chunk_size_out ) {
 
-    uint32_t offset = start_offset;
+    uint64_t offset = start_offset;
 
-    while ( offset + sizeof ( st_WAV_CHUNK_HEADER ) <= riff_end ) {
+    while ( offset + sizeof ( st_WAV_CHUNK_HEADER ) <= riff_end && offset + sizeof ( st_WAV_CHUNK_HEADER ) <= UINT32_MAX ) {
         uint8_t tag[4];
         uint32_t size;
-        en_WAV_ERROR err = wav_read_chunk_header ( h, offset, tag, &size );
+        en_WAV_ERROR err = wav_read_chunk_header ( h, ( uint32_t ) offset, tag, &size );
         if ( err != WAV_OK ) return err;
 
         if ( 0 == strncmp ( (char*) tag, wanted_tag, 4 ) ) {
-            *data_offset_out = offset + sizeof ( st_WAV_CHUNK_HEADER );
+            *data_offset_out = ( uint32_t ) ( offset + sizeof ( st_WAV_CHUNK_HEADER ) );
             *chunk_size_out = size;
             return WAV_OK;
         }
 
-        /* přeskok na další chunk: hlavička + data + RIFF padding (zarovnání na 2 B) */
-        uint32_t advance = sizeof ( st_WAV_CHUNK_HEADER ) + size;
-        if ( size & 1 ) advance++;  /* RIFF padding — lichý chunk se zarovná na sudý bajt */
+        /* přeskok na další chunk: hlavička + data + RIFF padding (zarovnání na 2 B), v 64 bitech */
+        uint64_t advance = sizeof ( st_WAV_CHUNK_HEADER ) + ( uint64_t ) size;
+        if ( size & 1 ) advance++;  /* RIFF padding - lichý chunk se zarovná na sudý bajt */
         offset += advance;
     }
 
@@ -228,8 +238,8 @@ static en_WAV_ERROR wav_read_simple_header ( st_HANDLER *h, st_WAV_SIMPLE_HEADER
     en_WAV_ERROR err = wav_check_riff_header ( h, &riff_size );
     if ( err != WAV_OK ) return err;
 
-    /* konec RIFF dat (pro omezení chunk scanningu) */
-    uint32_t riff_end = sizeof ( st_WAV_RIFF_HEADER ) + riff_size;
+    /* konec RIFF dat (pro omezení chunk scanningu); 64 bitů - riff_size 0xFFFFFFFF nepřeteče */
+    uint64_t riff_end = sizeof ( st_WAV_RIFF_HEADER ) + ( uint64_t ) riff_size;
 
     /* začátek chunk oblasti (za RIFF hlavičkou) */
     uint32_t chunks_start = sizeof ( st_WAV_RIFF_HEADER );

@@ -1,6 +1,76 @@
 # Changelog
 
+## 2026-11-14
+
+### Vydání 1.1.0
+
+Archiv `tapemz-cli-1.1.0.zip` s binárkami pro Windows x64 a dokumentací. Proti vydání 1.0.0
+obsahuje změny popsané níže v oddílech "Analýza posloupnosti pulzů", "Meze vstupu a dlouhé
+běhy signálu" a "Instalace příkazem make install".
+
+- tmz2wav v1.3.2: pulz delší než 2^32 výstupních vzorků se do WAV zapíše celý.
+- Verze nástrojů: tmzinfo 1.7.1, mzf2tmz 1.11.0, tmz2mzf 1.4.1, tmz2wav 1.3.2,
+  wav2tmz 2.13.0, tap2tmz 1.0.0, tmz2tap 1.0.0, tmzconv 1.1.0, tmzedit 1.7.2,
+  dat2bsd 1.1.0, bsd2dat 1.2.1.
+
 ## 2026-11-10
+
+### Analýza posloupnosti pulzů
+
+Verze: wav_analyzer v1.15.0.
+
+- Nové `wav_analyzer_analyze_pulses()`: analyzuje signál, který už je
+  rozložený na pulzy (např. hrany výstupu magnetofonu zaznamenané
+  emulátorem), místo souboru WAV. Výsledek je stejný jako
+  u `wav_analyzer_analyze()` nad pulzy téhož signálu a uvolňuje se stejně.
+  Frekvence pulzů smí být 1 až 2^32-1 Hz; pulz s nulovou délkou se
+  přeskočí a sousední pulzy téže úrovně se sloučí, pulz delší než hodina
+  (`WAV_ANALYZER_PULSE_MAX_US`) se na hodinu zkrátí. Při chybě je výsledek
+  celý vynulovaný.
+- Histogram délek pulzů omezí počet binů a index binu ještě před převodem
+  na celé číslo, takže ani velmi dlouhý pulz nebo velmi malá šířka binu
+  nedá nedefinovaný převod. Výsledky v běžném rozsahu se nemění.
+- Při vysoké frekvenci (přesné pulzy, 17 721 600 Hz) se zapisovač TurboCopy
+  a Intercopy pozná i při mírně odlišném taktu: tolerance periody tónu má
+  spodní mez 2 µs. Analýza WAV do 750 kHz se nemění.
+- Surový blok nad 2^35 vzorků (1 bit na vzorek, jen při velmi vysoké
+  frekvenci) se nevytvoří, místo zkrácení velikosti a zápisu mimo paměť.
+
+### Meze vstupu a dlouhé běhy signálu
+
+Verze: tzx v1.4.0, tmz v1.14.0, tmz_player v1.6.0, mzcmt_fm v1.2.0,
+mzcmt_manchester v1.1.0, cmt_stream v2.1.0, wav v2.1.1.
+
+- Blok 0x46 z nedůvěryhodného souboru už nemůže generovat miliardy pulzů:
+  každá část má meze (tón nejvýš 1 000 000 pulzů, pilot MANCHESTER nejvýš
+  1 000 000 vzorů, půlvlna nejvýš 1 s, pauza a celá část nejvýš hodinu,
+  nejvýš 16 milionů pulzů nebo bitů). Část mimo meze se nepřehraje a ohlásí
+  se chyba. Meze popisuje specifikace v1.1, kap. 5.7.
+- Dlouhé ticho se přehraje celé: pulz bloku 0x18 (a tím WAV), pauza části
+  bloku 0x46 a běh stejných vzorků bloku 0x15 smí být delší než 2^32
+  výstupních vzorků (při 17 721 600 Hz asi 242 s). Dřív blok 0x18 skončil
+  chybou a blok 0x15 dal špatnou délku. Knihovna cmt_stream má nově
+  `cmt_vstream_add_value_long()`.
+- Player hlásí blok, který přehrát nejde (CSW s kompresí Z-RLE, neplatná
+  data bloku TZX, neplatný blok 0x40 / 0x41), jako `TMZ_PLAYER_ERROR_UNSUPPORTED`
+  (dřív `TMZ_PLAYER_ERROR_STREAM_CREATE`) a vypíše jedno hlášení místo dvou.
+- `tzx_generate_csw_recording()` odmítne vzorkovací frekvenci nad 24 bitů.
+- Mez celého bloku: blok 0x46 (součet částí) nejvýš 4 hodiny signálu
+  a 16 milionů pulzů nebo bitů, bloky 0x15 a 0x18 nejvýš 4 hodiny signálu
+  včetně pauzy. Ověří se předem z hlavičky a dat bloku; blok mimo mez se
+  nepřehraje (nepodporovaný blok). Dřív mohl blok 0x18 s frekvencí 1 Hz
+  a pulzy 0xFFFFFFFF nebo blok 0x46 s 255 částmi v mezích části vyžádat
+  gigabajty paměti. Spec v1.1 kap. 5.7. Nové `tzx_csw_recording_check()`
+  ověří blok 0x18 bez generování signálu.
+- Převod času na vzorky v generátorech FM a MANCHESTER (`cmt_vstream_scale_time()`)
+  nepřeteče ani při časové základně blízko 2^32; dřív část s TIMEBASE
+  4 000 000 000 delší než asi 260 s skončila chybou nebo pauza dala chybnou
+  délku.
+- Nové `tmz_player_play_next_budget()`: pojistka proti nekonečné smyčce
+  řídicích bloků ze sdíleného rozpočtu, takže program, který player volá
+  opakovaně (přeskakuje bloky), omezí celé hledání jedním rozpočtem.
+- Čtení WAV: velikost chunku nepřeteče; soubor s chunkem velikosti blízké
+  4 GB dřív čtení zacyklil.
 
 ### Instalace příkazem make install
 

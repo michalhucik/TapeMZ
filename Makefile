@@ -62,6 +62,7 @@ TESTS := \
     test_ic_normal \
     test_ic_turbo_files \
     test_tc_normal \
+    test_wav_analyzer_pulses \
     test_tc_loader_all \
     test_ic_loader_all \
     test_ic_sinclair_all
@@ -98,7 +99,7 @@ html-docs:
 #
 # Verze vydání celé sady nástrojů (tag vX.Y.Z ve veřejném repozitáři).
 # Nezávisí na verzi formátu TMZ ani na verzích jednotlivých nástrojů.
-RELEASE_VERSION := 1.0.0
+RELEASE_VERSION := 1.1.0
 
 # Nástroje, které jdou do balíku (ty, které mají uživatelský manuál).
 TOOLS := tmzinfo mzf2tmz tmz2mzf tmz2wav wav2tmz tap2tmz tmz2tap tmzconv tmzedit \

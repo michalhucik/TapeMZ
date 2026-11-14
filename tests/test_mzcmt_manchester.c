@@ -93,6 +93,41 @@ static void simple ( st_MZCMT_MANCH_PARAMS *p ) {
 
 
 /** @brief (a) Posloupnost bitů a slučování půlek. */
+/** @brief Sčítá délky půlek (mzcmt_manch_half_cb). @param user uint64_t součet. @return EXIT_SUCCESS. */
+static int sum_cb ( void *user, int level, uint32_t duration ) {
+    ( void ) level;
+    *( uint64_t * ) user += duration;
+    return EXIT_SUCCESS;
+}
+
+
+/**
+ * @brief Vysoká časová základna: TIMEBASE 4e9, bit 1 s (půlky 0,5 s), pilot
+ *        300 bitů při 17 721 600 Hz. Akumulovaný čas x frekvence přesahuje
+ *        2^64; počet vzorků musí přesto odpovídat zaokrouhlenému času.
+ */
+static void test_high_timebase ( void ) {
+    st_MZCMT_MANCH_PARAMS p;
+    simple ( &p );
+    p.timebase = 4000000000u;
+    p.half1[0] = p.half1[1] = p.half2[0] = p.half2[1] = 2000000000u;
+    p.pilot_count = 300;
+    p.pilot_bits = 1;
+    p.pilot_pattern = 0x01;
+    uint8_t d = 0xA5;
+    uint64_t units = 0;
+    CHECK ( mzcmt_manch_generate ( &p, &d, 1, sum_cb, &units ) == EXIT_SUCCESS, "high timebase: generate" );
+    const uint64_t rate = 17721600, tb = 4000000000u;
+    uint64_t expect = units / tb * rate + ( ( units % tb ) * rate + tb / 2 ) / tb;
+    st_CMT_VSTREAM *vs = mzcmt_manch_create_vstream ( &p, &d, 1, ( uint32_t ) rate );
+    CHECK ( vs != NULL, "TIMEBASE 4e9, ~310 s at 17721600 Hz: vstream (no 64-bit overflow)" );
+    if ( vs ) {
+        CHECK ( cmt_vstream_get_count_scans ( vs ) == expect, "TIMEBASE 4e9: total samples = rounded total time" );
+        cmt_vstream_destroy ( vs );
+    }
+}
+
+
 static void test_structure ( void ) {
     st_MZCMT_MANCH_PARAMS p;
     simple ( &p );
@@ -444,6 +479,7 @@ static void test_vstream ( void ) {
 
 
 int main ( void ) {
+    test_high_timebase ();
     test_structure ();
     test_contexts ();
     test_carry ();

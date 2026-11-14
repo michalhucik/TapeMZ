@@ -1,7 +1,7 @@
 /**
  * @file   wav_histogram.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  Implementace vrstvy 2b - histogramová analýza délek pulzů.
  *
  * Sestavuje histogram délek pulzů, detekuje peaky (lokální maxima),
@@ -93,11 +93,14 @@ en_WAV_ANALYZER_ERROR wav_histogram_build (
     out_hist->min_pulse_us = min_us;
     out_hist->max_pulse_us = max_us;
 
-    /* počet binů */
-    uint32_t num_bins = ( uint32_t ) ceil ( ( max_us - min_us ) / bin_width_us ) + 1;
-    if ( num_bins > WAV_ANALYZER_MAX_HISTOGRAM_BINS ) {
-        num_bins = WAV_ANALYZER_MAX_HISTOGRAM_BINS;
-    }
+    /*
+     * počet binů: omezit ještě v double, převod na uint32 mimo rozsah
+     * (velmi dlouhý pulz nebo malá šířka binu, NaN) by byl nedefinovaný;
+     * pro hodnoty v rozsahu je výsledek stejný jako dřív
+     */
+    double bins_d = ceil ( ( max_us - min_us ) / bin_width_us ) + 1.0;
+    uint32_t num_bins = ( bins_d >= 1.0 && bins_d <= WAV_ANALYZER_MAX_HISTOGRAM_BINS )
+                        ? ( uint32_t ) bins_d : WAV_ANALYZER_MAX_HISTOGRAM_BINS;
 
     out_hist->bins = ( uint32_t* ) calloc ( num_bins, sizeof ( uint32_t ) );
     if ( !out_hist->bins ) {
@@ -108,8 +111,8 @@ en_WAV_ANALYZER_ERROR wav_histogram_build (
     /* naplníme biny */
     for ( uint32_t i = from_index; i < end_index; i++ ) {
         double d = seq->pulses[i].duration_us;
-        uint32_t bin = ( uint32_t ) ( ( d - min_us ) / bin_width_us );
-        if ( bin >= num_bins ) bin = num_bins - 1;
+        double bin_d = ( d - min_us ) / bin_width_us;
+        uint32_t bin = ( bin_d >= 0.0 && bin_d < ( double ) num_bins ) ? ( uint32_t ) bin_d : num_bins - 1;
         out_hist->bins[bin]++;
     }
 

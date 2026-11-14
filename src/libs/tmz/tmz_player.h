@@ -1,7 +1,7 @@
 /**
  * @file   tmz_player.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.5.0
+ * @version 1.6.0
  * @brief  Verejne API TMZ playeru - generovani CMT audio streamu z TMZ/TZX bloku.
  *
  * Player iteruje bloky TMZ/TZX souboru a generuje CMT audio stream
@@ -176,10 +176,15 @@ extern "C" {
      * TMZ_READER_MIN_MARGIN_US = varování přes error callback, část se
      * přehraje.
      *
+     * Mez celého bloku se ověří před generováním (spec 5.7): součet horních
+     * odhadů délky přehratelných částí nejvýš CMT_VSTREAM_MAX_BLOCK_SECONDS
+     * a součet pulzů FM a bitů MANCHESTER nejvýš TMZ_PLAYER_MAX_BLOCK_PULSES;
+     * blok mimo mez = TMZ_PLAYER_ERROR_UNSUPPORTED s hlášením.
+     *
      * @param block Blok s ID 0x46.
      * @param config Konfigurace (vzorkovací frekvence, typ streamu, mz_cpu_clock).
-     * @param[out] err TMZ_PLAYER_OK; TMZ_PLAYER_ERROR_UNSUPPORTED (neplatný blok
-     *        nebo žádná přehratelná část); TMZ_PLAYER_ERROR_UNREADABLE (část
+     * @param[out] err TMZ_PLAYER_OK; TMZ_PLAYER_ERROR_UNSUPPORTED (neplatný blok,
+     *        žádná přehratelná část nebo blok mimo mez bloku); TMZ_PLAYER_ERROR_UNREADABLE (část
      *        nečitelná při dané vzorkovací frekvenci); TMZ_PLAYER_ERROR_STREAM_CREATE;
      *        TMZ_PLAYER_ERROR_ALLOC; TMZ_PLAYER_ERROR_NULL_INPUT.
      * @return Nový stream (uvolnit cmt_stream_destroy()), nebo NULL.
@@ -386,6 +391,48 @@ extern "C" {
      */
     extern st_CMT_STREAM* tmz_player_play_next ( st_TMZ_PLAYER_STATE *state,
                                                   en_TMZ_PLAYER_ERROR *err );
+
+
+    /**
+     * @brief Nejvyšší počet pulzů FM a bitů MANCHESTER všech částí jednoho bloku 0x46.
+     *
+     * Mez celého bloku (součet částí, mzcmt_fm_part_bounds() /
+     * mzcmt_manch_part_bounds()), ověřená před generováním spolu s délkou
+     * bloku CMT_VSTREAM_MAX_BLOCK_SECONDS. Stejná hodnota jako mez jedné
+     * části (MZCMT_FM_MAX_PULSES): tělo 65 535 B se 2 kopiemi má asi 1,2
+     * milionu pulzů, 255 částí v mezích části by bez meze bloku smělo přes
+     * 4 miliardy pulzů. Blok mimo mez = TMZ_PLAYER_ERROR_UNSUPPORTED.
+     */
+#define TMZ_PLAYER_MAX_BLOCK_PULSES 16000000u
+
+
+    /** @brief Pojistka iterací jednoho volání tmz_player_play_next() (řídicí bloky bez bloku se signálem). */
+#define TMZ_PLAYER_MAX_ITERATIONS 1000000u
+
+
+    /**
+     * @brief tmz_player_play_next() s rozpočtem iterací sdíleným více voláními.
+     *
+     * Chová se jako tmz_player_play_next(), jen pojistku proti nekonečné
+     * smyčce bere z @p budget: každá iterace vnitřní smyčky (zpracování
+     * jednoho bloku) ho sníží o 1. Volající, který volá player opakovaně
+     * (např. přeskakuje bloky, které přehrát nejdou), tak omezí celou
+     * posloupnost volání jedním rozpočtem, ne jen každé volání zvlášť.
+     *
+     * Vyčerpaný rozpočet (i nulový při vstupu, pokud průchod neskončil):
+     * hlášení "Iteration budget exhausted", state->finished = true, NULL
+     * s TMZ_PLAYER_ERROR_STREAM_CREATE (jako pojistka tmz_player_play_next()).
+     *
+     * @param state  Stav playeru.
+     * @param[in,out] budget Zbývající iterace; po návratu snížený o spotřebované.
+     * @param err    Výstupní chybový kód (může být NULL); NULL @p budget =
+     *               TMZ_PLAYER_ERROR_NULL_INPUT.
+     * @return Jako tmz_player_play_next().
+     * @pre state je inicializovaný (tmz_player_state_init()).
+     * @post Volající vlastní vrácený stream (cmt_stream_destroy()).
+     */
+    extern st_CMT_STREAM* tmz_player_play_next_budget ( st_TMZ_PLAYER_STATE *state, uint32_t *budget,
+                                                         en_TMZ_PLAYER_ERROR *err );
 
 
     /**

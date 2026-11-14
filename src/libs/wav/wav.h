@@ -1,7 +1,7 @@
 /**
  * @file   wav.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 2.1.0
+ * @version 2.1.1
  * @brief  Veřejné API knihovny pro čtení a zápis WAV souborů (RIFF WAVE).
  *
  * Knihovna pro čtení a zápis souborů ve formátu WAV (RIFF WAVE).
@@ -325,7 +325,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny wav. */
-#define WAV_VERSION "2.1.0"
+#define WAV_VERSION "2.1.1"
 
     /**
      * @brief Vrátí řetězec s verzí knihovny wav.

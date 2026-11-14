@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <stdint.h>
 #include <math.h>
 
@@ -191,6 +192,68 @@ static uint32_t decode_body ( const char *path, en_WAV_CHANNEL_SELECT channel, u
 }
 
 
+/**
+ * @brief Zapíše WAV z hlavičky RIFF, "fmt " PCM 8 bit mono a vlastních chunků.
+ * @param path Cesta. @param riff_size Pole velikosti RIFF. @param before Chunky před fmt (smí být NULL).
+ * @param nb Jejich délka. @param after Bajty za fmt. @param na Jejich délka.
+ */
+static void write_raw_wav ( const char *path, uint32_t riff_size, const uint8_t *before, uint32_t nb,
+                            const uint8_t *after, uint32_t na ) {
+    FILE *f = fopen ( path, "wb" );
+    if ( !f ) return;
+    fwrite ( "RIFF", 1, 4, f );
+    w32 ( f, riff_size );
+    fwrite ( "WAVE", 1, 4, f );
+    if ( nb ) fwrite ( before, 1, nb, f );
+    fwrite ( "fmt ", 1, 4, f );
+    w32 ( f, 16 );
+    w16 ( f, 1 ); w16 ( f, 1 ); w32 ( f, 8000 ); w32 ( f, 8000 ); w16 ( f, 1 ); w16 ( f, 8 );
+    if ( na ) fwrite ( after, 1, na, f );
+    fclose ( f );
+}
+
+
+/**
+ * @brief Velikosti chunků z nedůvěryhodného souboru: přeskok chunku nesmí
+ *        přetéct (nekonečná smyčka), chunk za koncem souboru je chyba,
+ *        useknutý chunk "data" se přijme jako dřív.
+ */
+static void test_chunk_sizes ( void ) {
+    st_HANDLER h;
+    st_DRIVER d;
+    st_HANDLER *hp = NULL;
+    en_WAV_ERROR err = WAV_OK;
+    /* chunk JUNK s velikostí 0xFFFFFFF8: přeskok 8 + velikost = 2^32 (dřív 0 -> stále stejný offset) */
+    static const uint8_t junk_ff8[] = { 'J', 'U', 'N', 'K', 0xF8, 0xFF, 0xFF, 0xFF };
+    /* velikost 0xFFFFFFF0: offset přeteče dozadu */
+    static const uint8_t junk_ff0[] = { 'J', 'U', 'N', 'K', 0xF0, 0xFF, 0xFF, 0xFF };
+    /* LIST 1000 B v souboru o pár desítkách bajtů */
+    static const uint8_t list_big[] = { 'L', 'I', 'S', 'T', 0xE8, 0x03, 0x00, 0x00 };
+    static const uint8_t data4[] = { 'd', 'a', 't', 'a', 4, 0, 0, 0, 0x10, 0xF0, 0x10, 0xF0 };
+    static const uint8_t data_cut[] = { 'd', 'a', 't', 'a', 0x00, 0x10, 0, 0, 0x10, 0xF0, 0x10, 0xF0 };
+    struct { const char *path; const uint8_t *before; uint32_t nb; const uint8_t *after; uint32_t na; const char *what; } c[] = {
+        { "temp/wav_chunk_ff8.wav", junk_ff8, sizeof ( junk_ff8 ), data4, sizeof ( data4 ), "chunk size 0xFFFFFFF8 -> error, no endless loop" },
+        { "temp/wav_chunk_ff0.wav", junk_ff0, sizeof ( junk_ff0 ), data4, sizeof ( data4 ), "chunk size 0xFFFFFFF0 -> error, no endless loop" },
+        { "temp/wav_chunk_big.wav", NULL, 0, list_big, sizeof ( list_big ), "chunk past the end of the file -> error" },
+    };
+    for ( size_t i = 0; i < sizeof ( c ) / sizeof ( c[0] ); i++ ) {
+        write_raw_wav ( c[i].path, 0x1000, c[i].before, c[i].nb, c[i].after, c[i].na );
+        clock_t t0 = clock ();
+        st_WAV_SIMPLE_HEADER *sh = open_header ( c[i].path, &h, &d, &hp, &err );
+        double sec = ( double ) ( clock () - t0 ) / CLOCKS_PER_SEC;
+        CHECK ( !sh && err != WAV_OK && sec < 1.0, c[i].what );
+        wav_simple_header_destroy ( sh );
+        if ( hp ) generic_driver_close ( hp );
+    }
+    /* useknutý data chunk (hlásí 4096 B, má 4): hlavička se přijme jako dřív */
+    write_raw_wav ( "temp/wav_chunk_cut.wav", 0x1000, NULL, 0, data_cut, sizeof ( data_cut ) );
+    st_WAV_SIMPLE_HEADER *sh = open_header ( "temp/wav_chunk_cut.wav", &h, &d, &hp, &err );
+    CHECK ( sh && err == WAV_OK && sh->data_size == 0x1000, "truncated data chunk accepted as before (size from the header)" );
+    wav_simple_header_destroy ( sh );
+    if ( hp ) generic_driver_close ( hp );
+}
+
+
 int main ( void ) {
     memory_driver_init ();
 
@@ -331,6 +394,8 @@ int main ( void ) {
         if ( f ) fclose ( f );
         CHECK ( ok, "written WAV keeps the plain PCM header (44 B, tag 1, fmt 16 B)" );
     }
+
+    test_chunk_sizes ();
 
     free ( ref );
     free ( v );

@@ -112,6 +112,9 @@ en_WAV_ANALYZER_ERROR wav_leader_detect (
      * Kvantizační podlaha: pro rychlé signály (málo vzorků na
      * půl-periodu) je kvantizační chyba ±1 vzorek dominantní.
      * Podlaha zajistí, že max_diff nebude menší než 1 vzorek.
+     * Při vysoké frekvenci (přesné pulzy z emulátoru, 17 721 600 Hz)
+     * je podlaha zanedbatelná a rozhoduje relativní tolerance; spodní
+     * mez v us není potřeba (přesné pulzy kvantizační chybu nemají).
      * Asymetrické pulzy Intercopy 2800/3200 Bd při 44100 Hz ale
      * nezvládne (půlvlny 3-6 vzorků, odchylka nad 0,4 x průměr): pro
      * ně je wav_leader_detect_period().

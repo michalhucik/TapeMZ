@@ -1,7 +1,7 @@
 /**
  * @file   wav_analyzer.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.14.0
+ * @version 1.15.0
  * @brief  Implementace hlavního API knihovny wav_analyzer.
  *
  * Orchestruje všechny vrstvy analyzéru:
@@ -188,6 +188,10 @@ static const uint8_t g_slow_delay[2][5] = {
  * se tu vybere podle frekvence WAV. Převzorkovaná nahrávka (zavaděč pro jinou
  * frekvenci, než má WAV) může dát -1, nebo i jinou úroveň: tabulky 44k a 48k
  * se překrývají (např. D0h = 44k úroveň 0 i 48k úroveň 1).
+ * Posloupnost pulzů, která nepochází z WAV (wav_analyzer_analyze_pulses(),
+ * např. 17 721 600 Hz), dostane tabulku 48 000 Hz; frekvenci, pro kterou
+ * zavaděč vznikl, z ní určit nejde. Úroveň je jen informace, dekódovaná data
+ * na ní nezávisí.
  *
  * @param loader_body Dekódované tělo zavaděče.
  * @param loader_size Velikost těla v bajtech.
@@ -227,6 +231,35 @@ static int fsl_speed_from_loader ( const uint8_t *loader_body, uint32_t loader_s
 #define WRITER_PERIOD_TOL_SAMPLES 1.5
 
 /**
+ * @brief Spodní mez tolerance průměrné periody tónu zapisovače (us).
+ *
+ * Při vysoké frekvenci (přesné pulzy z emulátoru) by 1,5 vzorku byly
+ * desítky ns, méně než odchylka časové základny emulátoru od taktů, ze
+ * kterých jsou konstanty (CTC0 1 108 405 Hz, CPU 3 546 895 Hz): při
+ * 17 721 600 Hz je takt o 0,073 % pomalejší (17 734 475 / 17 721 600),
+ * u nejdelší periody (Intercopy 600 Bd 964 us, TurboCopy S = 1031 tiků
+ * 930 us) asi 0,7 us. Mez 2 us to pokryje s rezervou a pod 750 kHz se
+ * neuplatní (1,5 vzorku je víc), WAV se proto posuzuje jako dřív.
+ * Nejmenší rozdíl period, které se rozlišují, je 18 us (Intercopy 2800
+ * a 3200 Bd).
+ */
+#define WRITER_PERIOD_TOL_MIN_US 2.0
+
+
+/**
+ * @brief Tolerance průměrné periody tónu zapisovače v us pro danou frekvenci.
+ *
+ * WRITER_PERIOD_TOL_SAMPLES vzorků, nejméně WRITER_PERIOD_TOL_MIN_US.
+ *
+ * @param sample_rate Vzorkovací frekvence (Hz, > 0).
+ * @return Tolerance v us.
+ */
+static double writer_period_tol_us ( uint32_t sample_rate ) {
+    double tol_us = WRITER_PERIOD_TOL_SAMPLES * 1e6 / ( double ) sample_rate;
+    return ( tol_us < WRITER_PERIOD_TOL_MIN_US ) ? WRITER_PERIOD_TOL_MIN_US : tol_us;
+}
+
+/**
  * @brief Intercopy V10.2: čtecí bod rp a perioda SHORT v T-stavech podle rychlosti.
  *
  * Zdroj: disassembly Intercopy 10.2 a záznamy hran v emulátoru (rp 167/77/32/22/17,
@@ -244,7 +277,7 @@ static const struct { uint16_t bd; uint8_t rp; uint16_t short_t; } g_ic_speed[] 
  * (TC_TONE_PRODUCT), S = 71 + floor(480·b/a). Z počtu pulzů se odhadne S
  * a vybere poměr (a, b z 1..9, 1/2 <= a/b <= 3, základní tvar) s nejbližším S.
  * Přijme se, když S sedí do TC_S_TOL a průměrná perioda tónu na S tiků
- * v rámci WRITER_PERIOD_TOL_SAMPLES vzorku.
+ * v rámci writer_period_tol_us() (1,5 vzorku, nejméně 2 us).
  *
  * @param pulses Počet pulzů tónu (pulz = 2 půlvlny).
  * @param half_us Průměrná půlvlna tónu (us).
@@ -270,8 +303,7 @@ static int tc_ratio_from_tone ( uint32_t pulses, double half_us, uint32_t sample
         }
     }
     if ( best > TC_S_TOL ) return 0;
-    double tol_us = WRITER_PERIOD_TOL_SAMPLES * 1e6 / ( double ) sample_rate;
-    if ( fabs ( 2.0 * half_us - bs * TC_TICK_US ) > tol_us ) return 0;
+    if ( fabs ( 2.0 * half_us - bs * TC_TICK_US ) > writer_period_tol_us ( sample_rate ) ) return 0;
     *out_a = ( uint8_t ) ba;
     *out_b = ( uint8_t ) bb;
     return 1;
@@ -318,7 +350,7 @@ static uint32_t tone_pulses ( const st_WAV_PULSE_SEQUENCE *seq, const st_WAV_LEA
 static uint16_t ic_normal_bd_from_tone ( uint32_t pulses, double half_us, uint32_t sample_rate ) {
     if ( sample_rate == 0 || fabs ( pulses / IC_TONE_HDR - 1.0 ) > IC_TONE_TOL ) return 0;
     /* nejbližší perioda SHORT (2800 a 3200 Bd se liší jen o 18 us), pak tolerance */
-    double tol_us = WRITER_PERIOD_TOL_SAMPLES * 1e6 / ( double ) sample_rate;
+    double tol_us = writer_period_tol_us ( sample_rate );
     double best = 1e9;
     uint16_t bd = 0;
     for ( size_t i = 0; i < sizeof ( g_ic_speed ) / sizeof ( g_ic_speed[0] ); i++ ) {
@@ -1318,7 +1350,12 @@ static en_WAV_ANALYZER_ERROR process_leader (
  * @param[out] out_data Výstupní bitová data (alokována na heapu).
  * @param[out] out_data_size Velikost výstupních dat v bajtech.
  * @param[out] out_used_bits_last Použité bity v posledním bajtu (1-8).
- * @return WAV_ANALYZER_OK při úspěchu, WAV_ANALYZER_ERROR_ALLOC při chybě.
+ * @return WAV_ANALYZER_OK při úspěchu, WAV_ANALYZER_ERROR_ALLOC při chybě
+ *         alokace, WAV_ANALYZER_ERROR_BUFFER_OVERFLOW pro úsek nad 2^35
+ *         vzorků (bajty bloku přes uint32; *out_data pak NULL).
+ *
+ * @note Paměť je úměrná počtu vzorků (1 bit na vzorek), při 17 721 600 Hz
+ *       asi 2,2 MB na sekundu úseku.
  *
  * @post Při úspěchu *out_data ukazuje na alokovaný buffer.
  *       Volající musí uvolnit přes free().
@@ -1345,6 +1382,18 @@ static en_WAV_ANALYZER_ERROR pulses_to_direct_recording (
         *out_data_size = 0;
         *out_used_bits_last = 8;
         return WAV_ANALYZER_OK;
+    }
+
+    /*
+     * 1 bit na vzorek: při vysoké frekvenci (pulzy z emulátoru, 17 721 600 Hz)
+     * úsek nad 2^35 vzorků (asi 32 min) nevejde do uint32 bajtů bloku.
+     * Dřív se počet bajtů tiše zkrátil a zápis bitů vyšel mimo buffer.
+     */
+    if ( ( total_samples + 7 ) / 8 > UINT32_MAX ) {
+        *out_data = NULL;
+        *out_data_size = 0;
+        *out_used_bits_last = 8;
+        return WAV_ANALYZER_ERROR_BUFFER_OVERFLOW;
     }
 
     /* alokace bufferu */
@@ -1577,70 +1626,39 @@ static en_WAV_ANALYZER_ERROR collect_gaps (
 }
 
 
-en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
-    st_HANDLER *h,
+/**
+ * @brief Analyzuje posloupnost pulzů: detekce leaderů, klasifikace, dekódování, surové bloky.
+ *
+ * Společná část wav_analyzer_analyze() a wav_analyzer_analyze_pulses() (kroky
+ * od statistik pulzů dál). Doplní do výsledku total_pulses, pulse_stats,
+ * leaders, files a raw_blocks; sample_rate a wav_duration_sec nastavuje volající.
+ *
+ * @param seq Posloupnost pulzů (sample_rate > 0, pulzy s kladnou délkou). Nemění se.
+ * @param config Konfigurace analyzéru.
+ * @param out_result Výsledek, který volající vynuloval (memset 0) a případně
+ *        doplnil sample_rate a wav_duration_sec.
+ * @return WAV_ANALYZER_OK, nebo chyba detekce leaderů (WAV_ANALYZER_ERROR_ALLOC).
+ *         Chyby dekódování jednotlivých záznamů nejsou chybou analýzy.
+ *
+ * @post Při chybě může výsledek obsahovat jen total_pulses a pulse_stats,
+ *       nic alokovaného; wav_analyzer_result_destroy() je i tak bezpečné.
+ * @note Indexy pulzů ve výsledku (leader.start_index, header_leader_pulse,
+ *       consumed_until_pulse, raw_blocks) se vztahují k @p seq.
+ */
+static en_WAV_ANALYZER_ERROR analyze_pulse_sequence (
+    const st_WAV_PULSE_SEQUENCE *seq,
     const st_WAV_ANALYZER_CONFIG *config,
     st_WAV_ANALYZER_RESULT *out_result
 ) {
-    if ( !h || !config || !out_result ) {
-        return WAV_ANALYZER_ERROR_INVALID_PARAM;
-    }
+    en_WAV_ANALYZER_ERROR err;
 
-    memset ( out_result, 0, sizeof ( *out_result ) );
-
-    /* === 1. Parsování WAV hlavičky === */
-    en_WAV_ERROR wav_err;
-    st_WAV_SIMPLE_HEADER *sh = wav_simple_header_new_from_handler ( h, &wav_err );
-    if ( !sh ) {
-        /* konkrétní důvod z knihovny wav (dřív se zahodil) */
-        fprintf ( stderr, "WAV header: %s\n", wav_error_string ( wav_err ) );
-        return WAV_ANALYZER_ERROR_WAV_FORMAT;
-    }
-
-    out_result->sample_rate = sh->sample_rate;
-    out_result->wav_duration_sec = sh->count_sec;
-
-    if ( config->verbose ) {
-        fprintf ( stderr, "WAV: %u Hz, %u-bit, %u ch, %.2f sec, %u samples\n",
-                  sh->sample_rate, sh->bits_per_sample,
-                  sh->channels, sh->count_sec, sh->blocks );
-    }
-
-    /* === 2. Preprocessing === */
-    double *samples = NULL;
-    uint32_t sample_count = 0;
-
-    en_WAV_ANALYZER_ERROR err = wav_preprocess_run ( h, sh, config, &samples, &sample_count );
-    wav_simple_header_destroy ( sh );
-
-    if ( err != WAV_ANALYZER_OK ) {
-        return err;
-    }
-
-    if ( config->verbose ) {
-        fprintf ( stderr, "Preprocessing done: %u samples\n", sample_count );
-    }
-
-    /* === 3. Extrakce pulzů === */
-    st_WAV_PULSE_SEQUENCE pulse_seq;
-    memset ( &pulse_seq, 0, sizeof ( pulse_seq ) );
-
-    err = wav_pulse_extract ( samples, sample_count, out_result->sample_rate,
-                              config, &pulse_seq );
-    free ( samples );
-
-    if ( err != WAV_ANALYZER_OK ) {
-        return err;
-    }
-
-    out_result->total_pulses = pulse_seq.count;
+    out_result->total_pulses = seq->count;
 
     /* výpočet statistik pulzů */
-    wav_pulse_stats_compute ( &pulse_seq, &out_result->pulse_stats );
+    wav_pulse_stats_compute ( seq, &out_result->pulse_stats );
 
     if ( config->verbose ) {
-        fprintf ( stderr, "Pulse extraction done: %u pulses\n", pulse_seq.count );
-        if ( pulse_seq.count > 0 ) {
+        if ( seq->count > 0 ) {
             fprintf ( stderr, "Pulse stats: avg=%.1f us, stddev=%.1f us, min=%.1f us, max=%.1f us\n",
                       out_result->pulse_stats.avg_us,
                       out_result->pulse_stats.stddev_us,
@@ -1650,10 +1668,9 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
     }
 
     /* === 4. Detekce leader tónů === */
-    err = wav_leader_find_all ( &pulse_seq, config->min_leader_pulses,
+    err = wav_leader_find_all ( seq, config->min_leader_pulses,
                                 config->tolerance, &out_result->leaders );
     if ( err != WAV_ANALYZER_OK ) {
-        wav_pulse_sequence_destroy ( &pulse_seq );
         return err;
     }
 
@@ -1675,7 +1692,7 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
     {
         uint32_t cpmtape_search = 0;
 
-        while ( cpmtape_search < pulse_seq.count ) {
+        while ( cpmtape_search < seq->count ) {
             st_MZF *mzf = NULL;
             st_WAV_DECODE_RESULT hdr_res, body_res;
             memset ( &hdr_res, 0, sizeof ( hdr_res ) );
@@ -1685,7 +1702,7 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
 
             st_WAV_BODY_RECOVERY cpm_rec = { config->recover_body, 0, 0, 0 };
             err = wav_decode_cpmtape_decode_mzf (
-                      &pulse_seq, cpmtape_search,
+                      seq, cpmtape_search,
                       &mzf, &hdr_res, &body_res, &consumed_until, &cinfo, &cpm_rec
                   );
 
@@ -1778,7 +1795,7 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
 
         uint32_t files_before = out_result->file_count;
         uint32_t leader_consumed = 0;
-        err = process_leader ( &pulse_seq, &out_result->leaders.leaders[i],
+        err = process_leader ( seq, &out_result->leaders.leaders[i],
                                config, out_result, &leader_consumed );
         if ( err != WAV_ANALYZER_OK ) {
             /* chyba při zpracování jednoho leaderu - pokračujeme s dalšími */
@@ -1819,8 +1836,8 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
         }
 
         /* skenujeme oblast za poslednim dekodovanym souborem */
-        if ( covered_end > 0 && covered_end < pulse_seq.count ) {
-            uint32_t uncov_pulses = pulse_seq.count - covered_end;
+        if ( covered_end > 0 && covered_end < seq->count ) {
+            uint32_t uncov_pulses = seq->count - covered_end;
 
             /* minimalne 50000 pulzu (cca 5 sec pri 200 us) = neprazdna oblast */
             if ( uncov_pulses >= 50000 ) {
@@ -1834,14 +1851,14 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
                 /* preskocime prvnich ~10000 pulzu (audio prefix, ticho) */
                 uint32_t skip = uncov_pulses > 20000 ? 10000 : 0;
                 hist_start += skip;
-                hist_count = ( hist_start + hist_count <= pulse_seq.count )
+                hist_count = ( hist_start + hist_count <= seq->count )
                              ? hist_count
-                             : pulse_seq.count - hist_start;
+                             : seq->count - hist_start;
 
                 st_WAV_HISTOGRAM uncov_hist;
                 memset ( &uncov_hist, 0, sizeof ( uncov_hist ) );
                 en_WAV_ANALYZER_ERROR herr = wav_histogram_analyze (
-                    &pulse_seq, hist_start, hist_count,
+                    seq, hist_start, hist_count,
                     config->histogram_bin_width, &uncov_hist
                 );
 
@@ -1858,8 +1875,8 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
 
                     /* najdeme zacatek FM signalu - prvni konzistentni pulz */
                     uint32_t fm_start = covered_end + skip;
-                    for ( uint32_t p = fm_start; p < pulse_seq.count; p++ ) {
-                        double dur = pulse_seq.pulses[p].duration_us;
+                    for ( uint32_t p = fm_start; p < seq->count; p++ ) {
+                        double dur = seq->pulses[p].duration_us;
                         if ( dur >= short_peak * 0.5 && dur <= short_peak * 3.0 ) {
                             fm_start = p;
                             break;
@@ -1879,7 +1896,7 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
                     }
 
                     uint32_t synth_consumed = 0;
-                    err = process_leader ( &pulse_seq, &synth_leader,
+                    err = process_leader ( seq, &synth_leader,
                                            config, out_result, &synth_consumed );
 
                     if ( err == WAV_ANALYZER_OK &&
@@ -1907,7 +1924,7 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
 
     /* === 7. Sběr neidentifikovaných bloků (raw blocks) === */
     if ( config->keep_unknown ) {
-        err = collect_gaps ( out_result, &pulse_seq, config );
+        err = collect_gaps ( out_result, seq, config );
         if ( err != WAV_ANALYZER_OK && config->verbose ) {
             fprintf ( stderr, "Warning: raw block collection failed: %s\n",
                       wav_analyzer_error_string ( err ) );
@@ -1921,17 +1938,239 @@ en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
         st_WAV_ANALYZER_FILE_RESULT *f = &out_result->files[i];
         uint32_t start_idx = f->header_leader_pulse;
         uint32_t end_idx = f->consumed_until_pulse;
-        f->start_time_sec = pulse_index_to_sec ( &pulse_seq, start_idx );
+        f->start_time_sec = pulse_index_to_sec ( seq, start_idx );
         if ( end_idx > start_idx ) {
-            double end_time = pulse_index_to_sec ( &pulse_seq, end_idx );
+            double end_time = pulse_index_to_sec ( seq, end_idx );
             f->duration_sec = end_time - f->start_time_sec;
         } else {
             f->duration_sec = 0.0;
         }
     }
 
-    wav_pulse_sequence_destroy ( &pulse_seq );
     return WAV_ANALYZER_OK;
+}
+
+
+en_WAV_ANALYZER_ERROR wav_analyzer_analyze (
+    st_HANDLER *h,
+    const st_WAV_ANALYZER_CONFIG *config,
+    st_WAV_ANALYZER_RESULT *out_result
+) {
+    if ( !h || !config || !out_result ) {
+        return WAV_ANALYZER_ERROR_INVALID_PARAM;
+    }
+
+    memset ( out_result, 0, sizeof ( *out_result ) );
+
+    /* === 1. Parsování WAV hlavičky === */
+    en_WAV_ERROR wav_err;
+    st_WAV_SIMPLE_HEADER *sh = wav_simple_header_new_from_handler ( h, &wav_err );
+    if ( !sh ) {
+        /* konkrétní důvod z knihovny wav (dřív se zahodil) */
+        fprintf ( stderr, "WAV header: %s\n", wav_error_string ( wav_err ) );
+        return WAV_ANALYZER_ERROR_WAV_FORMAT;
+    }
+
+    out_result->sample_rate = sh->sample_rate;
+    out_result->wav_duration_sec = sh->count_sec;
+
+    if ( config->verbose ) {
+        fprintf ( stderr, "WAV: %u Hz, %u-bit, %u ch, %.2f sec, %u samples\n",
+                  sh->sample_rate, sh->bits_per_sample,
+                  sh->channels, sh->count_sec, sh->blocks );
+    }
+
+    /* === 2. Preprocessing === */
+    double *samples = NULL;
+    uint32_t sample_count = 0;
+
+    en_WAV_ANALYZER_ERROR err = wav_preprocess_run ( h, sh, config, &samples, &sample_count );
+    wav_simple_header_destroy ( sh );
+
+    if ( err != WAV_ANALYZER_OK ) {
+        return err;
+    }
+
+    if ( config->verbose ) {
+        fprintf ( stderr, "Preprocessing done: %u samples\n", sample_count );
+    }
+
+    /* === 3. Extrakce pulzů === */
+    st_WAV_PULSE_SEQUENCE pulse_seq;
+    memset ( &pulse_seq, 0, sizeof ( pulse_seq ) );
+
+    err = wav_pulse_extract ( samples, sample_count, out_result->sample_rate,
+                              config, &pulse_seq );
+    free ( samples );
+
+    if ( err != WAV_ANALYZER_OK ) {
+        return err;
+    }
+
+    if ( config->verbose ) {
+        fprintf ( stderr, "Pulse extraction done: %u pulses\n", pulse_seq.count );
+    }
+
+    err = analyze_pulse_sequence ( &pulse_seq, config, out_result );
+    wav_pulse_sequence_destroy ( &pulse_seq );
+    return err;
+}
+
+
+/**
+ * @brief Zjistí, zda má pulz použitelnou délku (konečné kladné duration_us).
+ * @param p Pulz.
+ * @return 1 = délka je kladná a konečná, 0 = nulová, záporná, NaN nebo nekonečno.
+ */
+static int pulse_has_duration ( const st_WAV_PULSE *p ) {
+    return p->duration_us > 0.0 && isfinite ( p->duration_us );
+}
+
+
+/**
+ * @brief Nejvyšší počet vzorků pulzu omezeného na WAV_ANALYZER_PULSE_MAX_US.
+ * @param sample_rate Vzorkovací frekvence (Hz, > 0).
+ * @return round ( WAV_ANALYZER_PULSE_MAX_US * sample_rate / 1e6 ), nejvýš UINT32_MAX.
+ */
+static uint32_t pulse_max_samples ( uint32_t sample_rate ) {
+    double s = round ( WAV_ANALYZER_PULSE_MAX_US * ( double ) sample_rate / 1000000.0 );
+    return ( s >= ( double ) UINT32_MAX ) ? UINT32_MAX : ( uint32_t ) s;
+}
+
+
+/**
+ * @brief Omezí délku pulzu na WAV_ANALYZER_PULSE_MAX_US (us i vzorky).
+ * @param p Pulz s použitelnou délkou (pulse_has_duration()); mění se na místě.
+ * @param max_samples Výsledek pulse_max_samples() pro frekvenci posloupnosti.
+ */
+static void pulse_clamp ( st_WAV_PULSE *p, uint32_t max_samples ) {
+    if ( p->duration_us > WAV_ANALYZER_PULSE_MAX_US ) {
+        p->duration_us = WAV_ANALYZER_PULSE_MAX_US;
+        if ( p->duration_samples > max_samples ) p->duration_samples = max_samples;
+    }
+}
+
+
+/**
+ * @brief Připraví posloupnost pro analýzu: vynechá pulzy bez použitelné délky, omezí příliš dlouhé.
+ *
+ * Pulz s nulovou (zápornou, NaN, nekonečnou) délkou nenese hranu, ve
+ * skutečnosti se úroveň nezměnila. Vynechá se a pulz za ním, který má
+ * stejnou úroveň jako poslední ponechaný pulz, se k němu přičte (délka v us
+ * i ve vzorcích, vzorky se saturují na UINT32_MAX). Pulz delší než
+ * WAV_ANALYZER_PULSE_MAX_US (i vzniklý sloučením) se zkrátí na tuto mez
+ * (duration_us, duration_samples nejvýš pulse_max_samples()); další vrstvy
+ * proto nikdy nedostanou nekonečno ani délku, která by přetekla převody na
+ * celá čísla. Bez takových pulzů se nic nekopíruje: @p out pak sdílí pole
+ * pulzů se vstupem.
+ *
+ * @param in Vstupní posloupnost (count > 0 => pulses != NULL). Nemění se.
+ * @param[out] out Posloupnost pro analýzu (sample_rate jako vstup).
+ * @param[out] out_copied 1 = out->pulses je nová alokace, kterou volající
+ *             uvolní free(); 0 = out->pulses ukazuje do vstupu (neuvolňovat).
+ * @return WAV_ANALYZER_OK, nebo WAV_ANALYZER_ERROR_ALLOC (out je pak
+ *         prázdný a *out_copied 0).
+ *
+ * @post Každý pulz v @p out má 0 < duration_us <= WAV_ANALYZER_PULSE_MAX_US.
+ * @note Indexy pulzů v @p out se po vynechání posunou proti vstupu. Součet
+ *       délek v us je součet kladných délek vstupu, zmenšený o zkrácení nad
+ *       mez (vynechané záporné délky se nepočítají).
+ */
+static en_WAV_ANALYZER_ERROR pulse_sequence_prepare (
+    const st_WAV_PULSE_SEQUENCE *in,
+    st_WAV_PULSE_SEQUENCE *out,
+    int *out_copied
+) {
+    *out = *in;
+    *out_copied = 0;
+
+    /* kopie je potřeba, jen když je co vynechat nebo zkrátit */
+    uint32_t first_bad = 0;
+    while ( first_bad < in->count && pulse_has_duration ( &in->pulses[first_bad] )
+            && in->pulses[first_bad].duration_us <= WAV_ANALYZER_PULSE_MAX_US ) {
+        first_bad++;
+    }
+    if ( first_bad == in->count ) return WAV_ANALYZER_OK;
+
+    /* velikost pole bez přetečení size_t (32bitová platforma) */
+    size_t bytes = ( size_t ) in->count * sizeof ( st_WAV_PULSE );
+    st_WAV_PULSE *buf = ( bytes / sizeof ( st_WAV_PULSE ) == in->count ) ? ( st_WAV_PULSE* ) malloc ( bytes ) : NULL;
+    if ( !buf ) {
+        out->pulses = NULL;
+        out->count = out->capacity = 0;
+        return WAV_ANALYZER_ERROR_ALLOC;
+    }
+
+    uint32_t max_samples = pulse_max_samples ( in->sample_rate );
+    uint32_t n = first_bad;
+    memcpy ( buf, in->pulses, ( size_t ) first_bad * sizeof ( st_WAV_PULSE ) );
+    int skipped = 0;   /* od posledního ponechaného pulzu se něco vynechalo */
+    for ( uint32_t i = first_bad; i < in->count; i++ ) {
+        const st_WAV_PULSE *p = &in->pulses[i];
+        if ( !pulse_has_duration ( p ) ) {
+            skipped = 1;
+            continue;
+        }
+        if ( skipped && n > 0 && buf[n - 1].level == p->level ) {
+            /*
+             * vynechaný pulz nebyl hrana: sloučit se stejnou úrovní před ním;
+             * obě délky jsou nejvýš mez, součet je konečný a pak se omezí
+             */
+            buf[n - 1].duration_us += ( p->duration_us > WAV_ANALYZER_PULSE_MAX_US ) ? WAV_ANALYZER_PULSE_MAX_US
+                                      : p->duration_us;
+            uint64_t s = ( uint64_t ) buf[n - 1].duration_samples + p->duration_samples;
+            buf[n - 1].duration_samples = ( s > UINT32_MAX ) ? UINT32_MAX : ( uint32_t ) s;
+            pulse_clamp ( &buf[n - 1], max_samples );
+        } else {
+            buf[n] = *p;
+            pulse_clamp ( &buf[n], max_samples );
+            n++;
+        }
+        skipped = 0;
+    }
+
+    out->pulses = buf;
+    out->count = n;
+    out->capacity = in->count;
+    *out_copied = 1;
+    return WAV_ANALYZER_OK;
+}
+
+
+en_WAV_ANALYZER_ERROR wav_analyzer_analyze_pulses (
+    const st_WAV_PULSE_SEQUENCE *seq,
+    const st_WAV_ANALYZER_CONFIG *config,
+    st_WAV_ANALYZER_RESULT *result
+) {
+    if ( !result ) return WAV_ANALYZER_ERROR_INVALID_PARAM;
+    memset ( result, 0, sizeof ( *result ) );
+    if ( !seq || !config || seq->sample_rate == 0 || ( seq->count > 0 && !seq->pulses ) ) {
+        return WAV_ANALYZER_ERROR_INVALID_PARAM;
+    }
+
+    st_WAV_PULSE_SEQUENCE work;
+    int copied = 0;
+    en_WAV_ANALYZER_ERROR err = pulse_sequence_prepare ( seq, &work, &copied );
+    if ( err != WAV_ANALYZER_OK ) return err;
+
+    result->sample_rate = work.sample_rate;
+    double total_us = 0.0;
+    for ( uint32_t i = 0; i < work.count; i++ ) total_us += work.pulses[i].duration_us;
+    result->wav_duration_sec = total_us / 1000000.0;
+
+    if ( config->verbose ) {
+        fprintf ( stderr, "Pulse sequence: %u Hz, %.2f sec, %u pulses (input %u, zero-length pulses removed)\n",
+                  work.sample_rate, result->wav_duration_sec, work.count, seq->count );
+    }
+
+    err = analyze_pulse_sequence ( &work, config, result );
+    if ( copied ) free ( work.pulses );
+    if ( err != WAV_ANALYZER_OK ) {
+        /* kontrakt: při chybě je výsledek celý vynulovaný (i sample_rate, statistiky) */
+        wav_analyzer_result_destroy ( result );
+        memset ( result, 0, sizeof ( *result ) );
+    }
+    return err;
 }
 
 

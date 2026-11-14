@@ -1,7 +1,7 @@
 /**
  * @file   tmz_player.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.5.0
+ * @version 1.6.0
  * @brief  Implementace TMZ playeru - generovani CMT audio streamu z TMZ/TZX bloku.
  *
  * Player prehrava jednotlive TMZ/TZX bloky na CMT audio streamy pomoci
@@ -301,7 +301,7 @@ st_CMT_STREAM* tmz_player_play_mz_standard ( const st_TZX_BLOCK *block,
     if ( !std_data ) {
         g_player_error_cb ( __func__, __LINE__, "Failed to parse MZ Standard Data block\n" );
         free ( data_copy );
-        *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
+        *err = TMZ_PLAYER_ERROR_UNSUPPORTED;   /* neplatný blok: trvalá chyba */
         return NULL;
     }
 
@@ -661,7 +661,7 @@ st_CMT_STREAM* tmz_player_play_mz_turbo ( const st_TZX_BLOCK *block,
     if ( !turbo_data ) {
         g_player_error_cb ( __func__, __LINE__, "Failed to parse MZ Turbo Data block\n" );
         free ( data_copy );
-        *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
+        *err = TMZ_PLAYER_ERROR_UNSUPPORTED;   /* neplatný blok: trvalá chyba */
         return NULL;
     }
 
@@ -864,6 +864,51 @@ st_CMT_STREAM* tmz_player_play_mz_file ( const st_TZX_BLOCK *block, const st_TMZ
         *err = TMZ_PLAYER_ERROR_ALLOC;
         return NULL;
     }
+    /*
+     * Mez celého bloku předem (před alokací vstreamu): součet horních
+     * odhadů délky přehratelných částí <= CMT_VSTREAM_MAX_BLOCK_SECONDS
+     * a součet pulzů FM a bitů MANCHESTER <= TMZ_PLAYER_MAX_BLOCK_PULSES.
+     * Délka v µs: odhad části <= 3600 s x timebase, převod dělením (bez přetečení).
+     */
+    {
+        uint64_t block_us = 0, block_pulses = 0;
+        for ( uint8_t i = 0; i < mf.part_count; i++ ) {
+            const st_TMZ_PART *pt = &mf.parts[i];
+            if ( pt->family != TMZ_FAMILY_FM && pt->family != TMZ_FAMILY_MANCHESTER ) continue;
+            uint32_t size = 0;
+            en_TMZ_PART_ERROR pe = TMZ_PART_OK;
+            const uint8_t *data = tmz_mzfile_part_data ( &mf, pt, &size, &pe );
+            ( void ) data;
+            st_TMZ_PART_COMMON c;
+            uint64_t n = 0, units = 0;
+            uint32_t part_tb = 0;
+            if ( pt->family == TMZ_FAMILY_MANCHESTER ) {
+                if ( pe == TMZ_PART_OK ) pe = tmz_part_manchester_decode ( pt->tlv, pt->tlv_length, tb, mp, &c );
+                if ( pe != TMZ_PART_OK || mzcmt_manch_part_bounds ( mp, size, &n, &units ) != EXIT_SUCCESS ) continue;
+                part_tb = mp->timebase;
+            } else {
+                if ( pe == TMZ_PART_OK ) pe = tmz_part_fm_decode ( pt->tlv, pt->tlv_length, tb, p, &c );
+                if ( pe != TMZ_PART_OK || mzcmt_fm_part_bounds ( p, size, &n, &units ) != EXIT_SUCCESS ) continue;
+                part_tb = p->timebase;
+            }
+            /* neplatnou část přeskočí i hlavní průchod; počítají se jen přehratelné */
+            block_pulses += n;
+            block_us += units / part_tb * 1000000u + ( units % part_tb ) * 1000000u / part_tb;
+        }
+        if ( block_pulses > TMZ_PLAYER_MAX_BLOCK_PULSES
+             || block_us > ( uint64_t ) CMT_VSTREAM_MAX_BLOCK_SECONDS * 1000000u ) {
+            g_player_error_cb ( __func__, __LINE__, "MZ File block: signal exceeds the block limits "
+                                "(%llu pulses, %llu s; at most %u pulses, %u s)\n",
+                                ( unsigned long long ) block_pulses, ( unsigned long long ) ( block_us / 1000000u ),
+                                TMZ_PLAYER_MAX_BLOCK_PULSES, CMT_VSTREAM_MAX_BLOCK_SECONDS );
+            free ( p );
+            free ( mp );
+            tmz_mzfile_free ( &mf );
+            *err = TMZ_PLAYER_ERROR_UNSUPPORTED;
+            return NULL;
+        }
+    }
+
     st_CMT_VSTREAM *vs = NULL;
     int played = 0;
     for ( uint8_t i = 0; i < mf.part_count; i++ ) {
@@ -884,6 +929,11 @@ st_CMT_STREAM* tmz_player_play_mz_file ( const st_TZX_BLOCK *block, const st_TMZ
                 g_player_error_cb ( __func__, __LINE__, "Part %u: %s\n", i, tmz_part_error_string ( pe ) );
                 continue;
             }
+            if ( mzcmt_manch_check_size ( mp, size ) != EXIT_SUCCESS ) {
+                /* signál mimo meze knihovny (počet bitů, délka): neplatná část */
+                g_player_error_cb ( __func__, __LINE__, "Part %u: signal exceeds the generator limits\n", i );
+                continue;
+            }
             if ( !vs ) vs = cmt_vstream_new ( rate, CMT_VSTREAM_BYTELENGTH8, mzcmt_manch_first_level ( mp, data, size ),
                                               CMT_STREAM_POLARITY_NORMAL );
             if ( !vs || mzcmt_manch_append_vstream ( vs, mp, data, size ) != EXIT_SUCCESS ) {
@@ -901,6 +951,11 @@ st_CMT_STREAM* tmz_player_play_mz_file ( const st_TZX_BLOCK *block, const st_TMZ
         if ( pe == TMZ_PART_OK ) pe = tmz_part_fm_decode ( pt->tlv, pt->tlv_length, tb, p, &c );
         if ( pe != TMZ_PART_OK ) {
             g_player_error_cb ( __func__, __LINE__, "Part %u: %s\n", i, tmz_part_error_string ( pe ) );
+            continue;
+        }
+        if ( mzcmt_fm_check_size ( p, size ) != EXIT_SUCCESS ) {
+            /* signál mimo meze knihovny (počet pulzů, délka): neplatná část */
+            g_player_error_cb ( __func__, __LINE__, "Part %u: signal exceeds the generator limits\n", i );
             continue;
         }
         /* čtecí bod po převodu na vzorky: pod 0 nečitelné = chyba bloku, pod 10 µs varování */
@@ -1061,9 +1116,12 @@ static int mz_block_ends_with_pause ( const st_TZX_BLOCK *block, const st_TMZ_PL
  * @param block Blok.
  * @param config Konfigurace playeru.
  * @param[in,out] level Aktuální úroveň signálu (0|1|TZX_LEVEL_AFTER_PAUSE).
- * @param[out] err TMZ_PLAYER_OK; Pause 0 vrátí NULL s OK. U bloků TZX chyba
- *        parseru nebo generátoru = TMZ_PLAYER_ERROR_STREAM_CREATE, selhání
- *        obalení streamu = TMZ_PLAYER_ERROR_ALLOC; jinak kód z tmz_player_play_block().
+ * @param[out] err TMZ_PLAYER_OK; Pause 0 vrátí NULL s OK. U bloků TZX blok,
+ *        který přehrát nejde (TZX_ERROR_UNSUPPORTED - např. CSW Z-RLE,
+ *        TZX_ERROR_INVALID_BLOCK - neplatná data) = TMZ_PLAYER_ERROR_UNSUPPORTED
+ *        (hlášení vypíše knihovna tzx, player nic dalšího), jiná chyba
+ *        generátoru = TMZ_PLAYER_ERROR_STREAM_CREATE, selhání obalení streamu
+ *        = TMZ_PLAYER_ERROR_ALLOC; jinak kód z tmz_player_play_block().
  * @return Nový stream (uvolnit cmt_stream_destroy()), nebo NULL.
  *
  * @pre block, config, level a err nesmí být NULL.
@@ -1079,9 +1137,13 @@ static st_CMT_STREAM* play_with_level ( const st_TZX_BLOCK *block, const st_TMZ_
                 *err = TMZ_PLAYER_OK;
                 return NULL;
             }
-            if ( tzx_err != TZX_ERROR_INVALID_BLOCK ) {   /* chybu struktury bloku hlásí už parser */
-                g_player_error_cb ( __func__, __LINE__, "TZX block 0x%02X: failed to generate audio\n", block->id );
+            if ( tzx_err == TZX_ERROR_UNSUPPORTED || tzx_err == TZX_ERROR_INVALID_BLOCK ) {
+                /* blok tak, jak je, přehrát nejde (Z-RLE, neplatná data): trvalá chyba bloku,
+                 * ne přechodná. Hlášení s důvodem už vypsala knihovna tzx. */
+                *err = TMZ_PLAYER_ERROR_UNSUPPORTED;
+                return NULL;
             }
+            g_player_error_cb ( __func__, __LINE__, "TZX block 0x%02X: failed to generate audio\n", block->id );
             *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
             return NULL;
         }
@@ -1109,16 +1171,19 @@ static st_CMT_STREAM* play_with_level ( const st_TZX_BLOCK *block, const st_TMZ_
  * vstreamu. Podporuje bloky: Standard Speed (0x10), Turbo Speed (0x11),
  * Pure Tone (0x12), Pulse Sequence (0x13), Pure Data (0x14),
  * Direct Recording (0x15), CSW Recording (0x18, jen komprese RLE; Z-RLE
- * = TMZ_PLAYER_ERROR_STREAM_CREATE) a Pause (0x20). Signál začíná nízko a první pulz
- * je vysoko, tedy s hranou (TZX_LEVEL_AFTER_PAUSE, jako ZX); úroveň mezi
- * bloky drží jen tmz_player_play_next().
+ * = TMZ_PLAYER_ERROR_UNSUPPORTED) a Pause (0x20). Vstupní úroveň je
+ * TZX_LEVEL_AFTER_PAUSE (signál nízko): u bloků 0x10-0x14 je proto první
+ * pulz vysoko, s hranou (jako ZX); vzorkované bloky 0x15 a 0x18 mají úrovně
+ * pulzů dané blokem (0x18: první pulz LOW), vstupní úroveň u nich platí jen
+ * pro pauzu bloku bez vzorků. Úroveň mezi bloky drží jen tmz_player_play_next().
  *
  * @param block TMZ blok s TZX audio ID.
  * @param config Konfigurace playeru.
  * @param err Vystupni chybovy kod (muze byt NULL): TMZ_PLAYER_OK (i Pause 0,
  *        kdy se vrátí NULL); TMZ_PLAYER_ERROR_NULL_INPUT;
- *        TMZ_PLAYER_ERROR_UNSUPPORTED (jiné ID); TMZ_PLAYER_ERROR_STREAM_CREATE;
- *        TMZ_PLAYER_ERROR_ALLOC.
+ *        TMZ_PLAYER_ERROR_UNSUPPORTED (jiné ID, blok, který přehrát nejde:
+ *        CSW Z-RLE, neplatná data); TMZ_PLAYER_ERROR_STREAM_CREATE (jiná chyba
+ *        generátoru); TMZ_PLAYER_ERROR_ALLOC.
  * @return Novy CMT stream, nebo NULL pri chybe / Pause 0.
  *
  * @pre block nesmi byt NULL.
@@ -1537,7 +1602,8 @@ static void handle_set_signal_level ( st_TMZ_PLAYER_STATE *state, const st_TZX_B
  * s TMZ_PLAYER_OK, nastaví state->stopped a last_played_block na blok
  * zastavení; další volání pokračuje za ním a stopped vynuluje.
  *
- * Ochrana proti nekonecne smycce: max 1 000 000 iteraci vnitrni smycky.
+ * Ochrana proti nekonecne smycce: TMZ_PLAYER_MAX_ITERATIONS iteraci
+ * vnitrni smycky (tmz_player_play_next_budget() s vlastnim rozpoctem).
  *
  * @param state Stav playeru.
  * @param err   Vystupni chybovy kod (muze byt NULL).
@@ -1548,23 +1614,27 @@ static void handle_set_signal_level ( st_TMZ_PLAYER_STATE *state, const st_TZX_B
  */
 st_CMT_STREAM* tmz_player_play_next ( st_TMZ_PLAYER_STATE *state,
                                        en_TMZ_PLAYER_ERROR *err ) {
+    uint32_t budget = TMZ_PLAYER_MAX_ITERATIONS;
+    return tmz_player_play_next_budget ( state, &budget, err );
+}
+
+
+st_CMT_STREAM* tmz_player_play_next_budget ( st_TMZ_PLAYER_STATE *state, uint32_t *budget,
+                                              en_TMZ_PLAYER_ERROR *err ) {
 
     en_TMZ_PLAYER_ERROR local_err = TMZ_PLAYER_OK;
     if ( !err ) err = &local_err;
 
-    if ( !state || !state->file ) {
+    if ( !state || !state->file || !budget ) {
         *err = TMZ_PLAYER_ERROR_NULL_INPUT;
         return NULL;
     }
 
     state->stopped = false;
 
-    /* ochrana proti nekonecne smycce */
-    uint32_t iterations = 0;
-    const uint32_t max_iterations = 1000000;
-
-    while ( !state->finished && iterations < max_iterations ) {
-        iterations++;
+    /* ochrana proti nekonecne smycce: kazda iterace stoji jednotku rozpoctu */
+    while ( !state->finished && *budget > 0 ) {
+        ( *budget )--;
 
         if ( state->current_block >= state->file->block_count ) {
             state->finished = true;
@@ -1658,10 +1728,9 @@ st_CMT_STREAM* tmz_player_play_next ( st_TMZ_PLAYER_STATE *state,
         }
     }
 
-    if ( iterations >= max_iterations ) {
+    if ( !state->finished ) {
         g_player_error_cb ( __func__, __LINE__,
-            "Maximum iteration count exceeded (%u) - possible infinite loop\n",
-            max_iterations );
+            "Iteration budget exhausted - possible infinite loop\n" );
         state->finished = true;
         *err = TMZ_PLAYER_ERROR_STREAM_CREATE;
         return NULL;

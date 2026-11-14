@@ -1,7 +1,7 @@
 /**
  * @file   wav_histogram.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.0.1
  * @brief  Vrstva 2b analyzéru - histogramová analýza délek pulzů.
  *
  * Poskytuje diagnostiku a automatické určení prahů z distribuce

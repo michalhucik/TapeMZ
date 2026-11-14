@@ -1,7 +1,7 @@
 /**
  * @file   tzx.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.3.0
+ * @version 1.4.0
  * @brief  Verejne API knihovny pro format TZX v1.20 - kazetovy archiv ZX Spectrum.
  *
  * Knihovna pro parsovani a generovani audio streamu ze vsech bloku TZX v1.20.
@@ -696,9 +696,14 @@ extern "C" {
      * MSb se prehraje prvni. Pauza za blokem začíná úrovní opačnou
      * k poslednímu vzorku (viz skupina).
      *
+     * Délka celého bloku (vzorky x T na vzorek a pauza, při cpu_clock
+     * z konfigurace) nesmí přesáhnout CMT_VSTREAM_MAX_BLOCK_SECONDS; ověří
+     * se předem, před alokací vstreamu.
+     *
      * @param block Naparsovany blok.
      * @param config Konfigurace generatoru.
-     * @param err Vystupni chybovy kod (muze byt NULL).
+     * @param err Vystupni chybovy kod (muze byt NULL): TZX_ERROR_UNSUPPORTED
+     *        pro blok delší než mez (s hlášením přes error callback).
      * @return Novy vstream, nebo NULL pri chybe.
      *
      * @post Volající uvolní vrácený vstream přes cmt_vstream_destroy().
@@ -726,17 +731,38 @@ extern "C" {
      * @param err Výstupní chybový kód (může být NULL): TZX_OK;
      *        TZX_ERROR_NULL_INPUT (block nebo config NULL, data NULL při
      *        data_length > 0); TZX_ERROR_UNSUPPORTED (komprese Z-RLE, hlášení
-     *        přes error callback); TZX_ERROR_INVALID_BLOCK (jiný typ komprese,
-     *        sample_rate 0, useknutá 32bitová délka, délka pulzu 0, data
-     *        kratší nebo delší než pulse_count pulzů; vše s hlášením přes error
-     *        callback); TZX_ERROR_ALLOC; TZX_ERROR_STREAM_CREATE (selhání
-     *        zápisu do vstreamu, také pulz delší než 0xFFFFFFFF výstupních
-     *        vzorků).
+     *        přes error callback; signál bloku včetně pauzy delší než
+     *        CMT_VSTREAM_MAX_BLOCK_SECONDS, ověřeno tzx_csw_recording_check()
+     *        před alokací); TZX_ERROR_INVALID_BLOCK (jiný typ komprese,
+     *        sample_rate 0 nebo nad 24 bitů (16 777 215), useknutá 32bitová
+     *        délka, délka pulzu 0, data kratší nebo delší než pulse_count
+     *        pulzů; vše s hlášením přes error callback); TZX_ERROR_ALLOC;
+     *        TZX_ERROR_STREAM_CREATE (selhání zápisu do vstreamu). Pulz
+     *        delší než jeden event vstreamu (2^32 výstupních vzorků) se zapíše
+     *        jako několik eventů (cmt_vstream_add_value_long()).
      * @return Nový vstream, nebo NULL při chybě.
      *
      * @post Volající uvolní vrácený vstream přes cmt_vstream_destroy().
      */
     extern st_CMT_VSTREAM* tzx_generate_csw_recording ( const st_TZX_CSW_RECORDING *block, const st_TZX_CONFIG *config, en_TZX_ERROR *err );
+
+    /**
+     * @brief Ověří blok 0x18 bez generování signálu: kompresi, frekvenci, data a mez délky bloku.
+     *
+     * Jeden průchod daty (dekódování délek pulzů, bez alokace). Délka celého
+     * bloku (součet pulzů a pauza, ve vzorcích záznamu) nesmí přesáhnout
+     * CMT_VSTREAM_MAX_BLOCK_SECONDS. tzx_generate_csw_recording() ji volá
+     * před alokací vstreamu; program, který chce o nepřehratelném bloku
+     * vědět předem (např. při otevření pásky), ji smí volat sám.
+     *
+     * @param block Naparsovaný blok (tzx_parse_csw_recording()).
+     * @return TZX_OK; TZX_ERROR_NULL_INPUT; TZX_ERROR_UNSUPPORTED (komprese
+     *         Z-RLE, signál delší než mez bloku); TZX_ERROR_INVALID_BLOCK
+     *         (jiný typ komprese, sample_rate 0 nebo nad 24 bitů, useknutá
+     *         32bitová délka, pulz 0, data kratší nebo delší než pulse_count
+     *         pulzů). Chyby se hlásí přes error callback.
+     */
+    extern en_TZX_ERROR tzx_csw_recording_check ( const st_TZX_CSW_RECORDING *block );
 
     /**
      * @brief Generuje vstream pauzy (ticha) od nízké úrovně (celá pauza nízko).
@@ -1160,7 +1186,7 @@ extern "C" {
 
 
     /** @brief Verze knihovny tzx. */
-#define TZX_VERSION "1.3.0"
+#define TZX_VERSION "1.4.0"
 
     /** @brief Verze formátu TZX jako řetězec ("1.20"). */
 #define TZX_FORMAT_VERSION "1.20"

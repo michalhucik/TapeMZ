@@ -146,6 +146,7 @@ st_CMT_BITSTREAM* cmt_bitstream_new_from_vstream ( st_CMT_VSTREAM *vstream, uint
         double scan_min_limit = step / 2;
         while ( EXIT_SUCCESS == cmt_vstream_read_pulse ( vstream, &samples, &value ) ) {
 
+            if ( !samples ) continue;   /* event s délkou 0 (cmt_vstream_add_value_long) */
             double d_samples = samples;
 
             while ( ( total_samples + d_samples ) >= next_scan ) {

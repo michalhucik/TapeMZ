@@ -1,7 +1,7 @@
 /**
  * @file   tzx.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.3.0
+ * @version 1.4.0
  * @brief  Implementace TZX knihovny - parsovani bloku a generovani CMT vstreamu.
  *
  * Implementuje parsovani vsech audio bloku TZX v1.20 (0x10-0x15, 0x18, 0x20)
@@ -286,9 +286,10 @@ static int tzx_add_pause_to_vstream ( st_CMT_VSTREAM *vs, uint16_t pause_ms, uin
         high = rate / 1000;
         if ( high == 0 ) high = 1;
         if ( high > total ) high = total;
-        if ( EXIT_FAILURE == cmt_vstream_add_value ( vs, 1, high ) ) return EXIT_FAILURE;
+        if ( EXIT_FAILURE == cmt_vstream_add_value_long ( vs, 1, high ) ) return EXIT_FAILURE;
     }
-    if ( total > high && EXIT_FAILURE == cmt_vstream_add_value ( vs, 0, total - high ) ) return EXIT_FAILURE;
+    /* pauza LOW splyne s předchozím během LOW: součet smí přesáhnout jeden event */
+    if ( total > high && EXIT_FAILURE == cmt_vstream_add_value_long ( vs, 0, total - high ) ) return EXIT_FAILURE;
     *level = TZX_LEVEL_AFTER_PAUSE;   /* signál nízko, další pulz vytvoří hranu (jako ZX) */
     return EXIT_SUCCESS;
 }
@@ -633,6 +634,19 @@ fail:
 static st_CMT_VSTREAM* gen_direct_recording ( const st_TZX_DIRECT_RECORDING *block, const st_TZX_CONFIG *config,
                                               uint8_t *level, en_TZX_ERROR *err ) {
 
+    /* mez celého bloku (CMT_VSTREAM_MAX_BLOCK_SECONDS) předem, v taktech CPU:
+     * bitů < 2^35, tstates <= 65535, pauza <= 65535 ms - bez přetečení */
+    {
+        uint64_t clk = config->cpu_clock ? config->cpu_clock : TZX_DEFAULT_CPU_CLOCK;
+        uint64_t bits = block->data_length ? ( uint64_t ) ( block->data_length - 1 ) * 8u + block->used_bits : 0;
+        uint64_t t = bits * block->tstates_per_sample + ( ( uint64_t ) block->pause_ms * clk + 999u ) / 1000u;
+        if ( t > ( uint64_t ) CMT_VSTREAM_MAX_BLOCK_SECONDS * clk ) {
+            g_tzx_error_cb ( __func__, __LINE__, "Block 0x15: signal longer than %u s\n", CMT_VSTREAM_MAX_BLOCK_SECONDS );
+            *err = TZX_ERROR_UNSUPPORTED;
+            return NULL;
+        }
+    }
+
     uint8_t lv = tzx_level_norm ( *level );   /* bez dat zůstane (pauza od úrovně volajícího) */
     /* vstream začíná úrovní prvního vzorku (jinak by vznikl prázdný první event) */
     int start = ( block->data_length > 0 ) ? ( ( block->data[0] & 0x80 ) ? 1 : 0 ) : ( lv == 1 );
@@ -645,7 +659,7 @@ static st_CMT_VSTREAM* gen_direct_recording ( const st_TZX_DIRECT_RECORDING *blo
     if ( samples_per_bit == 0 ) samples_per_bit = 1;
 
     int current_level = -1;
-    uint32_t current_samples = 0;
+    uint64_t current_samples = 0;   /* dlouhý běh stejných vzorků smí přesáhnout 2^32 */
 
     for ( uint32_t i = 0; i < block->data_length; i++ ) {
         uint8_t byte = block->data[i];
@@ -659,7 +673,7 @@ static st_CMT_VSTREAM* gen_direct_recording ( const st_TZX_DIRECT_RECORDING *blo
             } else {
                 /* zapsat předchozí pulz */
                 if ( current_level >= 0 && current_samples > 0 ) {
-                    if ( EXIT_FAILURE == cmt_vstream_add_value ( vs, current_level, current_samples ) ) goto fail;
+                    if ( EXIT_FAILURE == cmt_vstream_add_value_long ( vs, current_level, current_samples ) ) goto fail;
                 }
                 current_level = bit_level;
                 current_samples = samples_per_bit;
@@ -671,7 +685,7 @@ static st_CMT_VSTREAM* gen_direct_recording ( const st_TZX_DIRECT_RECORDING *blo
 
     /* poslední pulz; další blok začne hranou (opak posledního vzorku) */
     if ( current_level >= 0 && current_samples > 0 ) {
-        if ( EXIT_FAILURE == cmt_vstream_add_value ( vs, current_level, current_samples ) ) goto fail;
+        if ( EXIT_FAILURE == cmt_vstream_add_value_long ( vs, current_level, current_samples ) ) goto fail;
         lv = (uint8_t) !current_level;
     }
 
@@ -706,9 +720,69 @@ static inline uint64_t tzx_csw_scale ( uint64_t pos, uint32_t src_rate, uint32_t
 }
 
 
+/* Kontrakt viz tzx.h (tzx_csw_recording_check). */
+en_TZX_ERROR tzx_csw_recording_check ( const st_TZX_CSW_RECORDING *block ) {
+    if ( !block ) return TZX_ERROR_NULL_INPUT;
+    if ( block->compression_type == TZX_CSW_COMPRESSION_ZRLE ) {
+        g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: Z-RLE compression is not supported\n" );
+        return TZX_ERROR_UNSUPPORTED;
+    }
+    if ( block->compression_type != TZX_CSW_COMPRESSION_RLE ) {
+        g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: unknown compression type 0x%02X\n", block->compression_type );
+        return TZX_ERROR_INVALID_BLOCK;
+    }
+    if ( block->sample_rate == 0 || block->sample_rate > 0xFFFFFFu ) {
+        /* v souboru je frekvence 24bitová; struktura od volajícího smí mít víc */
+        g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: sample rate %u outside 1-16777215\n", block->sample_rate );
+        return TZX_ERROR_INVALID_BLOCK;
+    }
+    if ( block->data_length > 0 && !block->data ) return TZX_ERROR_NULL_INPUT;
+
+    /* průchod daty: struktura a celková délka ve vzorcích záznamu
+     * (pulzů nejvýš 2^32 po nejvýš 2^32 vzorcích: součet se do 64 bitů vejde) */
+    const uint8_t *d = block->data;
+    uint32_t pos = 0;
+    uint64_t total = 0;
+    for ( uint32_t i = 0; i < block->pulse_count; i++ ) {
+        if ( pos >= block->data_length ) {
+            g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: data end after %u of %u pulses\n", i, block->pulse_count );
+            return TZX_ERROR_INVALID_BLOCK;
+        }
+        uint32_t len = d[pos++];
+        if ( len == 0 ) {
+            if ( block->data_length - pos < 4 ) {
+                g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: truncated 32-bit pulse length (pulse %u)\n", i );
+                return TZX_ERROR_INVALID_BLOCK;
+            }
+            len = read_le32 ( d + pos );
+            pos += 4;
+            if ( len == 0 ) {
+                g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: zero pulse length (pulse %u)\n", i );
+                return TZX_ERROR_INVALID_BLOCK;
+            }
+        }
+        total += len;
+    }
+    if ( pos != block->data_length ) {
+        g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: %u data bytes after %u pulses\n", block->data_length - pos,
+                         block->pulse_count );
+        return TZX_ERROR_INVALID_BLOCK;
+    }
+    /* mez celého bloku včetně pauzy (zaokrouhlené nahoru na vzorky záznamu) */
+    total += ( ( uint64_t ) block->pause_ms * block->sample_rate + 999u ) / 1000u;
+    if ( total > ( uint64_t ) CMT_VSTREAM_MAX_BLOCK_SECONDS * block->sample_rate ) {
+        g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: signal longer than %u s\n", CMT_VSTREAM_MAX_BLOCK_SECONDS );
+        return TZX_ERROR_UNSUPPORTED;
+    }
+    return TZX_OK;
+}
+
+
 /**
  * @brief Generátor bloku 0x18 (komprese RLE) s úrovní signálu.
  *
+ * Strukturu dat a mez délky bloku ověří předem tzx_csw_recording_check(),
+ * ještě před alokací vstreamu.
  * První pulz LOW, úrovně se střídají; konce pulzů se převádějí na výstupní
  * frekvenci kumulativně (tzx_csw_scale), pulz má nejméně 1 výstupní vzorek.
  * Po posledním pulzu je aktuální úroveň jeho opakem (jako po 0x15), pak pauza.
@@ -722,22 +796,12 @@ static inline uint64_t tzx_csw_scale ( uint64_t pos, uint32_t src_rate, uint32_t
 static st_CMT_VSTREAM* gen_csw_recording ( const st_TZX_CSW_RECORDING *block, const st_TZX_CONFIG *config,
                                            uint8_t *level, en_TZX_ERROR *err ) {
 
-    if ( block->compression_type == TZX_CSW_COMPRESSION_ZRLE ) {
-        g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: Z-RLE compression is not supported\n" );
-        *err = TZX_ERROR_UNSUPPORTED;
+    /* struktura dat a mez bloku předem, před alokací vstreamu */
+    en_TZX_ERROR ce = tzx_csw_recording_check ( block );
+    if ( ce != TZX_OK ) {
+        *err = ce;
         return NULL;
     }
-    if ( block->compression_type != TZX_CSW_COMPRESSION_RLE ) {
-        g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: unknown compression type 0x%02X\n", block->compression_type );
-        *err = TZX_ERROR_INVALID_BLOCK;
-        return NULL;
-    }
-    if ( block->sample_rate == 0 ) {
-        g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: sample rate 0\n" );
-        *err = TZX_ERROR_INVALID_BLOCK;
-        return NULL;
-    }
-    if ( block->data_length > 0 && !block->data ) { *err = TZX_ERROR_NULL_INPUT; return NULL; }
 
     uint8_t lv = ( block->pulse_count > 0 ) ? 0 : tzx_level_norm ( *level );
     st_CMT_VSTREAM *vs = tzx_create_vstream ( config, lv == 1 );
@@ -771,11 +835,8 @@ static st_CMT_VSTREAM* gen_csw_recording ( const st_TZX_CSW_RECORDING *block, co
         src_end += len;
         uint64_t target = tzx_csw_scale ( src_end, block->sample_rate, rate );
         uint64_t n = ( target > emitted ) ? target - emitted : 1;
-        if ( n > UINT32_MAX ) {
-            g_tzx_error_cb ( __func__, __LINE__, "Block 0x18: pulse %u too long for the output stream\n", i );
-            goto fail;
-        }
-        if ( EXIT_FAILURE == cmt_vstream_add_value ( vs, lv, ( uint32_t ) n ) ) goto fail;
+        /* běh delší než jeden event vstreamu (2^32 vzorků, při 17 721 600 Hz asi 242 s) se rozdělí */
+        if ( EXIT_FAILURE == cmt_vstream_add_value_long ( vs, lv, n ) ) goto fail;
         emitted += n;
         lv ^= 1;
     }

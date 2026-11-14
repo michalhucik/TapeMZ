@@ -85,6 +85,12 @@ TMZ/TZX soubor (generic_driver)
 - Pause 0 a 0x2A zastaví pásku: `tmz_player_play_next()` vrátí NULL
   s `TMZ_PLAYER_OK` a `tmz_player_state_stopped()` vrátí true; další volání
   pokračuje za blokem zastavení.
+- Pojistka proti nekonečné smyčce řídicích bloků: jedno volání
+  `tmz_player_play_next()` nejvýš `TMZ_PLAYER_MAX_ITERATIONS` (1 000 000)
+  zpracovaných bloků. Volající, který player volá opakovaně (přeskakuje
+  bloky, které přehrát nejdou), použije `tmz_player_play_next_budget()`
+  s jedním rozpočtem pro celou posloupnost volání; vyčerpání = `finished`
+  a `TMZ_PLAYER_ERROR_STREAM_CREATE`.
 - `pause_ms` bloků v1.0 je ticho na nízké úrovni za signálem.
 
 ## Chybové kódy
@@ -102,8 +108,8 @@ Player vrací `en_TMZ_PLAYER_ERROR` (tmz_player.h):
 |-----|-------------|
 | TMZ_PLAYER_OK | úspěch, i u bloků bez zvuku (NULL stream) |
 | TMZ_PLAYER_ERROR_NULL_INPUT | parametr je NULL |
-| TMZ_PLAYER_ERROR_UNSUPPORTED | Generalized Data, neznámé ID, blok bez přehratelné části, blok, který nejde převést |
-| TMZ_PLAYER_ERROR_STREAM_CREATE | generátor nevytvořil stream |
+| TMZ_PLAYER_ERROR_UNSUPPORTED | Generalized Data, neznámé ID, blok bez přehratelné části (také části mimo meze generátoru), blok, který nejde převést, neplatný blok (parse 0x40 / 0x41, data bloku TZX), blok TZX, který knihovna tzx nepřehraje (CSW Z-RLE) - trvalá chyba bloku |
+| TMZ_PLAYER_ERROR_STREAM_CREATE | generátor nevytvořil stream z platného bloku (zápis do streamu) |
 | TMZ_PLAYER_ERROR_ALLOC | selhala alokace |
 | TMZ_PLAYER_ERROR_UNREADABLE | signál by po převodu na vzorky čtecí rutina nepřečetla (rezerva čtecího bodu pod 0, FSK/SLOW/DIRECT při nečitelné frekvenci) |
 

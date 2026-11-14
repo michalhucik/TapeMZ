@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_fm.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.1.1
+ * @version 1.2.0
  * @brief  Implementace obecného generátoru FM (viz mzcmt_fm.h).
  *
  * Pulz se vypouští až ve chvíli, kdy je známý druh následujícího pulzu
@@ -90,6 +90,11 @@ void mzcmt_fm_params_init ( st_MZCMT_FM_PARAMS *p ) {
 int mzcmt_fm_params_validate ( const st_MZCMT_FM_PARAMS *p ) {
     if ( !p || !p->timebase ) return EXIT_FAILURE;
     if ( !p->short_first || !p->short_second || !p->long_first || !p->long_second ) return EXIT_FAILURE;
+    const uint64_t max_half = ( uint64_t ) MZCMT_FM_MAX_HALF_SECONDS * p->timebase;
+    if ( p->short_first > max_half || p->short_second > max_half || p->long_first > max_half
+         || p->long_second > max_half ) return EXIT_FAILURE;
+    if ( p->tone > MZCMT_FM_MAX_TONE ) return EXIT_FAILURE;
+    if ( p->pause > ( uint64_t ) MZCMT_FM_MAX_PART_SECONDS * p->timebase ) return EXIT_FAILURE;
     if ( p->level > 1 || p->lsb_first > 1 || p->pause_level > 1 ) return EXIT_FAILURE;
     if ( p->checksum > MZCMT_FM_CHECKSUM_MZ_POPCOUNT16_BE ) return EXIT_FAILURE;
     if ( p->checksum_explicit && p->checksum != MZCMT_FM_CHECKSUM_MZ_POPCOUNT16_BE ) return EXIT_FAILURE;
@@ -98,13 +103,41 @@ int mzcmt_fm_params_validate ( const st_MZCMT_FM_PARAMS *p ) {
         const st_MZCMT_FM_CONTEXT *c = &p->context[i];
         if ( c->ctx >= MZCMT_FM_CTX_COUNT || c->kind > 1 ) return EXIT_FAILURE;
         if ( c->next > 1 && c->next != MZCMT_FM_NEXT_ANY ) return EXIT_FAILURE;
-        if ( !c->first || !c->second ) return EXIT_FAILURE;
+        if ( !c->first || !c->second || c->first > max_half || c->second > max_half ) return EXIT_FAILURE;
         for ( uint32_t j = 0; j < i; j++ ) {
             const st_MZCMT_FM_CONTEXT *d = &p->context[j];
             if ( d->ctx == c->ctx && d->kind == c->kind && d->next == c->next ) return EXIT_FAILURE;
         }
     }
     return EXIT_SUCCESS;
+}
+
+
+int mzcmt_fm_part_bounds ( const st_MZCMT_FM_PARAMS *p, uint32_t size, uint64_t *pulses_out, uint64_t *units_out ) {
+    if ( mzcmt_fm_params_validate ( p ) != EXIT_SUCCESS ) return EXIT_FAILURE;
+    uint64_t ck_len = ( p->checksum == MZCMT_FM_CHECKSUM_MZ_POPCOUNT16_BE ) ? 2 : 0;
+    uint64_t section = ( ( uint64_t ) size + ck_len ) * ( 8u + p->start_bits ) + p->end_long + p->tail_short;
+    uint64_t pulses = ( uint64_t ) p->tone + p->tm_long + p->tm_short + p->tm_end_long
+                      + ( 1u + ( uint64_t ) p->copies ) * section + ( uint64_t ) p->copies * p->copy_sep;
+    if ( pulses > MZCMT_FM_MAX_PULSES ) return EXIT_FAILURE;
+    uint64_t pair = ( uint64_t ) p->short_first + p->short_second;
+    if ( ( uint64_t ) p->long_first + p->long_second > pair ) pair = ( uint64_t ) p->long_first + p->long_second;
+    for ( uint32_t i = 0; i < p->context_count; i++ ) {
+        /* kontext mění jen jednu dvojici; horní odhad: obě půlvlny nejdelší z kontextu */
+        uint64_t c = 2 * ( uint64_t ) ( ( p->context[i].first > p->context[i].second ) ? p->context[i].first : p->context[i].second );
+        if ( c > pair ) pair = c;
+    }
+    /* pulses <= 1,6e7, pair <= 2 s x timebase (< 2^33): součin se do 64 bitů vejde */
+    uint64_t units = pulses * pair + p->pause;
+    if ( units > ( uint64_t ) MZCMT_FM_MAX_PART_SECONDS * p->timebase ) return EXIT_FAILURE;
+    if ( pulses_out ) *pulses_out = pulses;
+    if ( units_out ) *units_out = units;
+    return EXIT_SUCCESS;
+}
+
+
+int mzcmt_fm_check_size ( const st_MZCMT_FM_PARAMS *p, uint32_t size ) {
+    return mzcmt_fm_part_bounds ( p, size, NULL, NULL );
 }
 
 
@@ -228,7 +261,7 @@ static int push_section ( st_GEN *g, const st_MZCMT_FM_PARAMS *p, const uint8_t 
 
 int mzcmt_fm_generate ( const st_MZCMT_FM_PARAMS *p, const uint8_t *data, uint32_t size,
                         mzcmt_fm_half_cb cb, void *user ) {
-    if ( !cb || ( size && !data ) || mzcmt_fm_params_validate ( p ) != EXIT_SUCCESS ) return EXIT_FAILURE;
+    if ( !cb || ( size && !data ) || mzcmt_fm_check_size ( p, size ) != EXIT_SUCCESS ) return EXIT_FAILURE;
 
     st_GEN *g = calloc ( 1, sizeof ( st_GEN ) );
     if ( !g ) return EXIT_FAILURE;
@@ -290,8 +323,9 @@ typedef struct st_VSOUT {
 static int vs_out ( void *user, int level, uint32_t duration ) {
     st_VSOUT *o = user;
     o->cum += duration;
-    uint64_t target = ( o->cum * o->rate + o->timebase / 2 ) / o->timebase;
-    uint64_t n = target - o->emitted;
+    /* cum x rate by při vysoké časové základně přetekl 64 bitů: převod dělením */
+    uint64_t target = cmt_vstream_scale_time ( o->cum, ( uint32_t ) o->timebase, ( uint32_t ) o->rate );
+    uint64_t n = ( target > o->emitted && target != UINT64_MAX ) ? target - o->emitted : 0;
     if ( n == 0 || n > UINT32_MAX ) {
         fprintf ( stderr, "%s():%d: Error: half-wave of %u units does not fit the sample rate.\n", __func__, __LINE__, duration );
         return EXIT_FAILURE;
@@ -318,15 +352,14 @@ int mzcmt_fm_append_vstream ( st_CMT_VSTREAM *vs, const st_MZCMT_FM_PARAMS *p, c
     free ( q );
     if ( r != EXIT_SUCCESS || !p->pause ) return r;
     o.cum += p->pause;
-    uint64_t target = ( o.cum * o.rate + o.timebase / 2 ) / o.timebase;
-    uint64_t n = target - o.emitted;
+    uint64_t target = cmt_vstream_scale_time ( o.cum, ( uint32_t ) o.timebase, ( uint32_t ) o.rate );
+    if ( target == UINT64_MAX ) return EXIT_FAILURE;
+    /* akumulovaný čas neklesá, target tedy také; pojistka proti podtečení */
+    uint64_t n = ( target > o.emitted ) ? target - o.emitted : 0;
     if ( n == 0 ) return EXIT_SUCCESS;
-    if ( n > UINT32_MAX ) {
-        fprintf ( stderr, "%s():%d: Error: pause of %u units does not fit the sample rate.\n", __func__, __LINE__, p->pause );
-        return EXIT_FAILURE;
-    }
     o.emitted = target;
-    return cmt_vstream_add_value ( vs, p->pause_level, ( uint32_t ) n );
+    /* pauza smí být delší než jeden event vstreamu (2^32 vzorků) */
+    return cmt_vstream_add_value_long ( vs, p->pause_level, n );
 }
 
 

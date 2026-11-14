@@ -119,10 +119,75 @@ static int play_all ( st_TZX_BLOCK *blocks, uint32_t nb, int *lv, uint32_t *ev )
 }
 
 
+/** @brief 0x24: Loop Start, 65535 opakování. */
+static uint8_t g_loop_max[] = { 0xFF, 0xFF };
+/** @brief 0x30: text "ab". */
+static uint8_t g_text2[] = { 2, 'a', 'b' };
+/** @brief 0x19 Generalized Data s DWORD délkou 0 (player ho nepodporuje). */
+static uint8_t g_gdb0[] = { 0, 0, 0, 0 };
+
+
+/**
+ * @brief Rozpočet iterací sdílený voláními (tmz_player_play_next_budget()).
+ *
+ * Vnořené prázdné smyčky kolem nepodporovaného bloku: jedno volání stojí
+ * přes 130 000 iterací a vrátí UNSUPPORTED; volající, který blok přeskakuje
+ * a volá dál, se se sdíleným rozpočtem 1 000 000 zastaví po několika
+ * voláních (finished, STREAM_CREATE), ne po 65 535.
+ */
+static void test_budget ( void ) {
+    st_TZX_BLOCK b[] = { blk ( 0x24, g_loop_max, 2 ), blk ( 0x24, g_loop_max, 2 ), blk ( 0x25, NULL, 0 ),
+                         blk ( 0x19, g_gdb0, 4 ), blk ( 0x25, NULL, 0 ), blk ( 0x12, g_tone1, 4 ) };
+    st_TZX_FILE f;
+    memset ( &f, 0, sizeof ( f ) );
+    f.blocks = b;
+    f.block_count = 6;
+    st_TMZ_PLAYER_CONFIG cfg;
+    tmz_player_config_init ( &cfg );
+    st_TMZ_PLAYER_STATE st;
+    tmz_player_state_init ( &st, &f, &cfg );
+
+    uint32_t budget = TMZ_PLAYER_MAX_ITERATIONS;
+    int calls = 0, unsupported = 0;
+    en_TMZ_PLAYER_ERROR e = TMZ_PLAYER_OK;
+    st_CMT_STREAM *s = NULL;
+    while ( calls < 100000 ) {
+        calls++;
+        s = tmz_player_play_next_budget ( &st, &budget, &e );
+        if ( s || e != TMZ_PLAYER_ERROR_UNSUPPORTED ) break;
+        unsupported++;
+    }
+    CHECK ( !s && e == TMZ_PLAYER_ERROR_STREAM_CREATE && tmz_player_state_finished ( &st ) && budget == 0,
+            "shared budget: exhausted -> finished, STREAM_CREATE" );
+    CHECK ( unsupported >= 1 && calls < 20, "shared budget: stops after a few calls, not 65535" );
+    if ( s ) cmt_stream_destroy ( s );
+
+    /* nulový rozpočet a NULL */
+    tmz_player_state_init ( &st, &f, &cfg );
+    budget = 0;
+    s = tmz_player_play_next_budget ( &st, &budget, &e );
+    CHECK ( !s && e == TMZ_PLAYER_ERROR_STREAM_CREATE && tmz_player_state_finished ( &st ), "zero budget: error" );
+    s = tmz_player_play_next_budget ( &st, NULL, &e );
+    CHECK ( !s && e == TMZ_PLAYER_ERROR_NULL_INPUT, "NULL budget: NULL_INPUT" );
+
+    /* rozpočet stačí: tón za blokem se přehraje, spotřeba = počet zpracovaných bloků */
+    st_TZX_BLOCK c[] = { blk ( 0x30, g_text2, 3 ), blk ( 0x12, g_tone1, 4 ) };
+    f.blocks = c;
+    f.block_count = 2;
+    tmz_player_state_init ( &st, &f, &cfg );
+    budget = 10;
+    s = tmz_player_play_next_budget ( &st, &budget, &e );
+    CHECK ( s && e == TMZ_PLAYER_OK && budget == 8, "budget: 2 blocks cost 2 iterations" );
+    if ( s ) cmt_stream_destroy ( s );
+}
+
+
 int main ( void ) {
     int lv[16];
     uint32_t ev[16];
     int k;
+
+    test_budget ( );
 
     /* start: signál nízko, první pulz vysoko (hrana jako na ZX); 0x12 (5 pulzů) končí nízko, 0x13 začne nízko */
     st_TZX_BLOCK a[] = { blk ( 0x12, g_tone5, 4 ), blk ( 0x13, g_seq2, 5 ) };

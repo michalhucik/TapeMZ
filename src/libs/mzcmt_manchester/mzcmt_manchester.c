@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_manchester.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Implementace generátoru rodiny MANCHESTER (spec TMZ v1.1 kap. 7.2).
  *
  * Bity se vysílají postupně; ke každému bitu volající sekce určí kontext
@@ -61,6 +61,12 @@ static uint32_t lookup_half2 ( const st_MZCMT_MANCH_PARAMS *p, uint8_t ctx, int 
 int mzcmt_manch_params_validate ( const st_MZCMT_MANCH_PARAMS *p ) {
     if ( !p || !p->timebase || p->level > 1 || p->pause_level > 1 ) return EXIT_FAILURE;
     if ( !p->half1[0] || !p->half1[1] || !p->half2[0] || !p->half2[1] ) return EXIT_FAILURE;
+    const uint64_t max_half = ( uint64_t ) MZCMT_MANCH_MAX_HALF_SECONDS * p->timebase;
+    if ( p->half1[0] > max_half || p->half1[1] > max_half || p->half2[0] > max_half || p->half2[1] > max_half ) {
+        return EXIT_FAILURE;
+    }
+    if ( p->pilot_count > MZCMT_MANCH_MAX_PILOT ) return EXIT_FAILURE;
+    if ( p->pause > ( uint64_t ) MZCMT_MANCH_MAX_PART_SECONDS * p->timebase ) return EXIT_FAILURE;
     if ( p->pilot_count && ( p->pilot_bits < 1 || p->pilot_bits > MZCMT_MANCH_MAX_PATTERN_BITS ) ) return EXIT_FAILURE;
     if ( p->sync_bits > MZCMT_MANCH_MAX_PATTERN_BITS || p->end_bits > MZCMT_MANCH_MAX_PATTERN_BITS ) return EXIT_FAILURE;
     if ( p->has_flag > 1 || p->checksum > MZCMT_MANCH_CHECKSUM_SUM16_LE || p->checksum_explicit > 1 ) return EXIT_FAILURE;
@@ -68,7 +74,7 @@ int mzcmt_manch_params_validate ( const st_MZCMT_MANCH_PARAMS *p ) {
     if ( p->context_count > MZCMT_MANCH_MAX_CONTEXT ) return EXIT_FAILURE;
     for ( uint32_t i = 0; i < p->context_count; i++ ) {
         const st_MZCMT_MANCH_CONTEXT *c = &p->context[i];
-        if ( c->ctx >= MZCMT_MANCH_CTX_COUNT || !c->half2 ) return EXIT_FAILURE;
+        if ( c->ctx >= MZCMT_MANCH_CTX_COUNT || !c->half2 || c->half2 > max_half ) return EXIT_FAILURE;
         if ( c->bit > 1 && c->bit != MZCMT_MANCH_BIT_ANY ) return EXIT_FAILURE;
         for ( uint32_t j = 0; j < i; j++ ) {
             if ( p->context[j].ctx == c->ctx && p->context[j].bit == c->bit ) return EXIT_FAILURE;
@@ -82,6 +88,31 @@ int mzcmt_manch_params_validate ( const st_MZCMT_MANCH_PARAMS *p ) {
         }
     }
     return EXIT_SUCCESS;
+}
+
+
+int mzcmt_manch_part_bounds ( const st_MZCMT_MANCH_PARAMS *p, uint32_t size, uint64_t *bits_out, uint64_t *units_out ) {
+    if ( mzcmt_manch_params_validate ( p ) != EXIT_SUCCESS ) return EXIT_FAILURE;
+    uint64_t bits = ( uint64_t ) p->pilot_count * p->pilot_bits + p->sync_bits + ( p->has_flag ? 8u : 0u )
+                    + ( uint64_t ) size * 8u + ( p->checksum == MZCMT_MANCH_CHECKSUM_SUM16_LE ? 16u : 0u ) + p->end_bits;
+    if ( bits > MZCMT_MANCH_MAX_BITS ) return EXIT_FAILURE;
+    uint64_t h1 = ( p->half1[0] > p->half1[1] ) ? p->half1[0] : p->half1[1];
+    uint64_t h2 = ( p->half2[0] > p->half2[1] ) ? p->half2[0] : p->half2[1];
+    for ( uint32_t i = 0; i < p->context_count; i++ ) {
+        if ( p->context[i].half2 > h2 ) h2 = p->context[i].half2;
+    }
+    if ( p->carry_adjust > 0 ) h2 += ( uint64_t ) p->carry_adjust;
+    /* bits <= 1,6e7, h1 + h2 < 2^34: součin se do 64 bitů vejde */
+    uint64_t units = bits * ( h1 + h2 ) + p->pause;
+    if ( units > ( uint64_t ) MZCMT_MANCH_MAX_PART_SECONDS * p->timebase ) return EXIT_FAILURE;
+    if ( bits_out ) *bits_out = bits;
+    if ( units_out ) *units_out = units;
+    return EXIT_SUCCESS;
+}
+
+
+int mzcmt_manch_check_size ( const st_MZCMT_MANCH_PARAMS *p, uint32_t size ) {
+    return mzcmt_manch_part_bounds ( p, size, NULL, NULL );
 }
 
 
@@ -169,7 +200,7 @@ static int push_byte ( st_GEN *g, uint8_t v, uint8_t last, int carry ) {
 
 int mzcmt_manch_generate ( const st_MZCMT_MANCH_PARAMS *p, const uint8_t *data, uint32_t size,
                            mzcmt_manch_half_cb cb, void *user ) {
-    if ( !cb || mzcmt_manch_params_validate ( p ) != EXIT_SUCCESS || ( size && !data ) ) return EXIT_FAILURE;
+    if ( !cb || mzcmt_manch_check_size ( p, size ) != EXIT_SUCCESS || ( size && !data ) ) return EXIT_FAILURE;
     st_GEN g = { p, cb, user, 0, 0 };
 
     /* pilot: vzor x počet */
@@ -260,8 +291,9 @@ typedef struct st_VSOUT {
 static int vs_out ( void *user, int level, uint32_t duration ) {
     st_VSOUT *o = user;
     o->cum += duration;
-    uint64_t target = ( o->cum * o->rate + o->timebase / 2 ) / o->timebase;
-    uint64_t n = target - o->emitted;
+    /* cum x rate by při vysoké časové základně přetekl 64 bitů: převod dělením */
+    uint64_t target = cmt_vstream_scale_time ( o->cum, ( uint32_t ) o->timebase, ( uint32_t ) o->rate );
+    uint64_t n = ( target > o->emitted && target != UINT64_MAX ) ? target - o->emitted : 0;
     if ( n == 0 || n > UINT32_MAX ) {
         fprintf ( stderr, "%s():%d: Error: half-wave of %u units does not fit the sample rate.\n", __func__, __LINE__, duration );
         return EXIT_FAILURE;
@@ -284,15 +316,14 @@ int mzcmt_manch_append_vstream ( st_CMT_VSTREAM *vs, const st_MZCMT_MANCH_PARAMS
     free ( q );
     if ( r != EXIT_SUCCESS || !p->pause ) return r;
     o.cum += p->pause;
-    uint64_t target = ( o.cum * o.rate + o.timebase / 2 ) / o.timebase;
-    uint64_t n = target - o.emitted;
+    uint64_t target = cmt_vstream_scale_time ( o.cum, ( uint32_t ) o.timebase, ( uint32_t ) o.rate );
+    if ( target == UINT64_MAX ) return EXIT_FAILURE;
+    /* akumulovaný čas neklesá, target tedy také; pojistka proti podtečení */
+    uint64_t n = ( target > o.emitted ) ? target - o.emitted : 0;
     if ( n == 0 ) return EXIT_SUCCESS;
-    if ( n > UINT32_MAX ) {
-        fprintf ( stderr, "%s():%d: Error: pause of %u units does not fit the sample rate.\n", __func__, __LINE__, p->pause );
-        return EXIT_FAILURE;
-    }
     o.emitted = target;
-    return cmt_vstream_add_value ( vs, p->pause_level, ( uint32_t ) n );
+    /* pauza smí být delší než jeden event vstreamu (2^32 vzorků) */
+    return cmt_vstream_add_value_long ( vs, p->pause_level, n );
 }
 
 

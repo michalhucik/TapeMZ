@@ -166,7 +166,7 @@ nelze určit, část se přeskočí podle své délky).
 |---|---|
 | délky polí přesahují blok, součet nesedí s L, `n > 32`, nepovolený znak v ID profilu, `P = 0`, délka části přesahuje blok | chyba struktury: chyba načtení souboru |
 | verze bloku jiná než 1 | blok se nepřehraje, varování, pokračuje se dalším blokem |
-| neznámá rodina nebo zdroj, výřez mimo tělo, neznámý povinný tag, neplatná hodnota povinného tagu | chyba části: player část nepřehraje a ohlásí chybu; nic nedomýšlí |
+| neznámá rodina nebo zdroj, výřez mimo tělo, neznámý povinný tag, neplatná hodnota povinného tagu, signál mimo meze (kap. 5.7) | chyba části: player část nepřehraje a ohlásí chybu; nic nedomýšlí |
 | neznámý nepovinný tag | přeskočí se |
 
 ## 5. TLV
@@ -266,6 +266,41 @@ půlvlna LONG a perioda SHORT floor). Rezerva pod 0 = blok se nepřehraje
 | 1 | táž rutina ROM se změněnou konstantou N (předzavaděč TurboCopy a Intercopy přepíše 0A4Bh) | totéž s N z hodnoty |
 | 2 | rutina 1 se zavaděčem FAST IPL V07 (Intercopy), který po každé náběžné hraně přidá 86 T (háček na 061Fh) | jako 1, všechny meze o 86 T dál |
 | ostatní | rezervované | lint část přeskočí |
+
+### 5.7 Meze přehrávání (normativní)
+
+Čísla v TLV jsou až 32bitová a soubor nemusí být důvěryhodný. Aby jeden
+blok nemohl generovat miliardy pulzů, platí pro každou část meze odvozené
+z délky signálu: jedna část (hlavička nebo tělo programu) je i s kopiemi
+a pauzou kratší než hodina pásky.
+
+| mez | rodina | hodnota |
+|---|---|---|
+| počet SHORT v TONE | FM | nejvýš 1 000 000 (ROM 22 000) |
+| počet vzorů PILOT | MANCHESTER | nejvýš 1 000 000 (profily 1 024 - 2 134) |
+| délka jedné půlvlny (PULSES, CONTEXT, HALVES) | FM, MANCHESTER | nejvýš 1 s (TIMEBASE jednotek) |
+| PAUSE | FM, MANCHESTER | nejvýš 3 600 s |
+| počet pulzů části (tón, tapemark, bajty se start bity a checksumem, END, TAIL, to celé 1 + COPIES krát, oddělovače kopií) | FM | nejvýš 16 000 000 |
+| počet bitů části (pilot, sync, flag, data, checksum, koncové bity) | MANCHESTER | nejvýš 16 000 000 |
+| horní odhad délky části (počet pulzů nebo bitů x nejdelší dvojice půlvln + PAUSE) | FM, MANCHESTER | nejvýš 3 600 s |
+
+Část mimo meze je chyba části (kap. 4.4): player ji nepřehraje a ohlásí
+chybu. Meze platné záznamy neomezují (tělo 65 535 B se dvěma kopiemi při
+1:1 má asi 1,2 milionu pulzů a 20 minut).
+
+Blok 0x46 má až 255 částí, proto platí i meze celého bloku (součet
+přehratelných částí):
+
+| mez bloku | hodnota |
+|---|---|
+| součet horních odhadů délky částí | nejvýš 14 400 s (4 hodiny) |
+| součet pulzů FM a bitů MANCHESTER všech částí | nejvýš 16 000 000 |
+
+Blok mimo meze se nepřehraje (player ho ohlásí jako nepodporovaný), páska
+pokračuje dalším blokem. Stejnou mez 4 hodin signálu (pulzy i pauza) má
+každý generovaný blok TZX s délkami z dat (0x15, 0x18). Player ji ověřuje
+předem, z hlavičky a dat bloku, ne až při generování signálu. Mez pokryje
+nahrávku celé kazety C120 v jednom bloku (WAV převedený na 0x18).
 
 ## 6. Rodina FM
 

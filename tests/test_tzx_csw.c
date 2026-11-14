@@ -8,6 +8,9 @@
  * zapíší únikem (bajt 00h + DWORD). Při výstupu 44 100 Hz musí běhy vyjít
  * přesně, při 17 721 600 Hz celková délka nejvýš o 1 vzorek. Chybové stavy
  * se ověřují s vlastním error callbackem, aby výstup testu zůstal čistý.
+ * Dlouhý pulz (600 s při 44 100 Hz) se při 17 721 600 Hz přehraje se
+ * správnou délkou, i když je delší než jeden event vstreamu (2^32 vzorků).
+ * Z-RLE a neplatný blok hlásí player jako TMZ_PLAYER_ERROR_UNSUPPORTED.
  * Soubor se zapisuje do temp/ (spouštět z build/).
  */
 
@@ -15,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 #include "libs/tzx/tzx.h"
 #include "libs/tmz/tmz_player.h"
@@ -286,6 +290,116 @@ static void test_player ( void ) {
 }
 
 
+/**
+ * @brief Pulz 600 s při 44 100 Hz generovaný při 17 721 600 Hz: delší než
+ *        jeden event vstreamu, celková délka a úroveň musí sedět.
+ */
+static void test_long_pulse ( void ) {
+    st_TZX_BLOCK b;
+    memset ( &b, 0, sizeof ( b ) );
+    static const uint32_t one[] = { 600u * CSW_RATE };
+    if ( tzx_block_create_csw_recording ( CSW_RATE, 0, one, 1, &b ) != TZX_OK ) {
+        CHECK ( 0, "create block with one 600 s pulse" );
+        return;
+    }
+    st_TZX_CSW_RECORDING p;
+    CHECK ( tzx_parse_csw_recording ( b.data, b.length, &p ) == TZX_OK, "parse the 600 s block" );
+    st_TZX_CONFIG cfg;
+    tzx_config_init ( &cfg );
+    cfg.sample_rate = 17721600;
+    en_TZX_ERROR e = TZX_OK;
+    st_CMT_VSTREAM *vs = tzx_generate_csw_recording ( &p, &cfg, &e );
+    const uint64_t want = 600ull * 17721600ull;   /* 10 632 960 000 vzorků > 2^32 */
+    CHECK ( vs && e == TZX_OK, "600 s pulse at 17721600 Hz generates a stream" );
+    if ( vs ) {
+        uint64_t got = cmt_vstream_get_count_scans ( vs );
+        CHECK ( got + 1 >= want && got <= want + 1, "600 s pulse: total length equal within 1 sample" );
+        int v = 1;
+        int okv = 1;
+        cmt_vstream_read_reset ( vs );
+        for ( uint64_t t = 0; t < want; t += want / 64 ) {
+            if ( cmt_vstream_get_value ( vs, t, &v ) != EXIT_SUCCESS || v != 0 ) okv = 0;
+        }
+        if ( cmt_vstream_get_value ( vs, want - 1, &v ) != EXIT_SUCCESS || v != 0 ) okv = 0;
+        CHECK ( okv, "600 s pulse: LOW over the whole length" );
+        cmt_vstream_destroy ( vs );
+    }
+    free ( b.data );
+}
+
+
+/**
+ * @brief Blok 0x15 s dlouhým během stejných vzorků (2000 B nul, 65535 T na
+ *        vzorek): při 17 721 600 Hz přes 2^32 výstupních vzorků, délka sedí.
+ */
+static void test_direct_long_run ( void ) {
+    static uint8_t zeros[2000];
+    st_TZX_DIRECT_RECORDING d = { 65535, 0, 8, sizeof ( zeros ), zeros };
+    st_TZX_CONFIG cfg;
+    tzx_config_init ( &cfg );
+    cfg.sample_rate = 17721600;
+    en_TZX_ERROR e = TZX_OK;
+    st_CMT_VSTREAM *vs = tzx_generate_direct_recording ( &d, &cfg, &e );
+    uint32_t clock = cfg.cpu_clock ? cfg.cpu_clock : TZX_DEFAULT_CPU_CLOCK;
+    uint64_t spb = ( uint64_t ) ( ( double ) 65535 * 17721600 / clock + 0.5 );
+    uint64_t want = spb * 8u * sizeof ( zeros );
+    CHECK ( vs && e == TZX_OK && cmt_vstream_get_count_scans ( vs ) == want,
+            "0x15: run of 16000 equal samples over 2^32 output samples keeps its length" );
+    cmt_vstream_destroy ( vs );
+}
+
+
+/**
+ * @brief Blok s pulse_count 0: bez pulzů, jen pauza od úrovně volajícího.
+ */
+static void test_zero_pulses ( void ) {
+    uint8_t raw[32];
+    uint32_t n = raw_csw ( raw, CSW_RATE, 1, 0, NULL, 0 );
+    raw[4] = 0xF4; raw[5] = 0x01;   /* pauza 500 ms */
+    st_TZX_CSW_RECORDING p;
+    CHECK ( tzx_parse_csw_recording ( raw, n, &p ) == TZX_OK && p.pulse_count == 0, "parse block with pulse_count 0" );
+    st_TZX_CONFIG cfg;
+    tzx_config_init ( &cfg );
+    en_TZX_ERROR e = TZX_OK;
+    st_CMT_VSTREAM *vs = tzx_generate_csw_recording ( &p, &cfg, &e );
+    CHECK ( vs && e == TZX_OK, "pulse_count 0: generator returns a stream (pause only)" );
+    if ( vs ) {
+        uint64_t got = cmt_vstream_get_count_scans ( vs );
+        CHECK ( got > 0 && got <= ( uint64_t ) CSW_RATE / 2 + 1, "pulse_count 0: only the 500 ms pause" );
+        cmt_vstream_destroy ( vs );
+    }
+}
+
+
+/**
+ * @brief Player: Z-RLE a neplatný blok 0x18 = TMZ_PLAYER_ERROR_UNSUPPORTED (blok
+ *        se přeskočí, není to přechodná chyba).
+ */
+static void test_player_unsupported ( void ) {
+    uint8_t raw[64];
+    static const uint8_t two[] = { 10, 20 };
+    st_TMZ_PLAYER_CONFIG cfg;
+    tmz_player_config_init ( &cfg );
+    tzx_set_error_callback ( count_cb );
+
+    st_TZX_BLOCK b;
+    b.id = TZX_BLOCK_ID_CSW_RECORDING;
+    b.data = raw;
+    en_TMZ_PLAYER_ERROR pe = TMZ_PLAYER_OK;
+
+    g_cb_count = 0;
+    b.length = raw_csw ( raw, CSW_RATE, 2, 2, two, 2 );
+    st_CMT_STREAM *s = tmz_player_play_tzx_block ( &b, &cfg, &pe );
+    CHECK ( !s && pe == TMZ_PLAYER_ERROR_UNSUPPORTED && g_cb_count == 1, "player: Z-RLE -> TMZ_PLAYER_ERROR_UNSUPPORTED" );
+
+    b.length = raw_csw ( raw, CSW_RATE, 1, 3, two, 2 );
+    s = tmz_player_play_tzx_block ( &b, &cfg, &pe );
+    CHECK ( !s && pe == TMZ_PLAYER_ERROR_UNSUPPORTED, "player: invalid 0x18 data -> TMZ_PLAYER_ERROR_UNSUPPORTED" );
+
+    tzx_set_error_callback ( NULL );
+}
+
+
 /** @brief Odmítnutí neplatných vstupů zápisu a neplatných dat při generování. */
 static void test_errors ( void ) {
     st_TZX_BLOCK b;
@@ -321,45 +435,148 @@ static void test_errors ( void ) {
     /* Z-RLE: nepodporováno, s hlášením přes error callback */
     g_cb_count = 0;
     uint32_t n = raw_csw ( raw, CSW_RATE, 2, 2, two, 2 );
-    tzx_parse_csw_recording ( raw, n, &p );
+    CHECK ( tzx_parse_csw_recording ( raw, n, &p ) == TZX_OK, "parse the raw block" );
     vs = tzx_generate_csw_recording ( &p, &cfg, &e );
     CHECK ( !vs && e == TZX_ERROR_UNSUPPORTED && g_cb_count == 1, "generate: Z-RLE -> TZX_ERROR_UNSUPPORTED with a message" );
 
     n = raw_csw ( raw, CSW_RATE, 3, 2, two, 2 );
-    tzx_parse_csw_recording ( raw, n, &p );
+    CHECK ( tzx_parse_csw_recording ( raw, n, &p ) == TZX_OK, "parse the raw block" );
     vs = tzx_generate_csw_recording ( &p, &cfg, &e );
     CHECK ( !vs && e == TZX_ERROR_INVALID_BLOCK, "generate: unknown compression type -> TZX_ERROR_INVALID_BLOCK" );
 
     n = raw_csw ( raw, 0, 1, 2, two, 2 );
-    tzx_parse_csw_recording ( raw, n, &p );
+    CHECK ( tzx_parse_csw_recording ( raw, n, &p ) == TZX_OK, "parse the raw block" );
     vs = tzx_generate_csw_recording ( &p, &cfg, &e );
     CHECK ( !vs && e == TZX_ERROR_INVALID_BLOCK, "generate: sample rate 0 -> TZX_ERROR_INVALID_BLOCK" );
 
     n = raw_csw ( raw, CSW_RATE, 1, 3, two, 2 );
-    tzx_parse_csw_recording ( raw, n, &p );
+    CHECK ( tzx_parse_csw_recording ( raw, n, &p ) == TZX_OK, "parse the raw block" );
     vs = tzx_generate_csw_recording ( &p, &cfg, &e );
     CHECK ( !vs && e == TZX_ERROR_INVALID_BLOCK, "generate: fewer pulses in data than the header says" );
 
     n = raw_csw ( raw, CSW_RATE, 1, 1, two, 2 );
-    tzx_parse_csw_recording ( raw, n, &p );
+    CHECK ( tzx_parse_csw_recording ( raw, n, &p ) == TZX_OK, "parse the raw block" );
     vs = tzx_generate_csw_recording ( &p, &cfg, &e );
     CHECK ( !vs && e == TZX_ERROR_INVALID_BLOCK, "generate: more data than the header pulse count" );
 
     static const uint8_t cut[] = { 10, 0x00, 0x2C, 0x01 };
     n = raw_csw ( raw, CSW_RATE, 1, 2, cut, sizeof ( cut ) );
-    tzx_parse_csw_recording ( raw, n, &p );
+    CHECK ( tzx_parse_csw_recording ( raw, n, &p ) == TZX_OK, "parse the raw block" );
     vs = tzx_generate_csw_recording ( &p, &cfg, &e );
     CHECK ( !vs && e == TZX_ERROR_INVALID_BLOCK, "generate: truncated 32-bit length after 00h" );
 
     static const uint8_t z32[] = { 10, 0x00, 0x00, 0x00, 0x00, 0x00 };
     n = raw_csw ( raw, CSW_RATE, 1, 2, z32, sizeof ( z32 ) );
-    tzx_parse_csw_recording ( raw, n, &p );
+    CHECK ( tzx_parse_csw_recording ( raw, n, &p ) == TZX_OK, "parse the raw block" );
     vs = tzx_generate_csw_recording ( &p, &cfg, &e );
     CHECK ( !vs && e == TZX_ERROR_INVALID_BLOCK, "generate: zero 32-bit length -> TZX_ERROR_INVALID_BLOCK" );
 
     CHECK ( !tzx_generate_csw_recording ( NULL, &cfg, &e ) && e == TZX_ERROR_NULL_INPUT, "generate: NULL block" );
 
+    n = raw_csw ( raw, CSW_RATE, 1, 2, two, 2 );
+    CHECK ( tzx_parse_csw_recording ( raw, n, &p ) == TZX_OK, "parse the raw block" );
+    p.sample_rate = 0x1000000u;   /* nad 24 bitů: v souboru nejde, struktura od volajícího ano */
+    vs = tzx_generate_csw_recording ( &p, &cfg, &e );
+    CHECK ( !vs && e == TZX_ERROR_INVALID_BLOCK, "generate: sample rate above 24 bits -> TZX_ERROR_INVALID_BLOCK" );
+
     tzx_set_error_callback ( NULL );
+}
+
+
+/**
+ * @brief Vygeneruje blok 0x18 z pulzů a pauzy (sample_rate záznamu rate) při 1000 Hz.
+ * @param rate Frekvence záznamu. @param pause_ms Pauza. @param pulses Pulzy. @param n Počet.
+ * @param[out] err Chyba generátoru. @param[out] sec Doba generování v s.
+ * @return Vstream (uvolnit), nebo NULL.
+ */
+static st_CMT_VSTREAM* gen_csw_1k ( uint32_t rate, uint16_t pause_ms, const uint32_t *pulses, uint32_t n,
+                                    en_TZX_ERROR *err, double *sec ) {
+    st_TZX_BLOCK b;
+    memset ( &b, 0, sizeof ( b ) );
+    *err = TZX_ERROR_NULL_INPUT;
+    *sec = 0;
+    if ( tzx_block_create_csw_recording ( rate, pause_ms, pulses, n, &b ) != TZX_OK ) return NULL;
+    st_TZX_CSW_RECORDING p;
+    st_CMT_VSTREAM *vs = NULL;
+    if ( tzx_parse_csw_recording ( b.data, b.length, &p ) == TZX_OK ) {
+        st_TZX_CONFIG cfg;
+        tzx_config_init ( &cfg );
+        cfg.sample_rate = 1000;
+        clock_t t0 = clock ();
+        vs = tzx_generate_csw_recording ( &p, &cfg, err );
+        *sec = ( double ) ( clock () - t0 ) / CLOCKS_PER_SEC;
+    }
+    free ( b.data );
+    return vs;
+}
+
+
+/**
+ * @brief Mez délky celého bloku (4 hodiny signálu včetně pauzy): blok 0x18
+ *        s frekvencí 1 Hz a pulzy 0xFFFFFFFF (136 let, při 17 721 600 Hz
+ *        ~7,6e16 vzorků na pulz) se odmítne hned jako UNSUPPORTED, před
+ *        generováním. Blok přesně na mezi se přehraje.
+ */
+static void test_block_limit ( void ) {
+    en_TZX_ERROR e = TZX_OK;
+    double sec = 0;
+    static const uint32_t huge[] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
+    st_CMT_VSTREAM *vs = gen_csw_1k ( 1, 0, huge, 2, &e, &sec );
+    char msg[160];
+    snprintf ( msg, sizeof ( msg ), "0x18 at 1 Hz with pulses 0xFFFFFFFF: UNSUPPORTED before generating (%.3f s)", sec );
+    CHECK ( !vs && e == TZX_ERROR_UNSUPPORTED && sec < 1.0, msg );
+    cmt_vstream_destroy ( vs );
+
+    /* přes player: stejný blok = TMZ_PLAYER_ERROR_UNSUPPORTED */
+    st_TZX_BLOCK b;
+    memset ( &b, 0, sizeof ( b ) );
+    if ( tzx_block_create_csw_recording ( 1, 0, huge, 2, &b ) == TZX_OK ) {
+        st_TMZ_PLAYER_CONFIG pc;
+        tmz_player_config_init ( &pc );
+        pc.sample_rate = 1000;
+        pc.stream_type = CMT_STREAM_TYPE_VSTREAM;
+        en_TMZ_PLAYER_ERROR pe = TMZ_PLAYER_OK;
+        st_CMT_STREAM *s = tmz_player_play_tzx_block ( &b, &pc, &pe );
+        CHECK ( !s && pe == TMZ_PLAYER_ERROR_UNSUPPORTED, "0x18 over the block limit: player UNSUPPORTED" );
+        cmt_stream_destroy ( s );
+        free ( b.data );
+    } else {
+        CHECK ( 0, "create 0x18 with pulses 0xFFFFFFFF" );
+    }
+
+    /* na mezi: 14 400 s při 1 Hz (7000 + 7400), při 1000 Hz 14 400 000 vzorků */
+    static const uint32_t at[] = { 7000, 7400 };
+    vs = gen_csw_1k ( 1, 0, at, 2, &e, &sec );
+    CHECK ( vs && e == TZX_OK && cmt_vstream_get_count_scans ( vs ) == 14400000ull, "0x18 of exactly 4 h plays" );
+    cmt_vstream_destroy ( vs );
+    static const uint32_t over[] = { 7000, 7401 };
+    vs = gen_csw_1k ( 1, 0, over, 2, &e, &sec );
+    CHECK ( !vs && e == TZX_ERROR_UNSUPPORTED, "0x18 of 4 h + 1 s: UNSUPPORTED" );
+    cmt_vstream_destroy ( vs );
+    /* pauza se počítá: 14 399 s pulzů + 1000 ms = mez, + 1001 ms = přes */
+    static const uint32_t below[] = { 7000, 7399 };
+    vs = gen_csw_1k ( 1, 1000, below, 2, &e, &sec );
+    CHECK ( vs && e == TZX_OK, "0x18 of 14399 s + pause 1000 ms plays" );
+    cmt_vstream_destroy ( vs );
+    vs = gen_csw_1k ( 1, 1001, below, 2, &e, &sec );
+    CHECK ( !vs && e == TZX_ERROR_UNSUPPORTED, "0x18 of 14399 s + pause 1001 ms: UNSUPPORTED" );
+    cmt_vstream_destroy ( vs );
+
+    /* 0x15: 100 000 B nul po 65535 T = 800 000 vzorků, 14 979 s při 3,5 MHz -> přes mez */
+    static uint8_t zeros[100000];
+    st_TZX_DIRECT_RECORDING d = { 65535, 0, 8, sizeof ( zeros ), zeros };
+    st_TZX_CONFIG cfg;
+    tzx_config_init ( &cfg );
+    cfg.sample_rate = 1000;
+    e = TZX_OK;
+    vs = tzx_generate_direct_recording ( &d, &cfg, &e );
+    CHECK ( !vs && e == TZX_ERROR_UNSUPPORTED, "0x15 over 4 h: UNSUPPORTED" );
+    cmt_vstream_destroy ( vs );
+    /* 90 000 B: 13 481 s -> projde */
+    d.data_length = 90000;
+    vs = tzx_generate_direct_recording ( &d, &cfg, &e );
+    CHECK ( vs && e == TZX_OK, "0x15 under 4 h plays" );
+    cmt_vstream_destroy ( vs );
 }
 
 
@@ -368,6 +585,11 @@ int main ( void ) {
     test_generator ();
     test_player ();
     test_errors ();
+    test_long_pulse ();
+    test_direct_long_run ();
+    test_zero_pulses ();
+    test_player_unsupported ();
+    test_block_limit ();
     printf ( "\n=== TZX CSW Test: %s ===\n", g_failures ? "FAIL" : "PASS" );
     return g_failures ? 1 : 0;
 }

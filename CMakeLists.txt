@@ -540,6 +540,12 @@ add_executable(test_ic_wav
 )
 target_link_libraries(test_ic_wav PRIVATE wav_analyzer mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed mztape m)
 
+# test_wav_analyzer_pulses - analýza nad posloupností pulzů (shoda s WAV, jemný čas, meze)
+add_executable(test_wav_analyzer_pulses
+    tests/test_wav_analyzer_pulses.c
+)
+target_link_libraries(test_wav_analyzer_pulses PRIVATE wav_analyzer mztape mzf sharpmz_ascii generic_driver endianity wav cmt_stream cmtspeed m)
+
 # test_tc_normal - integracni test TurboCopy NORMAL nahravek (vsechny rychlosti)
 add_executable(test_tc_normal
     tests/test_tc_normal.c

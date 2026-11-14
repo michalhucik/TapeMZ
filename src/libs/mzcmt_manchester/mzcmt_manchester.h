@@ -1,7 +1,7 @@
 /**
  * @file   mzcmt_manchester.h
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.0.0
+ * @version 1.1.0
  * @brief  Obecný generátor rodiny MANCHESTER z parametrů části bloku 0x46 (TMZ v1.1).
  *
  * Manchester (CPM-TAPE: Pezik/MarVan TAPE.COM, Intercopy "CPM") kóduje bit
@@ -63,8 +63,22 @@ extern "C" {
 #define MZCMT_MANCH_MAX_CONTEXT 30
 /** @brief Nejvíc bitů vzoru pilotu, sync a koncových bitů. */
 #define MZCMT_MANCH_MAX_PATTERN_BITS 8
+/**
+ * @brief Nejvíc vzorů pilotu jedné části (profily 1 024 - 2 134).
+ *
+ * Meze MZCMT_MANCH_MAX_* chrání před souborem, který by počtem bitů nebo
+ * délkou signálu zahltil paměť a čas; vycházejí z délky signálu (jedna
+ * část i s pauzou kratší než hodina pásky), stejně jako u rodiny FM.
+ */
+#define MZCMT_MANCH_MAX_PILOT 1000000u
+/** @brief Nejdelší půlka bitu (HALVES, CONTEXT) v sekundách časové základny části. */
+#define MZCMT_MANCH_MAX_HALF_SECONDS 1u
+/** @brief Nejdelší signál jedné části včetně pauzy v sekundách časové základny. */
+#define MZCMT_MANCH_MAX_PART_SECONDS 3600u
+/** @brief Nejvíc bitů jedné části (pilot, sync, flag, data, checksum, koncové bity). */
+#define MZCMT_MANCH_MAX_BITS 16000000u
 /** @brief Verze knihovny mzcmt_manchester. */
-#define MZCMT_MANCH_VERSION "1.0.0"
+#define MZCMT_MANCH_VERSION "1.1.0"
 
 
     /**
@@ -122,7 +136,9 @@ extern "C" {
      *            checksum, checksum_explicit jen se SUM16_LE, context_count
      *            <= MZCMT_MANCH_MAX_CONTEXT, položky platné a bez opakované
      *            dvojice (ctx, bit), druhé půlky DATA_FIRST a DATA_BYTE
-     *            s carry_adjust > 0.
+     *            s carry_adjust > 0; pilot_count <= MZCMT_MANCH_MAX_PILOT,
+     *            každá půlka nejvýš MZCMT_MANCH_MAX_HALF_SECONDS x timebase,
+     *            pause nejvýš MZCMT_MANCH_MAX_PART_SECONDS x timebase.
      */
     typedef struct st_MZCMT_MANCH_PARAMS {
         uint32_t timebase;          /**< časová základna v Hz */
@@ -173,6 +189,34 @@ extern "C" {
      * @return EXIT_SUCCESS, nebo EXIT_FAILURE.
      */
     extern int mzcmt_manch_params_validate ( const st_MZCMT_MANCH_PARAMS *p );
+
+    /**
+     * @brief Ověří meze signálu části s daným počtem datových bajtů.
+     *
+     * Počet bitů (pilot x pilot_bits, sync, flag, size bajtů, checksum,
+     * koncové bity) nesmí přesáhnout MZCMT_MANCH_MAX_BITS a horní odhad
+     * délky (bity x nejdelší dvojice půlek + pause)
+     * MZCMT_MANCH_MAX_PART_SECONDS x timebase. mzcmt_manch_generate() ji
+     * volá sama; player ji volá předem, aby část mimo meze přeskočil.
+     *
+     * @param p Parametry (musí projít mzcmt_manch_params_validate()).
+     * @param size Počet datových bajtů části.
+     * @return EXIT_SUCCESS v mezích; EXIT_FAILURE mimo meze nebo s neplatnými parametry.
+     */
+    extern int mzcmt_manch_check_size ( const st_MZCMT_MANCH_PARAMS *p, uint32_t size );
+
+    /**
+     * @brief Meze části jako mzcmt_manch_check_size() a k tomu odhady pro mez celého bloku.
+     *
+     * @param p Parametry (musí projít mzcmt_manch_params_validate()).
+     * @param size Počet datových bajtů části.
+     * @param[out] bits Počet bitů části (smí být NULL).
+     * @param[out] units Horní odhad délky části v jednotkách timebase
+     *        (bity x nejdelší bit + pause; smí být NULL).
+     * @return EXIT_SUCCESS v mezích části (výstupy vyplněné); EXIT_FAILURE
+     *         mimo meze nebo s neplatnými parametry (výstupy beze změny).
+     */
+    extern int mzcmt_manch_part_bounds ( const st_MZCMT_MANCH_PARAMS *p, uint32_t size, uint64_t *bits, uint64_t *units );
 
     /**
      * @brief Spočítá checksum SUM16_LE: součet bajtů modulo 65536.

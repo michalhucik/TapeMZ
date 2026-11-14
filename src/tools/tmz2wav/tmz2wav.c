@@ -1,7 +1,7 @@
 /**
  * @file   tmz2wav.c
  * @author Michal Hucik <hucik@ordoz.com>
- * @version 1.3.1
+ * @version 1.3.2
  * @brief  Konverzni utility TMZ/TZX -> WAV.
  *
  * Nacte TMZ nebo TZX soubor, prehaje vybrane (nebo vsechny) audio bloky
@@ -70,14 +70,16 @@
 #include "libs/generic_driver/memory_driver.h"
 
 /** @brief Verze programu tmz2wav (z @version v hlavicce souboru). */
-#define TMZ2WAV_VERSION  "1.3.1"
+#define TMZ2WAV_VERSION  "1.3.2"
 
 
 /**
  * @brief Pripoji vsechny pulzy ze zdrojoveho vstreamu do ciloveho vstreamu.
  *
  * Cte pulzy ze zdrojoveho vstreamu pres cmt_vstream_read_pulse()
- * a zapisuje je do ciloveho vstreamu pres cmt_vstream_add_value().
+ * a zapisuje je do ciloveho vstreamu pres cmt_vstream_add_value_long()
+ * (pulz s 0 vzorky se vynecha; souvisly beh stejne urovne, i delsi nez
+ * jeden event, se v cili spoji nebo rozdeli spravne).
  * Po zavolani je cteci pozice zdrojoveho vstreamu na konci.
  *
  * @param dst Cilovy vstream (nesmi byt NULL).
@@ -93,7 +95,7 @@ static int vstream_append ( st_CMT_VSTREAM *dst, st_CMT_VSTREAM *src ) {
     int value;
     while ( cmt_vstream_read_pulse ( src, &samples, &value ) == EXIT_SUCCESS ) {
         if ( samples == 0 ) continue;
-        if ( cmt_vstream_add_value ( dst, value, (uint32_t) samples ) != EXIT_SUCCESS ) {
+        if ( cmt_vstream_add_value_long ( dst, value, samples ) != EXIT_SUCCESS ) {
             return EXIT_FAILURE;
         }
     }
